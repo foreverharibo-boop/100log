@@ -26,8 +26,7 @@ async function requestJev(state, questions) {
     const body = JSON.stringify({ model: 'jev-latest', state, questions });
     let response;
     let transport = '실리태번 API';
-    // SillyTavern's custom chat-completions endpoint can relay this non-chat JSON
-    // request. Match the working transport supplied in the Archive extension.
+    // SillyTavern's custom chat-completions endpoint can relay this non-chat JSON request.
     try {
         const headers = context().getRequestHeaders?.();
         if (!headers) throw new Error('실리태번 요청 헤더를 사용할 수 없어요.');
@@ -53,7 +52,7 @@ async function requestJev(state, questions) {
     }
     if (response && ![404, 405].includes(response.status)) {
         if (!response.ok) {
-            if (response.status === 401) throw new Error('실리태번 API 경로에서 인증 오류 (401). Archive의 연결 확인에서도 같은 키가 성공하는지 확인해 주세요.');
+            if (response.status === 401) throw new Error('실리태번 API 경로에서 인증 오류 (401). Jev API 키를 다시 확인해 주세요.');
             if (response.status === 403) throw new Error('실리태번 API 요청이 거부됐어요 (403). 실리태번을 새로고침하고 다시 시도해 주세요.');
             throw new Error(`실리태번 API 경로의 Jev 연결 오류 (${response.status}).`);
         }
@@ -61,7 +60,7 @@ async function requestJev(state, questions) {
         try { result = await response.json(); } catch { throw new Error('실리태번 API에서 받은 Jev 응답을 읽지 못했어요.'); }
         if (result?.error) {
             const message = String(result.error?.message ?? result.error).slice(0, 200);
-            if (/unauthori|invalid.api.key|forbidden/i.test(message)) throw new Error('Jev가 키 인증을 거절했어요 (실리태번 API 경로). Archive에서도 같은 키로 연결 확인해 주세요.');
+            if (/unauthori|invalid.api.key|forbidden/i.test(message)) throw new Error('Jev가 키 인증을 거절했어요 (실리태번 API 경로). 키를 다시 확인해 주세요.');
             throw new Error(`실리태번 API 경로의 Jev 오류: ${message}`);
         }
         if (!result?.answers || typeof result.answers !== 'object') throw new Error('실리태번 API 경로의 Jev 응답에 판정 결과가 없어요.');
@@ -98,7 +97,7 @@ async function requestJev(state, questions) {
         if (response.status === 404) throw new Error('브라우저 직접 연결이 막혔고 실리태번 내장 프록시가 꺼져 있어요. SillyTavern/config.yaml에서 enableCorsProxy: true로 바꾸고 서버를 다시 시작해 주세요.');
     }
     if (!response.ok) {
-        if (response.status === 401) throw new Error(`Jev 인증 오류 (401, ${transport}). Archive의 연결 확인에서도 같은 키가 성공하는지 확인해 주세요.`);
+        if (response.status === 401) throw new Error(`Jev 인증 오류 (401, ${transport}). 키를 다시 확인해 주세요.`);
         if (response.status === 422) throw new Error('Jev 요청 형식 오류 (422). 메모리콩을 최신 버전으로 업데이트해 주세요.');
         if (response.status === 429) throw new Error('Jev 요청 한도 초과 (429). 잠시 후 다시 시도해 주세요.');
         throw new Error(`Jev 연결 오류 (${response.status}). 서비스 상태 또는 실리태번 프록시 설정을 확인해 주세요.`);
@@ -385,7 +384,7 @@ function openWand() {
         popup.append(header, body);
         overlay.append(popup);
         overlay.addEventListener('click', (event) => { if (event.target === overlay) closeWand(); });
-        document.body.append(overlay);
+        document.documentElement.append(overlay);
         document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && !overlay.hidden) closeWand(); });
     }
     if (!settingsHome) settingsHome = panel.parentElement;

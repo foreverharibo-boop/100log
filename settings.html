@@ -7,13 +7,12 @@
     <p class="memorybean-lead">기억해 둘 사실을 골라 두면, 답변을 보여주기 전에 설정 충돌을 확인해요.</p>
     <div class="memorybean-section memorybean-connection">
       <label for="memorybean-key" class="memorybean-label"><strong>Jev API 키</strong></label>
-      <div class="memorybean-add"><input id="memorybean-key" type="password" autocomplete="off" spellcheck="false" placeholder="TypeSafe API 키를 입력해 주세요"><button type="button" id="memorybean-test" class="menu_button">연결 확인</button><button type="button" id="memorybean-clearkey" class="menu_button">키 삭제</button></div>
+      <div class="memorybean-add"><input id="memorybean-key" type="password" autocomplete="off" spellcheck="false" placeholder="TypeSafe API 키를 입력해 주세요"><button type="button" id="memorybean-test" class="menu_button">연결 확인</button><button type="button" id="memorybean-clearkey" class="menu_button">키 삭제</button><span id="memorybean-server" class="memorybean-state" aria-live="polite">API 키를 입력해 주세요</span></div>
       <p id="memorybean-connection-error" class="memorybean-help memorybean-connection-error" role="alert" hidden></p>
-      <p class="memorybean-help">키는 이 브라우저에만 저장돼요. Archive와 같은 실리태번 API 경로로 먼저 연결해요. 실패 사유는 키 입력란 아래에 표시돼요.</p>
+      <p class="memorybean-help">키는 이 브라우저에만 저장돼요. 연결에 실패하면 이곳에 이유가 표시돼요.</p>
     </div>
     <div class="memorybean-row memorybean-top">
       <label class="memorybean-toggle"><input id="memorybean-enabled" type="checkbox"><span>자동 검수 켜기</span></label>
-      <span id="memorybean-server" class="memorybean-state" aria-live="polite">API 키를 입력해 주세요</span>
     </div>
     <p class="memorybean-help">일반 답변 생성에 적용돼요. 사실을 승인한 뒤 켜 주세요. 검수에 실패하면 초안은 표시하지 않아요.</p>
     <div class="memorybean-section">
