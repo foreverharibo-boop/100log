@@ -12,6 +12,8 @@ let statusText = '준비됐어요.';
 let settingsHome = null;
 let wandMenuObserver = null;
 let lastJevTransport = '실리태번 API';
+let selectedView = 'memory';
+let previousFocus = null;
 
 const context = () => SillyTavern.getContext();
 const $id = (id) => document.getElementById(`memorybean-${id}`);
@@ -135,6 +137,17 @@ function status(value) {
     if ($id('status')) $id('status').textContent = value;
 }
 
+function showView(view) {
+    if (!['memory', 'candidates', 'settings'].includes(view)) return;
+    selectedView = view;
+    for (const name of ['memory', 'candidates', 'settings']) {
+        $id(`view-${name}`).hidden = name !== view;
+        $id(`tab-${name}`).setAttribute('aria-pressed', String(name === view));
+    }
+    const body = $id('wand-body');
+    if (body) body.scrollTop = 0;
+}
+
 function makeButton(text, action) {
     const button = document.createElement('button');
     button.type = 'button';
@@ -224,7 +237,7 @@ function render() {
     if (value) $id('replaces').value = currentFacts.some((item) => item.id === manualChoice && item.active) ? manualChoice : '';
     if (!value) { status('캐릭터 채팅을 선택하면 사용할 수 있어요.'); return; }
     if (!currentFacts.length) {
-        const empty = document.createElement('p'); empty.className = 'memorybean-empty'; empty.textContent = '아직 승인된 사실이 없어요.'; $id('facts').append(empty);
+        const empty = document.createElement('p'); empty.className = 'memorybean-empty'; empty.textContent = '아직 기억할 사실이 없어요.\n후보 메뉴에서 대화를 수집하거나 아래에서 직접 추가해 주세요.'; $id('facts').append(empty);
     }
     for (const fact of currentFacts) {
         const item = document.createElement('div'); item.className = 'memorybean-item';
@@ -460,6 +473,8 @@ function closeWand() {
     const panel = document.getElementById('memorybean');
     if (panel && settingsHome && panel.parentElement !== settingsHome) settingsHome.append(panel);
     if (overlay) overlay.hidden = true;
+    previousFocus?.focus?.({ preventScroll: true });
+    previousFocus = null;
 }
 
 function openWand() {
@@ -474,12 +489,14 @@ function openWand() {
         popup.id = 'memorybean-wand-popup';
         popup.setAttribute('role', 'dialog');
         popup.setAttribute('aria-label', '메모리콩 설정');
+        popup.setAttribute('aria-modal', 'true');
         const header = document.createElement('div');
         header.id = 'memorybean-wand-header';
         const title = document.createElement('strong');
         title.textContent = '🌱 메모리콩';
         const close = document.createElement('button');
         close.type = 'button';
+        close.id = 'memorybean-wand-close';
         close.className = 'menu_button';
         close.textContent = '닫기';
         close.addEventListener('click', closeWand);
@@ -490,14 +507,27 @@ function openWand() {
         overlay.append(popup);
         overlay.addEventListener('click', (event) => { if (event.target === overlay) closeWand(); });
         document.documentElement.append(overlay);
-        document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && !overlay.hidden) closeWand(); });
+        overlay.addEventListener('keydown', (event) => {
+            if (event.key !== 'Tab') return;
+            const focusable = [...popup.querySelectorAll('button, input, textarea, select, summary, [tabindex="0"]')]
+                .filter((element) => !element.disabled && element.getClientRects().length);
+            const first = focusable[0];
+            const last = focusable.at(-1);
+            if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+            else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+        });
+        document.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape' && !overlay.hidden) { event.preventDefault(); closeWand(); }
+        });
     }
+    if (overlay.hidden) previousFocus = document.activeElement;
     if (!settingsHome) settingsHome = panel.parentElement;
     document.getElementById('memorybean-wand-body').append(panel);
     overlay.hidden = false;
     const menu = document.getElementById('extensionsMenu');
     if (menu) menu.style.display = 'none';
     render();
+    $id('wand-close').focus?.({ preventScroll: true });
 }
 
 function addWandButton() {
@@ -538,6 +568,10 @@ async function main() {
     const container = document.querySelector('#extensions_settings2') ?? document.querySelector('#extensions_settings');
     if (!container) throw new Error('확장 설정 패널을 찾지 못했어요.');
     container.insertAdjacentHTML('beforeend', html);
+    for (const view of ['memory', 'candidates', 'settings']) {
+        $id(`tab-${view}`).addEventListener('click', () => showView(view));
+    }
+    showView(selectedView);
     if ($id('key')) $id('key').value = apiKey();
     if ($id('server')) $id('server').textContent = apiKey() ? '키 저장됨 · 연결 확인 필요' : 'API 키를 입력해 주세요';
     function connectionError(message = '') {
@@ -586,7 +620,7 @@ async function main() {
         render();
     });
     $id('enabled')?.addEventListener('change', (event) => {
-        if (event.target.checked && !apiKey()) { status('Jev API 키를 먼저 입력해 주세요.'); render(); return; }
+        if (event.target.checked && !apiKey()) { status('Jev API 키를 먼저 입력해 주세요.'); showView('settings'); render(); return; }
         settings().enabled = event.target.checked; ctx.saveSettingsDebounced(); render();
     });
     $id('add')?.addEventListener('click', async () => {
