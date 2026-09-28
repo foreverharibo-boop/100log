@@ -16,7 +16,16 @@
 #memorybean .memorybean-add { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
 #memorybean .memorybean-connection input[type="password"] { flex: 1 1 100%; }
 #memorybean .memorybean-add textarea { flex: 1 1 100%; }
-#memorybean textarea, #memorybean input[type="password"] { flex: 1; min-width: 0; resize: vertical; color: var(--SmartThemeBodyColor); background: var(--SmartThemeBlurTintColor); border: 1px solid var(--SmartThemeBorderColor); border-radius: 6px; padding: 8px; font: inherit; line-height: 1.45; }
+#memorybean textarea, #memorybean input[type="password"], #memorybean input[type="text"], #memorybean select { flex: 1; min-width: 0; resize: vertical; color: var(--SmartThemeBodyColor); background: var(--SmartThemeBlurTintColor); border: 1px solid var(--SmartThemeBorderColor); border-radius: 6px; padding: 8px; font: inherit; line-height: 1.45; }
+#memorybean .memorybean-add .memorybean-select { flex: 1 1 180px; }
+#memorybean .memorybean-replace { display: flex; margin-top: 8px; }
+#memorybean .memorybean-knowledge { margin-top: 8px; font-size: .87em; }
+#memorybean .memorybean-knowledge summary, #memorybean .memorybean-history summary { cursor: pointer; }
+#memorybean .memorybean-knowledge-tags, #memorybean .memorybean-knowledge-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 7px; }
+#memorybean .memorybean-knowledge-tags button, #memorybean .memorybean-knowledge-controls button { width: auto !important; flex: 0 0 auto !important; margin: 0; }
+#memorybean .memorybean-knowledge-controls input { flex: 2 1 120px; }
+#memorybean .memorybean-knowledge-controls select { flex: 1 1 115px; }
+#memorybean .memorybean-history .memorybean-list { margin-top: 9px; }
 #memorybean input { accent-color: var(--SmartThemeQuoteColor); }
 #memorybean textarea { caret-color: var(--SmartThemeBodyColor); }
 #memorybean textarea:focus-visible, #memorybean button:focus-visible, #memorybean input:focus-visible { outline-color: var(--SmartThemeQuoteColor); }

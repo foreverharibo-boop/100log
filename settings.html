@@ -19,10 +19,13 @@
       <div class="memorybean-section-title"><strong>기억할 사실</strong><span id="memorybean-count"></span></div>
       <div id="memorybean-facts" class="memorybean-list"></div>
       <label for="memorybean-newfact" class="memorybean-label">직접 추가</label>
-      <div class="memorybean-add"><textarea id="memorybean-newfact" rows="2" placeholder="예: 서연의 왼쪽 손목에는 오래된 흉터가 있다."></textarea><button type="button" id="memorybean-add" class="menu_button">추가</button></div>
+      <div class="memorybean-add"><textarea id="memorybean-newfact" rows="2" placeholder="예: 서연의 왼쪽 손목에는 오래된 흉터가 있다."></textarea><select id="memorybean-replaces" class="memorybean-select" aria-label="기존 사실 갱신 대상"></select><button type="button" id="memorybean-add" class="menu_button">추가 또는 갱신</button></div>
+      <div class="memorybean-row"><button type="button" id="memorybean-endscene" class="menu_button">새 장면 시작 · 임시 사실 끄기</button></div>
+      <p class="memorybean-help">기존 사실이 달라졌다면 갱신 대상을 고르세요. 이전 상태는 아래 이력에 남아요. 비밀은 각 사실의 ‘인물별 지식’에서 설정할 수 있어요.</p>
       <div class="memorybean-row memorybean-controls"><button type="button" id="memorybean-extract" class="menu_button">이전 대화 전체 수집</button><button type="button" id="memorybean-stop" class="menu_button" disabled>수집 중단</button><span id="memorybean-progress" class="memorybean-muted"></span></div>
-      <p class="memorybean-help">현재 열린 채팅의 처음부터 최근 메시지까지 40개씩 차례로 읽어요. 후보는 원문을 확인하고 승인해야 검수에 사용돼요.</p>
+      <p class="memorybean-help">현재 열린 채팅을 최대 40개 메시지·18,000글자씩 나눠 끝까지 읽어요. 후보의 출처·갱신 대상·인물별 지식을 확인하고 승인해 주세요.</p>
     </div>
+    <details class="memorybean-section memorybean-history"><summary>지난 사실 <span id="memorybean-history-count"></span></summary><div id="memorybean-history" class="memorybean-list"></div></details>
     <div class="memorybean-section">
       <div class="memorybean-section-title"><strong>사실 후보</strong><span id="memorybean-candidate-count"></span></div>
       <div id="memorybean-candidates" class="memorybean-list"></div>

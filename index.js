@@ -1,4 +1,4 @@
-import { MAX_FACTS, chatKey, buildChecks, readContradictions, parseFactCandidates, newId } from './core.js';
+import { MAX_FACTS, chatKey, buildChecks, buildRelevanceChecks, selectRelevantFacts, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId } from './core.js';
 
 const NAME = 'memorybean';
 const KEY_STORAGE = 'memorybean.typesafeKey';
@@ -124,6 +124,8 @@ function data(create = true) {
     value.facts ??= [];
     value.candidates ??= [];
     value.extractionCursor ??= 0;
+    value.extractionOffset ??= 0;
+    for (const fact of value.facts) fact.knowledge ??= {};
     return value;
 }
 
@@ -142,6 +144,58 @@ function makeButton(text, action) {
     return button;
 }
 
+function replacementSelect(value, selectedId, onChange) {
+    const select = document.createElement('select');
+    select.className = 'memorybean-select';
+    select.setAttribute('aria-label', '기존 사실 갱신 대상');
+    const none = document.createElement('option');
+    none.value = '';
+    none.textContent = '새 사실로 추가';
+    select.append(none);
+    for (const fact of value.facts.filter((item) => item.active && !item.supersededBy)) {
+        const option = document.createElement('option');
+        option.value = fact.id;
+        option.textContent = `갱신: ${fact.text.slice(0, 50)}`;
+        select.append(option);
+    }
+    select.value = selectedId && value.facts.some((item) => item.id === selectedId && item.active && !item.supersededBy) ? selectedId : '';
+    if (onChange) select.addEventListener('change', () => { void onChange(select.value); });
+    return select;
+}
+
+function knowledgeEditor(record, persist) {
+    const details = document.createElement('details');
+    details.className = 'memorybean-knowledge';
+    const summary = document.createElement('summary');
+    summary.textContent = `인물별 지식 · ${Object.keys(normalizeKnowledge(record.knowledge)).length}명`;
+    details.append(summary);
+    const tags = document.createElement('div');
+    tags.className = 'memorybean-knowledge-tags';
+    for (const [name, state] of Object.entries(normalizeKnowledge(record.knowledge))) {
+        tags.append(makeButton(`${name}: ${state === 'known' ? '알고 있음' : '아직 모름'} ×`, async () => {
+            setKnowledge(record, name, null);
+            await persist();
+        }));
+    }
+    details.append(tags);
+    const controls = document.createElement('div');
+    controls.className = 'memorybean-knowledge-controls';
+    const name = document.createElement('input');
+    name.type = 'text'; name.maxLength = 50; name.placeholder = '인물 이름'; name.setAttribute('aria-label', '인물 이름');
+    const choice = document.createElement('select');
+    choice.className = 'memorybean-select';
+    choice.setAttribute('aria-label', '인물이 아는지 여부');
+    for (const [label, state] of [['알고 있음', 'known'], ['아직 모름', 'unknown']]) {
+        const option = document.createElement('option'); option.value = state; option.textContent = label; choice.append(option);
+    }
+    controls.append(name, choice, makeButton('기록', async () => {
+        try { setKnowledge(record, name.value, choice.value); await persist(); }
+        catch (error) { status(error.message); }
+    }));
+    details.append(controls);
+    return details;
+}
+
 function render() {
     if (!$id('facts')) return;
     const value = data();
@@ -154,24 +208,42 @@ function render() {
     $id('stop').disabled = !extracting;
     $id('add').disabled = busy || !value;
     $id('newfact').disabled = busy || !value;
+    $id('replaces').disabled = busy || !value;
+    $id('endscene').disabled = busy || !value;
     $id('facts').replaceChildren();
     $id('candidates').replaceChildren();
-    $id('count').textContent = value ? `${value.facts.filter((item) => item.active).length}개 활성` : '채팅을 선택해 주세요';
+    $id('history').replaceChildren();
+    const currentFacts = value?.facts.filter((item) => !item.supersededBy) ?? [];
+    const history = value?.facts.filter((item) => item.supersededBy) ?? [];
+    $id('count').textContent = value ? `${currentFacts.filter((item) => item.active).length}개 활성` : '채팅을 선택해 주세요';
+    $id('history-count').textContent = `${history.length}개`;
     $id('candidate-count').textContent = value ? `${value.candidates.length}개` : '';
     $id('progress').textContent = value ? `읽은 대화 ${value.extractionCursor}/${context().chat.length}` : '';
+    const manualChoice = $id('replaces').value;
+    $id('replaces').replaceChildren(...(value ? [...replacementSelect(value, manualChoice).children] : []));
+    if (value) $id('replaces').value = currentFacts.some((item) => item.id === manualChoice && item.active) ? manualChoice : '';
     if (!value) { status('캐릭터 채팅을 선택하면 사용할 수 있어요.'); return; }
-    if (!value.facts.length) {
+    if (!currentFacts.length) {
         const empty = document.createElement('p'); empty.className = 'memorybean-empty'; empty.textContent = '아직 승인된 사실이 없어요.'; $id('facts').append(empty);
     }
-    for (const fact of value.facts) {
+    for (const fact of currentFacts) {
         const item = document.createElement('div'); item.className = 'memorybean-item';
         const title = document.createElement('div'); title.className = 'memorybean-text'; title.textContent = fact.text; item.append(title);
         const meta = document.createElement('div'); meta.className = 'memorybean-meta'; meta.textContent = `${fact.active ? '검수에 사용 중' : '사용 안 함'} · ${fact.scope === 'scene' ? '현재 장면' : '지속 설정'}${Number.isInteger(fact.sourceId) ? ` · 대화 #${fact.sourceId}` : ''}`; item.append(meta);
         const actions = document.createElement('div'); actions.className = 'memorybean-actions';
         actions.append(makeButton(fact.active ? '잠시 끄기' : '다시 켜기', async () => { fact.active = !fact.active; await save(); render(); }));
         actions.append(makeButton(fact.scope === 'scene' ? '지속 설정으로' : '현재 장면만', async () => { fact.scope = fact.scope === 'scene' ? 'always' : 'scene'; await save(); render(); }));
-        actions.append(makeButton('삭제', async () => { value.facts = value.facts.filter((entry) => entry.id !== fact.id); await save(); render(); }));
+        actions.append(makeButton('삭제', async () => { if (data(false) !== value) return; removeFact(value, fact.id); await save(); render(); }));
         item.append(actions); $id('facts').append(item);
+        item.append(knowledgeEditor(fact, async () => { if (data(false) !== value) return; await save(); render(); }));
+    }
+    for (const fact of history) {
+        const item = document.createElement('div'); item.className = 'memorybean-item';
+        const title = document.createElement('div'); title.className = 'memorybean-text'; title.textContent = fact.text;
+        const next = value.facts.find((entry) => entry.id === fact.supersededBy);
+        const meta = document.createElement('div'); meta.className = 'memorybean-meta';
+        meta.textContent = `지난 상태${Number.isInteger(fact.sourceId) ? ` · 대화 #${fact.sourceId}` : ''}${next ? ` → ${next.text}` : ''}`;
+        item.append(title, meta); $id('history').append(item);
     }
     if (!value.candidates.length) {
         const empty = document.createElement('p'); empty.className = 'memorybean-empty'; empty.textContent = '검토할 후보가 없어요.'; $id('candidates').append(empty);
@@ -180,27 +252,47 @@ function render() {
         const item = document.createElement('div'); item.className = 'memorybean-item';
         const title = document.createElement('div'); title.className = 'memorybean-text'; title.textContent = candidate.text; item.append(title);
         const meta = document.createElement('div'); meta.className = 'memorybean-meta'; meta.textContent = `대화 #${candidate.sourceId}: ${candidate.sourceText}`; item.append(meta);
+        const replacement = replacementSelect(value, suggestReplacement(value, candidate), async (selected) => {
+            if (data(false) !== value) return;
+            candidate.replacesId = selected;
+            await save();
+        });
+        const replaceRow = document.createElement('div'); replaceRow.className = 'memorybean-replace';
+        replaceRow.append(replacement); item.append(replaceRow);
         const actions = document.createElement('div'); actions.className = 'memorybean-actions';
         actions.append(makeButton('승인', async () => {
-            if (value.facts.length >= MAX_FACTS) { status('기억할 사실은 최대 80개예요.'); return; }
-            value.candidates = value.candidates.filter((entry) => entry.id !== candidate.id);
-            value.facts.push({ ...candidate, active: true });
-            await save(); render();
+            if (data(false) !== value) return;
+            try {
+                approveFact(value, candidate, replacement.value || null);
+                value.candidates = value.candidates.filter((entry) => entry.id !== candidate.id);
+                await save(); render();
+            } catch (error) { status(error.message); }
         }));
         actions.append(makeButton('제외', async () => { value.candidates = value.candidates.filter((entry) => entry.id !== candidate.id); await save(); render(); }));
-        item.append(actions); $id('candidates').append(item);
+        item.append(actions);
+        item.append(knowledgeEditor(candidate, async () => { if (data(false) !== value) return; await save(); render(); }));
+        $id('candidates').append(item);
     }
     $id('status').textContent = statusText;
 }
 
-function sourceRows(ctx, start) {
+function sourceRows(ctx, start, offset = 0, total = ctx.chat.length) {
     const rows = [];
-    for (let i = start; i < Math.min(ctx.chat.length, start + 40); i++) {
+    let i = start;
+    let remaining = 18000;
+    for (; i < Math.min(total, start + 40) && remaining > 0;) {
         const msg = ctx.chat[i];
-        if (!msg || msg.is_system || typeof msg.mes !== 'string' || !msg.mes.trim()) continue;
-        rows.push({ id: i, name: msg.name ?? (msg.is_user ? ctx.name1 : ctx.name2), text: msg.mes.trim().slice(0, 700) });
+        if (!msg || msg.is_system || typeof msg.mes !== 'string' || !msg.mes.trim()) { i++; offset = 0; continue; }
+        const text = msg.mes.trim();
+        const piece = text.slice(offset, offset + remaining);
+        rows.push({ id: i, name: msg.name ?? (msg.is_user ? ctx.name1 : ctx.name2), text: piece, partStart: offset });
+        offset += piece.length;
+        remaining -= piece.length;
+        if (offset < text.length) break;
+        i++;
+        offset = 0;
     }
-    return rows;
+    return { rows, nextCursor: i, nextOffset: offset };
 }
 
 function parseJson(raw) {
@@ -222,16 +314,19 @@ export async function collectHistory() {
     try {
         while (value.extractionCursor < total && !stopExtractionRequested) {
             const start = value.extractionCursor;
-            const rows = sourceRows(ctx, start);
+            const { rows, nextCursor, nextOffset } = sourceRows(ctx, start, value.extractionOffset, total);
             status(`이전 대화 수집 중: ${start}/${total}개 읽음 · 후보 ${collected}개`);
             let candidates = [];
             if (rows.length) {
+                const current = value.facts.filter((fact) => fact.active && !fact.supersededBy)
+                    .map((fact) => ({ id: fact.id, text: fact.text, sourceId: fact.sourceId ?? null }));
                 const prompt = [
-                    'Extract up to 12 durable, concrete RP continuity facts explicitly supported by these chat messages. Return JSON only: {"facts":[{"text":"...","sourceId":0,"scope":"always"}]}. Use scope "scene" for temporary scene details. Keep the language used in the chat. Do not infer hidden intentions; dialogue claims may be untrue, so label candidates for human review. Cite the actual numbered sourceId of each fact. No commentary.',
+                    'Extract up to 12 concrete RP continuity facts supported by the numbered messages. Return JSON only: {"facts":[{"text":"...","sourceId":0,"scope":"always","entity":"person or object","attribute":"specific changing property","replacesId":null,"knowledge":{"Name":"known"}}]}. Use the SAME short entity and attribute for states that can change over time (e.g. injury status, location, possession). Use scope "scene" for temporary details. If an event explicitly changes one CURRENT FACT, set replacesId to its exact id; otherwise null. For knowledge use only explicit evidence: "known" means a named person definitely learned it; "unknown" means it is explicitly confirmed they have not learned it. Do not infer ignorance just because a person is absent. Omit uncertain knowledge. Dialogue claims may be false, so everything remains a candidate for human approval. Keep the language of the chat. Cite the actual sourceId. No commentary.',
+                    `CURRENT FACTS: ${JSON.stringify(current)}`,
                     JSON.stringify(rows)
                 ].join('\n\n');
                 const raw = await ctx.generateRaw({ prompt });
-                candidates = parseFactCandidates(raw, rows);
+                candidates = parseFactCandidates(raw, rows, value.facts);
             }
             if (chatKey(context()) !== key || data(false) !== value) { status('채팅이 바뀌어 수집을 멈췄어요.'); return; }
             const existing = new Set([...value.facts, ...value.candidates].map((entry) => entry.text.trim().toLocaleLowerCase()));
@@ -243,7 +338,8 @@ export async function collectHistory() {
             });
             value.candidates.push(...fresh);
             collected += fresh.length;
-            value.extractionCursor = Math.min(start + 40, total);
+            value.extractionCursor = nextCursor;
+            value.extractionOffset = nextOffset;
             await save();
             render();
         }
@@ -258,8 +354,15 @@ function recentChat(ctx) {
     return ctx.chat.slice(-6).map((message) => `${message.name ?? (message.is_user ? ctx.name1 : ctx.name2)}: ${String(message.mes ?? '').slice(0, 500)}`).join('\n');
 }
 
-async function judge(draft, facts, recent) {
-    const batches = buildChecks(draft, facts, recent);
+async function judge(draft, facts, recent, speaker) {
+    const relevance = buildRelevanceChecks(draft, facts, recent);
+    const relevanceAnswers = [];
+    for (const batch of relevance) {
+        const body = await requestJev(batch.state, batch.questions);
+        relevanceAnswers.push(body.answers);
+    }
+    const related = selectRelevantFacts(draft, relevance, relevanceAnswers);
+    const batches = buildChecks(draft, related, recent, speaker);
     const found = [];
     for (const batch of batches) {
         const body = await requestJev(batch.state, batch.questions);
@@ -271,7 +374,9 @@ async function judge(draft, facts, recent) {
 function correctionPrompt(draft, flagged) {
     const issues = flagged.map((item) => ({
         segment: item.segmentIndex + 1,
+        issue: item.kind === 'knowledge_leak' ? 'This character acts on information they have not learned.' : 'Current story state conflicts with an established fact.',
         established_fact: item.fact.text,
+        explicitly_unknown_to: Object.entries(normalizeKnowledge(item.fact.knowledge)).filter(([, state]) => state === 'unknown').map(([name]) => name),
         source: item.fact.sourceText ?? '',
         conflicting_passage: item.segment.slice(0, 1250)
     }));
@@ -309,21 +414,21 @@ async function runHidden(key, lastMessage) {
     try {
         const ctx = context();
         if (!stillSameChat(key, lastMessage)) throw new Error('대화가 바뀌어 생성을 중단했어요.');
-        const facts = data(false)?.facts.filter((item) => item.active).map((item) => ({ ...item })) ?? [];
+        const facts = data(false)?.facts.filter((item) => item.active && !item.supersededBy).map((item) => ({ ...item })) ?? [];
         if (!apiKey()) throw new Error('확장 설정에 Jev API 키를 먼저 입력해 주세요.');
         const recent = recentChat(ctx);
         status('메인 AI가 숨은 초안을 작성 중이에요…');
         const draft = String(await ctx.generateQuietPrompt({ quietPrompt: 'Write the next in-character roleplay reply to the latest user message. Output only the reply, with no preface or explanation.' }) ?? '').trim();
         if (!stillSameChat(key, lastMessage)) throw new Error('대화가 바뀌어 생성을 중단했어요.');
-        status('Jev가 승인된 사실과 초안을 비교 중이에요…');
-        const flagged = await judge(draft, facts, recent);
+        status('Jev가 초안과 관련된 사실을 찾고 검수 중이에요…');
+        const flagged = await judge(draft, facts, recent, ctx.name2);
         let final = draft;
         if (flagged.length) {
             status(`설정 충돌 ${flagged.length}곳을 발견했어요. 메인 AI에게 수정 요청 중이에요…`);
             final = String(await ctx.generateQuietPrompt({ quietPrompt: correctionPrompt(draft, flagged) }) ?? '').trim();
             if (!final) throw new Error('수정 답변이 비어 있어 게시하지 않았어요.');
             status('수정 답변을 한 번 더 확인하고 있어요…');
-            const again = await judge(final, facts, recent);
+            const again = await judge(final, facts, recent, ctx.name2);
             if (again.length) throw new Error(`재검수 후에도 설정 충돌 ${again.length}곳이 남아 있어 답변을 표시하지 않았어요.`);
         }
         if (!final || final.length > 18000) throw new Error('최종 답변의 길이를 확인할 수 없어 게시하지 않았어요.');
@@ -336,7 +441,7 @@ async function runHidden(key, lastMessage) {
 globalThis.memorybeanGenerationInterceptor = async function (_promptChat, _size, abort, type) {
     const ctx = context();
     if (!settings().enabled || ![undefined, 'normal'].includes(type) || !chatKey(ctx)) return;
-    const confirmed = data(false)?.facts.filter((fact) => fact.active) ?? [];
+    const confirmed = data(false)?.facts.filter((fact) => fact.active && !fact.supersededBy) ?? [];
     if (!confirmed.length) return;
     abort(true);
     if (extracting) { status('이전 대화를 수집하는 동안에는 답변 생성을 보류했어요.'); return; }
@@ -488,9 +593,20 @@ async function main() {
         const value = data();
         const text = $id('newfact').value.trim();
         if (!value || !text) return;
-        if (value.facts.length >= MAX_FACTS) { status('기억할 사실은 최대 80개예요.'); return; }
-        value.facts.push({ id: newId(), text: text.slice(0, 300), active: true, scope: 'always' });
-        $id('newfact').value = ''; await save(); render();
+        try {
+            approveFact(value, { id: newId(), text: text.slice(0, 300), scope: 'always', knowledge: {} }, $id('replaces').value || null);
+            $id('newfact').value = '';
+            $id('replaces').value = '';
+            await save(); render();
+        } catch (error) { status(error.message); }
+    });
+    $id('endscene')?.addEventListener('click', async () => {
+        const value = data();
+        if (!value) return;
+        const temporary = value.facts.filter((fact) => fact.active && !fact.supersededBy && fact.scope === 'scene');
+        for (const fact of temporary) fact.active = false;
+        await save(); render();
+        status(temporary.length ? `임시 사실 ${temporary.length}개를 껐어요. 다시 켜면 복구할 수 있어요.` : '현재 켜진 임시 사실이 없어요.');
     });
     $id('extract')?.addEventListener('click', () => { void collectHistory(); });
     $id('stop')?.addEventListener('click', () => { stopExtractionRequested = true; status('진행 중인 묶음을 마치고 수집을 멈출게요.'); });
