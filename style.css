@@ -70,3 +70,14 @@
   #memorybean .memorybean-overview { gap: 10px; }
   #memorybean .memorybean-tabs { margin-bottom: 14px; }
 }
+
+#memorybean .memorybean-guide { margin: 0 0 14px; padding-bottom: 12px; border-bottom: 1px solid var(--SmartThemeBorderColor); font-size: .88em; }
+#memorybean .memorybean-guide ol { margin: 8px 0; padding-left: 20px; line-height: 1.7; }
+#memorybean .memorybean-guide li + li { margin-top: 6px; }
+#memorybean .memorybean-profile-select { display: block; width: 100%; }
+#memorybean .memorybean-translation-tools { margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--SmartThemeBorderColor); }
+#memorybean .memorybean-translation-tools > .memorybean-muted { display: block; margin-top: 7px; }
+#memorybean .memorybean-translation-tools .memorybean-help-fold { margin: 5px 0 0; }
+#memorybean .memorybean-original { margin-top: 9px; font-size: .83em; opacity: .8; }
+#memorybean .memorybean-original .memorybean-text { margin-top: 7px; }
+#memorybean .memorybean-empty { white-space: pre-line; }

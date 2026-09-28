@@ -197,3 +197,56 @@ export function parseFactCandidates(raw, sourceMessages, existingFacts = []) {
         return [{ id: newId(), text: value, sourceId: source.id, sourceText: source.text.slice(0, 350), scope: fact.scope === 'scene' ? 'scene' : 'always', knowledge: normalizeKnowledge(fact.knowledge), entity: String(fact.entity ?? '').trim().slice(0, 60), attribute: String(fact.attribute ?? '').trim().slice(0, 60), replacesId: previous?.id ?? null, active: false }];
     });
 }
+
+export function availableProfiles(ctx) {
+    const service = ctx.ConnectionManagerRequestService;
+    const profiles = typeof service?.getSupportedProfiles === 'function'
+        ? service.getSupportedProfiles() : ctx.extensionSettings?.connectionManager?.profiles;
+    return (Array.isArray(profiles) ? profiles : []).filter((profile) => typeof profile?.id === 'string' && profile.id);
+}
+
+export async function generateUtility(ctx, prompt, profileId = '', maxTokens = 6000) {
+    let response;
+    if (profileId) {
+        const profile = availableProfiles(ctx).find((item) => item.id === profileId);
+        if (!profile) throw new Error('선택한 연결 프로필이 없거나 지원되지 않아요. 설정에서 다시 선택해 주세요.');
+        const service = ctx.ConnectionManagerRequestService;
+        if (typeof service?.sendRequest !== 'function') throw new Error('이 실리태번에서 별도 연결 프로필 호출을 지원하지 않아요. 실리태번을 업데이트해 주세요.');
+        response = await service.sendRequest(profileId, [{ role: 'user', content: prompt }], maxTokens,
+            { stream: false, extractData: true, includePreset: false, includeInstruct: true });
+    } else {
+        if (typeof ctx.generateRaw !== 'function') throw new Error('현재 메인 API를 호출할 수 없어요. 별도 연결 프로필을 선택해 주세요.');
+        response = await ctx.generateRaw({ prompt, responseLength: maxTokens });
+    }
+    const content = typeof response === 'string' ? response : response?.content ?? response?.choices?.[0]?.message?.content ?? response?.text;
+    const text = Array.isArray(content) ? content.map((part) => typeof part === 'string' ? part : part?.text ?? '').join('\n') : content;
+    if (typeof text !== 'string' || !text.trim()) throw new Error('AI 응답이 비어 있어요. 선택한 프로필의 연결과 모델을 확인해 주세요.');
+    return text.trim();
+}
+
+export function hasTranslation(record) {
+    const ko = record.translatedKo;
+    return Boolean(ko && ko.originalText === record.text && ko.originalSource === (record.sourceText ?? '')
+        && typeof ko.text === 'string' && ko.text.trim()
+        && (!(record.sourceText ?? '').trim() || (typeof ko.sourceText === 'string' && ko.sourceText.trim())));
+}
+
+export function translationInput(records) {
+    return records.map((record, index) => ({ id: String(index), text: record.text, sourceText: record.sourceText ?? '' }));
+}
+
+export function parseTranslations(raw, inputs) {
+    let parsed;
+    try { parsed = JSON.parse(String(raw).replace(/^\s*```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim()); }
+    catch { throw new Error('번역 응답 형식이 맞지 않아 이번 묶음은 저장하지 않았어요.'); }
+    if (!Array.isArray(parsed.items) || parsed.items.length !== inputs.length) throw new Error('번역 항목 수가 맞지 않아요. 미번역본 전체 번역으로 다시 시도해 주세요.');
+    const byId = new Map(parsed.items.map((item) => [String(item?.id), item]));
+    return inputs.map((input) => {
+        const item = byId.get(input.id);
+        if (!item || typeof item.text !== 'string' || !item.text.trim() || item.text.length > 3000
+            || (input.sourceText.trim() && (typeof item.sourceText !== 'string' || !item.sourceText.trim() || item.sourceText.length > 5000))) {
+            throw new Error('일부 번역이 비어 있거나 잘못되어 이번 묶음은 저장하지 않았어요.');
+        }
+        return { text: item.text.trim(), sourceText: input.sourceText.trim() ? item.sourceText.trim() : '', originalText: input.text, originalSource: input.sourceText };
+    });
+}
