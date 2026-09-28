@@ -1,0 +1,28 @@
+#memorybean, #memorybean *, #memorybean *::before, #memorybean *::after { text-shadow: none !important; }
+#memorybean .memorybean-panel { padding: 10px 8px 14px; color: var(--SmartThemeBodyColor); }
+#memorybean .memorybean-lead { margin: 4px 0 13px; line-height: 1.55; }
+#memorybean .memorybean-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+#memorybean .memorybean-top { justify-content: space-between; }
+#memorybean .memorybean-toggle { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-weight: 600; }
+#memorybean .memorybean-state { font-size: .85em; opacity: .85; }
+#memorybean .memorybean-section { border-top: 1px solid var(--SmartThemeBorderColor); padding-top: 14px; margin-top: 14px; }
+#memorybean .memorybean-section-title { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 10px; }
+#memorybean .memorybean-section-title span, #memorybean .memorybean-muted { opacity: .72; font-size: .85em; }
+#memorybean .memorybean-label { display: block; margin: 10px 0 6px; font-size: .9em; }
+#memorybean .memorybean-help { margin: 7px 0 0; font-size: .85em; line-height: 1.55; opacity: .8; }
+#memorybean .memorybean-add { display: flex; align-items: stretch; gap: 8px; margin-bottom: 10px; }
+#memorybean textarea, #memorybean input[type="password"] { flex: 1; min-width: 0; resize: vertical; color: var(--SmartThemeBodyColor); background: var(--SmartThemeBlurTintColor); border: 1px solid var(--SmartThemeBorderColor); border-radius: 6px; padding: 8px; font: inherit; line-height: 1.45; }
+#memorybean input { accent-color: var(--SmartThemeQuoteColor); }
+#memorybean textarea { caret-color: var(--SmartThemeBodyColor); }
+#memorybean textarea:focus-visible, #memorybean button:focus-visible, #memorybean input:focus-visible { outline-color: var(--SmartThemeQuoteColor); }
+#memorybean textarea::placeholder { color: var(--SmartThemeBodyColor); opacity: .58; }
+#memorybean button { box-shadow: none; text-shadow: none; cursor: pointer; }
+#memorybean .memorybean-list { display: grid; gap: 8px; }
+#memorybean .memorybean-item { border: 1px solid var(--SmartThemeBorderColor); border-radius: 7px; padding: 9px 10px; background: var(--SmartThemeBlurTintColor); }
+#memorybean .memorybean-text { line-height: 1.5; overflow-wrap: anywhere; white-space: pre-wrap; }
+#memorybean .memorybean-meta { font-size: .8em; opacity: .72; margin-top: 5px; overflow-wrap: anywhere; }
+#memorybean .memorybean-actions { display: flex; align-items: center; gap: 9px; margin-top: 8px; flex-wrap: wrap; }
+#memorybean .memorybean-actions button { font-size: .85em; padding: 4px 9px; }
+#memorybean .memorybean-empty { margin: 3px 0 6px; opacity: .7; font-size: .88em; }
+#memorybean .memorybean-status { padding: 9px 10px; margin: 15px 0 0; border: 1px solid var(--SmartThemeBorderColor); border-radius: 6px; line-height: 1.45; overflow-wrap: anywhere; }
+@media (max-width: 480px) { #memorybean .memorybean-add { flex-direction: column; } #memorybean .memorybean-add button { align-self: flex-start; } }

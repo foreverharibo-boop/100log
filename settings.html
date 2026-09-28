@@ -1,0 +1,32 @@
+<section id="memorybean" class="inline-drawer">
+  <div class="inline-drawer-toggle inline-drawer-header">
+    <b>🌱 메모리콩</b>
+    <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+  </div>
+  <div class="inline-drawer-content memorybean-panel">
+    <p class="memorybean-lead">기억해 둘 사실을 골라 두면, 답변을 보여주기 전에 설정 충돌을 확인해요.</p>
+    <div class="memorybean-section memorybean-connection">
+      <label for="memorybean-key" class="memorybean-label"><strong>Jev API 키</strong></label>
+      <div class="memorybean-add"><input id="memorybean-key" type="password" autocomplete="off" spellcheck="false" placeholder="TypeSafe API 키를 입력해 주세요"><button type="button" id="memorybean-test" class="menu_button">연결 확인</button><button type="button" id="memorybean-clearkey" class="menu_button">키 삭제</button></div>
+      <p class="memorybean-help">키는 이 브라우저에만 저장돼요. Jev로 보낼 때만 사용하며, 공유 브라우저에서는 키를 삭제해 주세요.</p>
+    </div>
+    <div class="memorybean-row memorybean-top">
+      <label class="memorybean-toggle"><input id="memorybean-enabled" type="checkbox"><span>자동 검수 켜기</span></label>
+      <span id="memorybean-server" class="memorybean-state" aria-live="polite">API 키를 입력해 주세요</span>
+    </div>
+    <p class="memorybean-help">일반 답변 생성에 적용돼요. 사실을 승인한 뒤 켜 주세요. 검수에 실패하면 초안은 표시하지 않아요.</p>
+    <div class="memorybean-section">
+      <div class="memorybean-section-title"><strong>기억할 사실</strong><span id="memorybean-count"></span></div>
+      <div id="memorybean-facts" class="memorybean-list"></div>
+      <label for="memorybean-newfact" class="memorybean-label">직접 추가</label>
+      <div class="memorybean-add"><textarea id="memorybean-newfact" rows="2" placeholder="예: 서연의 왼쪽 손목에는 오래된 흉터가 있다."></textarea><button type="button" id="memorybean-add" class="menu_button">추가</button></div>
+      <div class="memorybean-row"><button type="button" id="memorybean-extract" class="menu_button">히스토리에서 후보 찾기</button><span id="memorybean-progress" class="memorybean-muted"></span></div>
+      <p class="memorybean-help">한 번에 대화 40개씩 읽어요. 추출된 후보는 확인 후 승인해야 검수에 사용돼요.</p>
+    </div>
+    <div class="memorybean-section">
+      <div class="memorybean-section-title"><strong>사실 후보</strong><span id="memorybean-candidate-count"></span></div>
+      <div id="memorybean-candidates" class="memorybean-list"></div>
+    </div>
+    <p id="memorybean-status" class="memorybean-status" role="status" aria-live="polite">준비 중이에요.</p>
+  </div>
+</section>

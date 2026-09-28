@@ -1,0 +1,9 @@
+{
+  "display_name": "🌱메모리콩",
+  "js": "index.js",
+  "css": "style.css",
+  "author": "담은",
+  "version": "0.1.1",
+  "minimum_client_version": "1.12.14",
+  "generate_interceptor": "memorybeanGenerationInterceptor"
+}
