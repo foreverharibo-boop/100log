@@ -1,4 +1,5 @@
 #memorybean, #memorybean *, #memorybean *::before, #memorybean *::after { text-shadow: none !important; }
+#memorybean-wand-button, #memorybean-wand-button * { text-shadow: none !important; }
 #memorybean .memorybean-panel { padding: 10px 8px 14px; color: var(--SmartThemeBodyColor); }
 #memorybean .memorybean-lead { margin: 4px 0 13px; line-height: 1.55; }
 #memorybean .memorybean-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -10,13 +11,20 @@
 #memorybean .memorybean-section-title span, #memorybean .memorybean-muted { opacity: .72; font-size: .85em; }
 #memorybean .memorybean-label { display: block; margin: 10px 0 6px; font-size: .9em; }
 #memorybean .memorybean-help { margin: 7px 0 0; font-size: .85em; line-height: 1.55; opacity: .8; }
-#memorybean .memorybean-add { display: flex; align-items: stretch; gap: 8px; margin-bottom: 10px; }
+#memorybean .memorybean-connection-error[hidden] { display: none; }
+#memorybean .memorybean-connection-error { opacity: 1; padding: 7px 9px; border: 1px solid var(--SmartThemeBorderColor); border-radius: 6px; }
+#memorybean .memorybean-add { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+#memorybean .memorybean-connection input[type="password"] { flex: 1 1 100%; }
+#memorybean .memorybean-add textarea { flex: 1 1 100%; }
 #memorybean textarea, #memorybean input[type="password"] { flex: 1; min-width: 0; resize: vertical; color: var(--SmartThemeBodyColor); background: var(--SmartThemeBlurTintColor); border: 1px solid var(--SmartThemeBorderColor); border-radius: 6px; padding: 8px; font: inherit; line-height: 1.45; }
 #memorybean input { accent-color: var(--SmartThemeQuoteColor); }
 #memorybean textarea { caret-color: var(--SmartThemeBodyColor); }
 #memorybean textarea:focus-visible, #memorybean button:focus-visible, #memorybean input:focus-visible { outline-color: var(--SmartThemeQuoteColor); }
 #memorybean textarea::placeholder { color: var(--SmartThemeBodyColor); opacity: .58; }
 #memorybean button { box-shadow: none; text-shadow: none; cursor: pointer; }
+#memorybean .memorybean-add > button, #memorybean .memorybean-row > button, #memorybean .memorybean-actions > button { flex: 0 0 auto !important; width: auto !important; min-width: 0; max-width: 100%; white-space: nowrap; margin: 0; }
+#memorybean .memorybean-controls { align-items: center; }
+#memorybean .memorybean-controls .memorybean-muted { flex: 1 1 100%; }
 #memorybean .memorybean-list { display: grid; gap: 8px; }
 #memorybean .memorybean-item { border: 1px solid var(--SmartThemeBorderColor); border-radius: 7px; padding: 9px 10px; background: var(--SmartThemeBlurTintColor); }
 #memorybean .memorybean-text { line-height: 1.5; overflow-wrap: anywhere; white-space: pre-wrap; }
@@ -25,4 +33,12 @@
 #memorybean .memorybean-actions button { font-size: .85em; padding: 4px 9px; }
 #memorybean .memorybean-empty { margin: 3px 0 6px; opacity: .7; font-size: .88em; }
 #memorybean .memorybean-status { padding: 9px 10px; margin: 15px 0 0; border: 1px solid var(--SmartThemeBorderColor); border-radius: 6px; line-height: 1.45; overflow-wrap: anywhere; }
-@media (max-width: 480px) { #memorybean .memorybean-add { flex-direction: column; } #memorybean .memorybean-add button { align-self: flex-start; } }
+#memorybean-wand-overlay[hidden] { display: none !important; }
+#memorybean-wand-overlay, #memorybean-wand-overlay * { text-shadow: none !important; }
+#memorybean-wand-overlay { position: fixed; inset: 0; z-index: 10050; display: flex; justify-content: center; align-items: center; padding: 12px; background: var(--SmartThemeBlurTintColor); color: var(--SmartThemeBodyColor); text-shadow: none !important; }
+#memorybean-wand-popup { box-sizing: border-box; width: min(100%, 540px); max-height: min(86vh, 850px); overflow: hidden; display: flex; flex-direction: column; border: 1px solid var(--SmartThemeBorderColor); border-radius: 9px; background: var(--SmartThemeBlurTintColor); color: var(--SmartThemeBodyColor); box-shadow: none; text-shadow: none !important; }
+#memorybean-wand-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid var(--SmartThemeBorderColor); }
+#memorybean-wand-header button { width: auto !important; text-shadow: none !important; }
+#memorybean-wand-body { overflow-y: auto; padding: 6px 11px 12px; }
+#memorybean-wand-body #memorybean .inline-drawer-toggle { display: none; }
+#memorybean-wand-body #memorybean .inline-drawer-content { display: block !important; }

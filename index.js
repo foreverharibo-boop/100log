@@ -5,7 +5,11 @@ const KEY_STORAGE = 'memorybean.typesafeKey';
 const JEV_URL = 'https://api.typesafe.ai/v1/systemone';
 let busy = false;
 let extracting = false;
+let stopExtractionRequested = false;
 let statusText = '준비됐어요.';
+let settingsHome = null;
+let wandMenuObserver = null;
+let lastJevTransport = '직접 연결';
 
 const context = () => SillyTavern.getContext();
 const $id = (id) => document.getElementById(`memorybean-${id}`);
@@ -17,25 +21,48 @@ function apiKey() {
 async function requestJev(state, questions) {
     const key = apiKey();
     if (!key) throw new Error('확장 설정에 Jev API 키를 먼저 입력해 주세요.');
+    const body = JSON.stringify({ model: 'jev-latest', state, questions });
     let response;
+    let transport = '직접 연결';
     try {
         response = await fetch(JEV_URL, {
             method: 'POST',
             headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ model: 'jev-latest', state, questions }),
+            body,
             credentials: 'omit',
             referrerPolicy: 'no-referrer',
             signal: AbortSignal.timeout(25000)
         });
     } catch (error) {
         if (error?.name === 'TimeoutError') throw new Error('Jev API 응답 시간이 초과됐어요.');
-        throw new Error('Jev API 직접 연결에 실패했어요. 브라우저의 CORS 제한 또는 인터넷 연결을 확인해 주세요.');
+        const stHeaders = context().getRequestHeaders?.();
+        if (!stHeaders) throw new Error('브라우저 직접 연결이 막혔고, 실리태번의 프록시 요청 헤더를 가져오지 못했어요.');
+        try {
+            response = await fetch(`/proxy/${encodeURIComponent(JEV_URL)}`, {
+                method: 'POST',
+                headers: { ...stHeaders, Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+                body,
+                credentials: 'same-origin',
+                signal: AbortSignal.timeout(25000)
+            });
+            transport = '실리태번 내장 프록시';
+        } catch (proxyError) {
+            if (proxyError?.name === 'TimeoutError') throw new Error('실리태번 내장 프록시를 통한 Jev 연결 시간이 초과됐어요.');
+            throw new Error('직접 연결과 실리태번 내장 프록시가 모두 실패했어요. 서버 인터넷 연결을 확인해 주세요.');
+        }
+        if (response.status === 404) throw new Error('브라우저 직접 연결이 막혔고 실리태번 내장 프록시가 꺼져 있어요. SillyTavern/config.yaml에서 enableCorsProxy: true로 바꾸고 서버를 다시 시작해 주세요.');
     }
-    if (!response.ok) throw new Error(`Jev API 오류 (${response.status}). 키와 사용 가능 상태를 확인해 주세요.`);
-    let body;
-    try { body = await response.json(); } catch { throw new Error('Jev 응답을 읽지 못했어요.'); }
-    if (!body?.answers || typeof body.answers !== 'object') throw new Error('Jev 응답에 판정 결과가 없어요.');
-    return body;
+    if (!response.ok) {
+        if (response.status === 401) throw new Error('Jev 인증 실패 (401). TypeSafe AI에서 발급한 API 키가 맞는지 확인해 주세요.');
+        if (response.status === 422) throw new Error('Jev 요청 형식 오류 (422). 메모리콩을 최신 버전으로 업데이트해 주세요.');
+        if (response.status === 429) throw new Error('Jev 요청 한도 초과 (429). 잠시 후 다시 시도해 주세요.');
+        throw new Error(`Jev 연결 오류 (${response.status}). 서비스 상태 또는 실리태번 프록시 설정을 확인해 주세요.`);
+    }
+    let result;
+    try { result = await response.json(); } catch { throw new Error('Jev 응답을 읽지 못했어요.'); }
+    if (!result?.answers || typeof result.answers !== 'object') throw new Error('Jev 응답에 판정 결과가 없어요.');
+    lastJevTransport = transport;
+    return result;
 }
 
 function settings() {
@@ -80,6 +107,7 @@ function render() {
     $id('test').disabled = busy;
     $id('clearkey').disabled = busy;
     $id('extract').disabled = busy || extracting || !value;
+    $id('stop').disabled = !extracting;
     $id('add').disabled = busy || !value;
     $id('newfact').disabled = busy || !value;
     $id('facts').replaceChildren();
@@ -136,32 +164,49 @@ function parseJson(raw) {
     return JSON.parse(clean);
 }
 
-async function extract() {
+export async function collectHistory() {
     const ctx = context();
     const key = chatKey(ctx);
     const value = data();
     if (!key || !value || extracting || busy) return;
-    const start = value.extractionCursor;
-    if (start >= ctx.chat.length) { status('현재 대화를 끝까지 읽었어요.'); return; }
-    const rows = sourceRows(ctx, start);
-    extracting = true; render(); status(`대화 ${start + 1}~${Math.min(start + 40, ctx.chat.length)}에서 사실 후보를 찾고 있어요…`);
+    const total = ctx.chat.length;
+    if (value.extractionCursor >= total) { status('현재 대화를 끝까지 읽었어요. 이후 메시지가 생기면 다시 수집할 수 있어요.'); return; }
+    extracting = true;
+    stopExtractionRequested = false;
+    render();
+    let collected = 0;
     try {
-        let candidates = [];
-        if (rows.length) {
-            const prompt = [
-                'Extract up to 12 durable, concrete RP continuity facts explicitly supported by these chat messages. Return JSON only: {"facts":[{"text":"...","sourceId":0,"scope":"always"}]}. Use scope "scene" for temporary scene details. Keep the language used in the chat. Do not infer hidden intentions; dialogue claims may be untrue, so label candidates for human review. Cite the actual numbered sourceId of each fact. No commentary.',
-                JSON.stringify(rows)
-            ].join('\n\n');
-            const raw = await ctx.generateRaw({ prompt });
-            candidates = parseFactCandidates(raw, rows);
+        while (value.extractionCursor < total && !stopExtractionRequested) {
+            const start = value.extractionCursor;
+            const rows = sourceRows(ctx, start);
+            status(`이전 대화 수집 중: ${start}/${total}개 읽음 · 후보 ${collected}개`);
+            let candidates = [];
+            if (rows.length) {
+                const prompt = [
+                    'Extract up to 12 durable, concrete RP continuity facts explicitly supported by these chat messages. Return JSON only: {"facts":[{"text":"...","sourceId":0,"scope":"always"}]}. Use scope "scene" for temporary scene details. Keep the language used in the chat. Do not infer hidden intentions; dialogue claims may be untrue, so label candidates for human review. Cite the actual numbered sourceId of each fact. No commentary.',
+                    JSON.stringify(rows)
+                ].join('\n\n');
+                const raw = await ctx.generateRaw({ prompt });
+                candidates = parseFactCandidates(raw, rows);
+            }
+            if (chatKey(context()) !== key || data(false) !== value) { status('채팅이 바뀌어 수집을 멈췄어요.'); return; }
+            const existing = new Set([...value.facts, ...value.candidates].map((entry) => entry.text.trim().toLocaleLowerCase()));
+            const fresh = candidates.filter((entry) => {
+                const text = entry.text.trim().toLocaleLowerCase();
+                if (existing.has(text)) return false;
+                existing.add(text);
+                return true;
+            });
+            value.candidates.push(...fresh);
+            collected += fresh.length;
+            value.extractionCursor = Math.min(start + 40, total);
+            await save();
+            render();
         }
-        if (chatKey(context()) !== key || data(false) !== value) { status('채팅이 바뀌어 추출 결과를 버렸어요.'); return; }
-        const existing = new Set([...value.facts, ...value.candidates].map((entry) => entry.text.trim().toLocaleLowerCase()));
-        const fresh = candidates.filter((entry) => !existing.has(entry.text.trim().toLocaleLowerCase()));
-        value.candidates.push(...fresh);
-        value.extractionCursor = Math.min(start + 40, ctx.chat.length);
-        await save(); status(`후보 ${fresh.length}개를 찾았어요. 출처를 확인하고 승인해 주세요.`);
-    } catch (error) { console.error('[메모리콩] 후보 추출 실패', error); status(`추출 실패: ${error.message}`); }
+        status(stopExtractionRequested
+            ? `${value.extractionCursor}/${total}개까지 읽고 멈췄어요. 후보 ${collected}개를 추가했어요.`
+            : `현재 채팅의 이전 대화 ${total}개를 끝까지 읽었어요. 새 후보 ${collected}개를 확인하고 승인해 주세요.`);
+    } catch (error) { console.error('[메모리콩] 후보 추출 실패', error); status(`수집을 멈췄어요 (${value.extractionCursor}/${total}개까지 저장됨): ${error.message}`); }
     finally { extracting = false; render(); }
 }
 
@@ -250,6 +295,7 @@ globalThis.memorybeanGenerationInterceptor = async function (_promptChat, _size,
     const confirmed = data(false)?.facts.filter((fact) => fact.active) ?? [];
     if (!confirmed.length) return;
     abort(true);
+    if (extracting) { status('이전 대화를 수집하는 동안에는 답변 생성을 보류했어요.'); return; }
     if (busy) { status('이미 답변을 검수하고 있어요. 잠시 기다려 주세요.'); return; }
     const last = ctx.chat.at(-1);
     if (!last?.is_user) { status('마지막 메시지가 사용자 메시지가 아니라 생성 요청을 멈췄어요.'); return; }
@@ -260,9 +306,83 @@ globalThis.memorybeanGenerationInterceptor = async function (_promptChat, _size,
     setTimeout(() => { void runHidden(key, last); }, 300);
 };
 
+function closeWand() {
+    const overlay = document.getElementById('memorybean-wand-overlay');
+    const panel = document.getElementById('memorybean');
+    if (panel && settingsHome && panel.parentElement !== settingsHome) settingsHome.append(panel);
+    if (overlay) overlay.hidden = true;
+}
+
+function openWand() {
+    const panel = document.getElementById('memorybean');
+    if (!panel) return;
+    let overlay = document.getElementById('memorybean-wand-overlay');
+    if (!overlay) {
+        overlay = document.createElement('div');
+        overlay.id = 'memorybean-wand-overlay';
+        overlay.hidden = true;
+        const popup = document.createElement('div');
+        popup.id = 'memorybean-wand-popup';
+        popup.setAttribute('role', 'dialog');
+        popup.setAttribute('aria-label', '메모리콩 설정');
+        const header = document.createElement('div');
+        header.id = 'memorybean-wand-header';
+        const title = document.createElement('strong');
+        title.textContent = '🌱 메모리콩';
+        const close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'menu_button';
+        close.textContent = '닫기';
+        close.addEventListener('click', closeWand);
+        header.append(title, close);
+        const body = document.createElement('div');
+        body.id = 'memorybean-wand-body';
+        popup.append(header, body);
+        overlay.append(popup);
+        overlay.addEventListener('click', (event) => { if (event.target === overlay) closeWand(); });
+        document.body.append(overlay);
+        document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && !overlay.hidden) closeWand(); });
+    }
+    if (!settingsHome) settingsHome = panel.parentElement;
+    document.getElementById('memorybean-wand-body').append(panel);
+    overlay.hidden = false;
+    const menu = document.getElementById('extensionsMenu');
+    if (menu) menu.style.display = 'none';
+    render();
+}
+
+function addWandButton() {
+    if (document.getElementById('memorybean-wand-button')) {
+        wandMenuObserver?.disconnect();
+        wandMenuObserver = null;
+        return;
+    }
+    const menu = document.getElementById('extensionsMenu');
+    if (!menu) {
+        if (!wandMenuObserver && document.body && typeof MutationObserver !== 'undefined') {
+            wandMenuObserver = new MutationObserver(addWandButton);
+            wandMenuObserver.observe(document.body, { childList: true, subtree: true });
+        }
+        return;
+    }
+    wandMenuObserver?.disconnect();
+    wandMenuObserver = null;
+    const button = document.createElement('div');
+    button.id = 'memorybean-wand-button';
+    button.className = 'list-group-item flex-container flexGap5 interactable';
+    button.tabIndex = 0;
+    button.setAttribute('role', 'button');
+    button.innerHTML = '<span class="extensionsMenuExtensionButton" aria-hidden="true">🌱</span><span>메모리콩</span>';
+    button.addEventListener('click', openWand);
+    button.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openWand(); }
+    });
+    menu.append(button);
+}
+
 async function main() {
     const ctx = context();
-    if ($id('enabled')) return;
+    if ($id('enabled')) { addWandButton(); return; }
     const response = await fetch(new URL('./settings.html', import.meta.url), { credentials: 'same-origin' });
     if (!response.ok) throw new Error(`설정 화면 파일을 읽지 못했어요 (${response.status}).`);
     const html = await response.text();
@@ -271,8 +391,15 @@ async function main() {
     container.insertAdjacentHTML('beforeend', html);
     if ($id('key')) $id('key').value = apiKey();
     if ($id('server')) $id('server').textContent = apiKey() ? '키 저장됨 · 연결 확인 필요' : 'API 키를 입력해 주세요';
+    function connectionError(message = '') {
+        const element = $id('connection-error');
+        if (!element) return;
+        element.textContent = message;
+        element.hidden = !message;
+    }
     $id('key')?.addEventListener('input', () => {
         $id('server').textContent = '키 입력 중';
+        connectionError();
     });
     $id('key')?.addEventListener('change', () => {
         try {
@@ -291,9 +418,11 @@ async function main() {
             const result = await requestJev('The sky is blue.', { test: { type: 'noul', instructions: 'Does the sentence state a color of the sky?' } });
             if (result.answers.test?.type !== 'noul') throw new Error('Jev 테스트 응답 형식이 맞지 않아요.');
             $id('server').textContent = 'Jev 연결됨';
-            status('Jev에 직접 연결됐어요.');
+            connectionError();
+            status(`Jev에 연결됐어요 (${lastJevTransport}).`);
         } catch (error) {
             $id('server').textContent = '연결 실패';
+            connectionError(error.message);
             status(error.message);
         }
     });
@@ -301,6 +430,7 @@ async function main() {
         localStorage.removeItem(KEY_STORAGE);
         $id('key').value = '';
         $id('server').textContent = 'API 키를 입력해 주세요';
+        connectionError();
         settings().enabled = false;
         ctx.saveSettingsDebounced();
         status('브라우저에 저장된 키를 삭제했어요.');
@@ -318,9 +448,11 @@ async function main() {
         value.facts.push({ id: newId(), text: text.slice(0, 300), active: true, scope: 'always' });
         $id('newfact').value = ''; await save(); render();
     });
-    $id('extract')?.addEventListener('click', () => { void extract(); });
+    $id('extract')?.addEventListener('click', () => { void collectHistory(); });
+    $id('stop')?.addEventListener('click', () => { stopExtractionRequested = true; status('진행 중인 묶음을 마치고 수집을 멈출게요.'); });
     ctx.eventSource.on((ctx.eventTypes ?? ctx.event_types).CHAT_CHANGED, () => { status('준비됐어요.'); render(); });
     render();
+    addWandButton();
 }
 
 const initialContext = context();

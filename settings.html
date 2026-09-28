@@ -8,7 +8,8 @@
     <div class="memorybean-section memorybean-connection">
       <label for="memorybean-key" class="memorybean-label"><strong>Jev API 키</strong></label>
       <div class="memorybean-add"><input id="memorybean-key" type="password" autocomplete="off" spellcheck="false" placeholder="TypeSafe API 키를 입력해 주세요"><button type="button" id="memorybean-test" class="menu_button">연결 확인</button><button type="button" id="memorybean-clearkey" class="menu_button">키 삭제</button></div>
-      <p class="memorybean-help">키는 이 브라우저에만 저장돼요. Jev로 보낼 때만 사용하며, 공유 브라우저에서는 키를 삭제해 주세요.</p>
+      <p id="memorybean-connection-error" class="memorybean-help memorybean-connection-error" role="alert" hidden></p>
+      <p class="memorybean-help">키는 이 브라우저에만 저장돼요. 직접 연결이 브라우저에서 차단되면 실리태번의 내장 프록시로 다시 시도해요. 실패 사유는 키 입력란 아래에 표시돼요.</p>
     </div>
     <div class="memorybean-row memorybean-top">
       <label class="memorybean-toggle"><input id="memorybean-enabled" type="checkbox"><span>자동 검수 켜기</span></label>
@@ -20,8 +21,8 @@
       <div id="memorybean-facts" class="memorybean-list"></div>
       <label for="memorybean-newfact" class="memorybean-label">직접 추가</label>
       <div class="memorybean-add"><textarea id="memorybean-newfact" rows="2" placeholder="예: 서연의 왼쪽 손목에는 오래된 흉터가 있다."></textarea><button type="button" id="memorybean-add" class="menu_button">추가</button></div>
-      <div class="memorybean-row"><button type="button" id="memorybean-extract" class="menu_button">히스토리에서 후보 찾기</button><span id="memorybean-progress" class="memorybean-muted"></span></div>
-      <p class="memorybean-help">한 번에 대화 40개씩 읽어요. 추출된 후보는 확인 후 승인해야 검수에 사용돼요.</p>
+      <div class="memorybean-row memorybean-controls"><button type="button" id="memorybean-extract" class="menu_button">이전 대화 전체 수집</button><button type="button" id="memorybean-stop" class="menu_button" disabled>수집 중단</button><span id="memorybean-progress" class="memorybean-muted"></span></div>
+      <p class="memorybean-help">현재 열린 채팅의 처음부터 최근 메시지까지 40개씩 차례로 읽어요. 후보는 원문을 확인하고 승인해야 검수에 사용돼요.</p>
     </div>
     <div class="memorybean-section">
       <div class="memorybean-section-title"><strong>사실 후보</strong><span id="memorybean-candidate-count"></span></div>
