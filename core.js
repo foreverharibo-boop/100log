@@ -44,54 +44,6 @@ function tokens(text) {
     return [...new Set(String(text).toLocaleLowerCase().match(/[\p{L}\p{N}]{2,}/gu) ?? [])];
 }
 
-function cosineSimilarity(left, right) {
-    if (!left?.length || left.length !== right?.length) return -1;
-    let score = 0;
-    let leftMagnitude = 0;
-    let rightMagnitude = 0;
-    for (let index = 0; index < left.length; index++) {
-        score += left[index] * right[index];
-        leftMagnitude += left[index] * left[index];
-        rightMagnitude += right[index] * right[index];
-    }
-    return leftMagnitude && rightMagnitude ? score / Math.sqrt(leftMagnitude * rightMagnitude) : -1;
-}
-
-export function packEmbedding(values) {
-    if (!Array.isArray(values) || values.length < 8 || values.some((value) => !Number.isFinite(value))) throw new Error('임베딩 벡터 형식이 올바르지 않아요.');
-    let magnitude = Math.sqrt(values.reduce((sum, value) => sum + value * value, 0));
-    if (!magnitude) throw new Error('비어 있는 임베딩 벡터를 받았어요.');
-    const normalized = values.map((value) => value / magnitude);
-    const max = Math.max(...normalized.map(Math.abs));
-    const scale = max / 127;
-    const bytes = new Uint8Array(normalized.length);
-    normalized.forEach((value, index) => { bytes[index] = Math.max(1, Math.min(255, Math.round(value / scale) + 128)); });
-    let binary = '';
-    for (let start = 0; start < bytes.length; start += 8192) binary += String.fromCharCode(...bytes.subarray(start, start + 8192));
-    return { dimensions: bytes.length, scale, data: btoa(binary) };
-}
-
-export function unpackEmbedding(packed) {
-    if (!packed?.data || !Number.isInteger(packed.dimensions) || packed.dimensions < 8 || !Number.isFinite(packed.scale) || packed.scale <= 0) return null;
-    try {
-        const binary = atob(packed.data);
-        if (binary.length !== packed.dimensions) return null;
-        return Float32Array.from(binary, (character) => (character.charCodeAt(0) - 128) * packed.scale);
-    } catch { return null; }
-}
-
-export function rankFactsByVectors(queryVector, facts, entries, limit = 24) {
-    const active = facts.filter((fact) => fact?.active && !fact.archived && !fact.supersededBy && fact.text).slice(0, MAX_FACTS);
-    return active.flatMap((fact) => {
-        const vector = unpackEmbedding(entries?.[fact.id]?.vector);
-        if (!vector) return [];
-        const knowledge = normalizeKnowledge(fact.knowledge);
-        const safety = fact.pinned ? .18 : (fact.kind === 'commitment' ? .09 : Object.values(knowledge).includes('unknown') ? .07 : 0);
-        return [{ fact, score: cosineSimilarity(queryVector, vector) + safety }];
-    }).sort((left, right) => right.score - left.score || (right.fact.createdAt || 0) - (left.fact.createdAt || 0))
-        .slice(0, Math.max(1, Math.min(MAX_FACTS, Number(limit) || 24))).map(({ fact }) => fact);
-}
-
 export function pickFacts(segment, facts, limit = 6) {
     const words = tokens(segment);
     return facts.map((fact) => {
@@ -161,78 +113,35 @@ export function suggestReplacement(value, candidate) {
     return matching.sort((a, b) => b.sourceId - a.sourceId)[0]?.id ?? null;
 }
 
-export function buildRelevanceChecks(draft, facts, recent = '') {
-    chunksOfDraft(draft);
-    const active = facts.filter((fact) => fact.active && !fact.archived && !fact.supersededBy).slice(0, MAX_FACTS);
-    const batches = [];
-    for (let start = 0; start < active.length; start += 20) {
-        const batchFacts = active.slice(start, start + 20);
-        const questions = {};
-        batchFacts.forEach((_fact, index) => {
-            questions[`r${index}`] = {
-                type: 'noul',
-                instructions: `Is the fact at facts[${index}] relevant to any statement in draft, including synonyms, paraphrases, changed states, or information known by a character? Use recent_chat to resolve names and context. Answer yes when relevance is uncertain.`
-            };
-        });
-        batches.push({ state: { draft, recent_chat: recent.slice(-6000), facts: batchFacts.map((fact) => ({ text: fact.text, knowledge: normalizeKnowledge(fact.knowledge), source: fact.sourceText ?? '' })) }, questions, facts: batchFacts });
-    }
-    return batches;
-}
-
-export function selectRelevantFacts(draft, batches, answersByBatch, limit = 16) {
-    const scored = [];
-    batches.forEach((batch, batchIndex) => {
-        const answers = answersByBatch[batchIndex];
-        batch.facts.forEach((fact, index) => {
-            const answer = answers?.[`r${index}`];
-            if (answer?.type !== 'noul' || !Number.isFinite(answer.noul) || answer.noul < 0 || answer.noul > 1) throw new Error('Jev 관련 사실 판정 형식을 확인할 수 없어요.');
-            scored.push({ fact, score: answer.noul });
-        });
-    });
-    const lexical = new Set(pickFacts(draft, scored.map(({ fact }) => fact), limit).map((fact) => fact.id));
-    return scored.filter(({ fact, score }) => score >= .35 || lexical.has(fact.id))
-        .sort((a, b) => (b.score + (lexical.has(b.fact.id) ? .1 : 0)) - (a.score + (lexical.has(a.fact.id) ? .1 : 0)))
-        .slice(0, limit).map(({ fact }) => fact);
-}
-
 export function buildChecks(draft, facts, recent = '', speaker = '') {
-    const chunks = chunksOfDraft(draft);
-    if (chunks.length > 32) throw new Error('초안 문단이 너무 많아 검수를 중단했어요.');
-    const confirmed = facts.filter((fact) => fact?.active && !fact.archived && !fact.supersededBy && fact?.text).slice(0, 16);
-    const tasks = [];
-    chunks.forEach((part, segmentIndex) => {
-        for (const fact of confirmed) {
-            tasks.push({ segmentIndex, segment: part, fact });
-        }
+    const candidate = String(draft ?? '').trim();
+    chunksOfDraft(candidate);
+    const confirmed = facts.filter((fact) => fact?.active && !fact.archived && !fact.supersededBy && fact?.text).slice(0, MAX_FACTS);
+    if (!confirmed.length) return [];
+    const questions = {};
+    const tasks = confirmed.map((fact, index) => {
+        questions[`q${index}`] = {
+            type: 'choice',
+            instructions: `Compare the entire unpublished_reply with established_facts[${index}]. Decide whether the reply directly contradicts that fact in the current scene, or whether speaker clearly acts on information explicitly marked unknown to them. Ignore quoted claims, hypothetical statements, deliberate lies in dialogue, flashbacks, omniscient narration, and plausible changes that the recent chat actually shows. Choose no_conflict when the fact is unrelated. Choose unclear when evidence is insufficient.`,
+            criteria: {
+                contradiction: 'A clear, direct incompatibility with the established fact in the same time and scene.',
+                knowledge_leak: 'The speaker clearly acts upon or reveals the fact while their knowledge is explicitly marked unknown; not merely a narrator describing it.',
+                no_conflict: 'No clear contradiction; compatible, unrelated, or a plausible change over time.',
+                unclear: 'Cannot decide from the provided evidence.'
+            }
+        };
+        return { segmentIndex: 0, segment: '', fact };
     });
-    const batches = [];
-    for (let start = 0; start < tasks.length; start += 24) {
-        const slice = tasks.slice(start, start + 24);
-        const questions = {};
-        slice.forEach((item, index) => {
-            questions[`q${index}`] = {
-                type: 'choice',
-                instructions: `Compare candidate_segments[${index}] with established_facts[${index}]. Is there a direct contradiction in the current scene, or does the speaker clearly use information explicitly marked unknown to them? Ignore quoted claims, hypothetical statements, lies in dialogue, flashbacks, omniscient narration, and plausible changes over time. Choose unclear when evidence is insufficient.`,
-                criteria: {
-                    contradiction: 'A clear, direct incompatibility with the established fact in the same time and scene.',
-                    knowledge_leak: 'The speaker clearly acts upon or reveals the fact while their knowledge is explicitly marked unknown; not merely a narrator describing it.',
-                    no_conflict: 'No clear contradiction; compatible, unrelated, or a plausible change over time.',
-                    unclear: 'Cannot decide from the provided evidence.'
-                }
-            };
-        });
-        batches.push({
-            state: {
-                speaker,
-                established_facts: slice.map((item, index) => ({ q: `q${index}`, id: item.fact.id, text: item.fact.text, scope: item.fact.scope, source: item.fact.sourceText ?? '', knowledge: normalizeKnowledge(item.fact.knowledge) })),
-                candidate_segments: slice.map((item, index) => ({ q: `q${index}`, segment_id: item.segmentIndex + 1, text: item.segment })),
-                recent_chat: recent.slice(-6000)
-            },
-            questions,
-            tasks: slice
-        });
-    }
-    return batches;
+    return [{
+        state: {
+            speaker,
+            unpublished_reply: candidate,
+            established_facts: confirmed.map((fact, index) => ({ q: `q${index}`, id: fact.id, text: fact.text, scope: fact.scope, source: fact.sourceText ?? '', knowledge: normalizeKnowledge(fact.knowledge) })),
+            recent_chat: recent.slice(-6000)
+        },
+        questions,
+        tasks
+    }];
 }
 
 export function readContradictions(batch, answers, threshold = 0.78) {
