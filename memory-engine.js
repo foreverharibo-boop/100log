@@ -201,11 +201,11 @@ export function reconcileMemory(value, chat) {
     return true;
 }
 
-export function memoryInjection(facts, recent = '', limit = 12) {
+export function memoryInjection(facts, recent = '', limit = 12, forceSelected = false) {
     const active = facts.filter((fact) => fact.active && isCurrent(fact));
     const safeLimit = Math.max(4, Math.min(20, Number(limit) || 12));
     const related = new Set(pickFacts(recent, active, safeLimit * 2).map((fact) => fact.id));
-    const eligible = active.filter((fact) => fact.pinned || related.has(fact.id)
+    const eligible = forceSelected ? active : active.filter((fact) => fact.pinned || related.has(fact.id)
         || ['commitment', 'relationship', 'temporary', 'state'].includes(fact.kind) || Number(fact.importance) >= 4);
     const ranked = eligible.map((fact) => ({ fact, score: (fact.pinned ? 20 : 0) + (related.has(fact.id) ? 8 : 0)
         + (fact.kind === 'commitment' ? 4 : 0) + (fact.kind === 'relationship' ? 2 : 0) + (fact.importance || 3) }))

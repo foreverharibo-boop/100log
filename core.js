@@ -44,6 +44,54 @@ function tokens(text) {
     return [...new Set(String(text).toLocaleLowerCase().match(/[\p{L}\p{N}]{2,}/gu) ?? [])];
 }
 
+function cosineSimilarity(left, right) {
+    if (!left?.length || left.length !== right?.length) return -1;
+    let score = 0;
+    let leftMagnitude = 0;
+    let rightMagnitude = 0;
+    for (let index = 0; index < left.length; index++) {
+        score += left[index] * right[index];
+        leftMagnitude += left[index] * left[index];
+        rightMagnitude += right[index] * right[index];
+    }
+    return leftMagnitude && rightMagnitude ? score / Math.sqrt(leftMagnitude * rightMagnitude) : -1;
+}
+
+export function packEmbedding(values) {
+    if (!Array.isArray(values) || values.length < 8 || values.some((value) => !Number.isFinite(value))) throw new Error('임베딩 벡터 형식이 올바르지 않아요.');
+    let magnitude = Math.sqrt(values.reduce((sum, value) => sum + value * value, 0));
+    if (!magnitude) throw new Error('비어 있는 임베딩 벡터를 받았어요.');
+    const normalized = values.map((value) => value / magnitude);
+    const max = Math.max(...normalized.map(Math.abs));
+    const scale = max / 127;
+    const bytes = new Uint8Array(normalized.length);
+    normalized.forEach((value, index) => { bytes[index] = Math.max(1, Math.min(255, Math.round(value / scale) + 128)); });
+    let binary = '';
+    for (let start = 0; start < bytes.length; start += 8192) binary += String.fromCharCode(...bytes.subarray(start, start + 8192));
+    return { dimensions: bytes.length, scale, data: btoa(binary) };
+}
+
+export function unpackEmbedding(packed) {
+    if (!packed?.data || !Number.isInteger(packed.dimensions) || packed.dimensions < 8 || !Number.isFinite(packed.scale) || packed.scale <= 0) return null;
+    try {
+        const binary = atob(packed.data);
+        if (binary.length !== packed.dimensions) return null;
+        return Float32Array.from(binary, (character) => (character.charCodeAt(0) - 128) * packed.scale);
+    } catch { return null; }
+}
+
+export function rankFactsByVectors(queryVector, facts, entries, limit = 24) {
+    const active = facts.filter((fact) => fact?.active && !fact.archived && !fact.supersededBy && fact.text).slice(0, MAX_FACTS);
+    return active.flatMap((fact) => {
+        const vector = unpackEmbedding(entries?.[fact.id]?.vector);
+        if (!vector) return [];
+        const knowledge = normalizeKnowledge(fact.knowledge);
+        const safety = fact.pinned ? .18 : (fact.kind === 'commitment' ? .09 : Object.values(knowledge).includes('unknown') ? .07 : 0);
+        return [{ fact, score: cosineSimilarity(queryVector, vector) + safety }];
+    }).sort((left, right) => right.score - left.score || (right.fact.createdAt || 0) - (left.fact.createdAt || 0))
+        .slice(0, Math.max(1, Math.min(MAX_FACTS, Number(limit) || 24))).map(({ fact }) => fact);
+}
+
 export function pickFacts(segment, facts, limit = 6) {
     const words = tokens(segment);
     return facts.map((fact) => {

@@ -1,11 +1,14 @@
 import { MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow } from './memory-engine.js';
-import { RECENT_MESSAGE_LIMIT, availableProfiles, generateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, buildRelevanceChecks, selectRelevantFacts, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, isVisibleChatMessage } from './core.js';
+import { RECENT_MESSAGE_LIMIT, availableProfiles, generateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, buildRelevanceChecks, selectRelevantFacts, packEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, isVisibleChatMessage } from './core.js';
 
 const NAME = 'hundredlog';
 const LEGACY_NAME = 'memorybean';
 const KEY_STORAGE = 'hundredlog.typesafeKey';
 const LEGACY_KEY_STORAGE = 'memorybean.typesafeKey';
+const EMBEDDING_KEY_PREFIX = 'hundredlog.embeddingKey.';
 const JEV_URL = 'https://api.typesafe.ai/v1/systemone';
+const EMBEDDING_DIMENSIONS = 768;
+const EMBEDDING_MODELS = { 'google-ai-studio': 'gemini-embedding-001', 'vertex-express': 'gemini-embedding-001' };
 const ST_JEV_ROUTE = '/api/backends/chat-completions/generate';
 const ST_STRIP = ['messages', 'prompt', 'stream', 'temperature', 'max_tokens', 'max_completion_tokens', 'presence_penalty', 'frequency_penalty', 'top_p', 'top_k', 'stop', 'logit_bias', 'seed', 'n', 'logprobs', 'top_logprobs', 'tools', 'tool_choice', 'response_format', 'reasoning_effort', 'verbosity'];
 let busy = false;
@@ -32,6 +35,106 @@ const $id = (id) => document.getElementById(`hundredlog-${id}`);
 
 function apiKey() {
     try { return localStorage.getItem(KEY_STORAGE)?.trim() || localStorage.getItem(LEGACY_KEY_STORAGE)?.trim() || ''; } catch { return ''; }
+}
+
+function embeddingProvider() {
+    return settings().embeddingProvider === 'vertex-express' ? 'vertex-express' : 'google-ai-studio';
+}
+
+function embeddingKey(provider = embeddingProvider()) {
+    try { return localStorage.getItem(`${EMBEDDING_KEY_PREFIX}${provider}`)?.trim() || ''; } catch { return ''; }
+}
+
+function embeddingLabel(provider = embeddingProvider()) {
+    return provider === 'vertex-express' ? 'Vertex AI Express' : 'Google AI Studio';
+}
+
+function embeddingText(fact) {
+    return [fact.text, fact.keywords, fact.entity, fact.attribute, Object.keys(normalizeKnowledge(fact.knowledge)).join(' ')]
+        .filter(Boolean).join(' ').trim().slice(0, 6000);
+}
+
+async function requestGoogleJson(url, key, payload, label) {
+    const vertex = label === 'Vertex AI Express';
+    const target = vertex ? `${url}?key=${encodeURIComponent(key)}` : `${url}?via=`;
+    const authHeaders = vertex ? {} : { 'x-goog-api-key': key };
+    let response = null;
+    try {
+        const headers = context().getRequestHeaders?.();
+        if (!headers) throw new Error('실리태번 요청 헤더를 사용할 수 없어요.');
+        response = await fetch(ST_JEV_ROUTE, {
+            method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, credentials: 'same-origin',
+            body: JSON.stringify({
+                chat_completion_source: 'custom', custom_url: target, model: 'embedding', messages: [{ role: 'user', content: '.' }], stream: false,
+                custom_include_body: JSON.stringify(payload), custom_exclude_body: JSON.stringify(ST_STRIP), custom_include_headers: JSON.stringify(authHeaders)
+            }),
+            signal: AbortSignal.timeout(45000)
+        });
+    } catch (error) {
+        if (error?.name === 'TimeoutError') throw new Error(`${label} 임베딩 연결 시간이 초과됐어요.`);
+        response = null;
+    }
+    const directUrl = vertex ? target : url;
+    if (!response || [404, 405].includes(response.status)) {
+        try {
+            response = await fetch(directUrl, {
+                method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders }, body: JSON.stringify(payload),
+                credentials: 'omit', referrerPolicy: 'no-referrer', signal: AbortSignal.timeout(45000)
+            });
+        } catch (error) {
+            if (error?.name === 'TimeoutError') throw new Error(`${label} 임베딩 응답 시간이 초과됐어요.`);
+            const headers = context().getRequestHeaders?.();
+            if (!headers) throw new Error(`${label} 직접 연결이 차단됐고 실리태번 프록시를 사용할 수 없어요.`);
+            try {
+                response = await fetch(`/proxy/${encodeURIComponent(directUrl)}`, {
+                    method: 'POST', headers: { ...headers, 'Content-Type': 'application/json', ...authHeaders }, body: JSON.stringify(payload),
+                    credentials: 'same-origin', signal: AbortSignal.timeout(45000)
+                });
+            } catch { throw new Error(`${label}에 연결하지 못했어요. 실리태번 서버의 인터넷 연결을 확인해 주세요.`); }
+        }
+    }
+    let result;
+    try { result = await response.json(); } catch { throw new Error(`${label} 임베딩 응답을 읽지 못했어요.`); }
+    if (!response.ok || result?.error) {
+        const detail = String(result?.error?.message ?? result?.error ?? '').slice(0, 180);
+        if ([400, 401, 403].includes(response.status)) throw new Error(`${label} 키 또는 사용 권한을 확인해 주세요${detail ? `: ${detail}` : ''}`);
+        if (response.status === 429) throw new Error(`${label} 임베딩 요청 한도를 초과했어요. 잠시 후 다시 시도해 주세요.`);
+        throw new Error(`${label} 임베딩 오류 (${response.status})${detail ? `: ${detail}` : ''}`);
+    }
+    return result;
+}
+
+async function requestEmbeddings(texts, taskType = 'RETRIEVAL_DOCUMENT', provider = embeddingProvider()) {
+    const key = embeddingKey(provider);
+    if (!key) throw new Error(`${embeddingLabel(provider)} 임베딩 키를 먼저 입력해 주세요.`);
+    const clean = texts.map((text) => String(text ?? '').trim().slice(0, 6000));
+    if (!clean.length || clean.some((text) => !text)) throw new Error('임베딩할 내용이 비어 있어요.');
+    const model = EMBEDDING_MODELS[provider];
+    if (provider === 'google-ai-studio') {
+        const result = await requestGoogleJson(
+            `https://generativelanguage.googleapis.com/v1beta/models/${model}:batchEmbedContents`, key,
+            { requests: clean.map((text) => ({ model: `models/${model}`, content: { parts: [{ text }] }, taskType, outputDimensionality: EMBEDDING_DIMENSIONS })) },
+            embeddingLabel(provider)
+        );
+        const vectors = result?.embeddings?.map((embedding) => embedding?.values);
+        if (!Array.isArray(vectors) || vectors.length !== clean.length || vectors.some((vector) => !Array.isArray(vector))) throw new Error('Google AI Studio 임베딩 결과 개수가 맞지 않아요.');
+        return vectors;
+    }
+    const vectors = [];
+    for (let start = 0; start < clean.length; start += 4) {
+        const group = await Promise.all(clean.slice(start, start + 4).map(async (text) => {
+            const result = await requestGoogleJson(
+                `https://aiplatform.googleapis.com/v1/publishers/google/models/${model}:predict`, key,
+                { instances: [{ content: text, task_type: taskType }], parameters: { autoTruncate: true, outputDimensionality: EMBEDDING_DIMENSIONS } },
+                embeddingLabel(provider)
+            );
+            const vector = result?.predictions?.[0]?.embeddings?.values;
+            if (!Array.isArray(vector)) throw new Error('Vertex AI Express 임베딩 결과를 확인할 수 없어요.');
+            return vector;
+        }));
+        vectors.push(...group);
+    }
+    return vectors;
 }
 
 async function requestJev(state, questions) {
@@ -129,12 +232,16 @@ function settings() {
         ctx.extensionSettings[NAME] = { ...ctx.extensionSettings[LEGACY_NAME], migratedFromMemorybean: true };
     }
     ctx.extensionSettings[NAME] ??= { enabled: false };
+    const legacyJevEnabled = Boolean(ctx.extensionSettings[NAME].enabled);
+    ctx.extensionSettings[NAME].jevMemorySelection ??= legacyJevEnabled;
+    ctx.extensionSettings[NAME].strictReview ??= legacyJevEnabled;
     ctx.extensionSettings[NAME].autoMemory ??= true;
     ctx.extensionSettings[NAME].injectMemory ??= true;
     ctx.extensionSettings[NAME].extractionProfileId ??= '';
     ctx.extensionSettings[NAME].translationProfileId ??= '@extraction';
     ctx.extensionSettings[NAME].analysisInterval ??= 1;
     ctx.extensionSettings[NAME].maxInjectedMemories ??= 12;
+    ctx.extensionSettings[NAME].embeddingProvider ??= 'google-ai-studio';
     return ctx.extensionSettings[NAME];
 }
 
@@ -152,6 +259,8 @@ function data(create = true) {
     value.candidates ??= [];
     value.extractionCursor ??= 0;
     value.extractionOffset ??= 0;
+    value.embeddingIndex ??= { provider: '', model: '', entries: {} };
+    value.embeddingIndex.entries ??= {};
     for (const fact of value.facts) fact.knowledge ??= {};
     pruneToRecentWindow(value, ctx.chat);
     return value;
@@ -333,11 +442,18 @@ function render() {
     $id('translate-stop').disabled = !translating;
     $id('translate-stop').hidden = !translating;
     for (const id of ['extraction-profile', 'translation-profile', 'profiles-refresh', 'analysis-interval', 'injection-limit']) $id(id).disabled = working;
-    $id('enabled').checked = Boolean(settings().enabled);
-    $id('enabled').disabled = working;
+    $id('jev-memory').checked = Boolean(settings().jevMemorySelection);
+    $id('strict-review').checked = Boolean(settings().strictReview);
+    $id('jev-memory').disabled = working;
+    $id('strict-review').disabled = working;
     $id('key').disabled = working;
     $id('test').disabled = working;
     $id('clearkey').disabled = working;
+    $id('embedding-provider').value = embeddingProvider();
+    $id('embedding-provider').disabled = working;
+    $id('embedding-key').disabled = working;
+    $id('embedding-test').disabled = working;
+    $id('embedding-clearkey').disabled = working;
     $id('extract').disabled = working || !value;
     $id('stop').disabled = !extracting;
     $id('add').disabled = working || !value;
@@ -471,7 +587,7 @@ export async function collectHistory() {
 async function refreshMemoryPrompt() {
     const ctx = context();
     const value = data(false);
-    const enabled = settings().autoMemory && settings().injectMemory;
+    const enabled = settings().autoMemory && settings().injectMemory && !settings().jevMemorySelection;
     const text = enabled && value ? memoryInjection(value.facts, recentChat(ctx), settings().maxInjectedMemories) : '';
     if (typeof ctx.setExtensionPrompt === 'function') await ctx.setExtensionPrompt('100log-context', text, 1, 1, false, 0);
 }
@@ -638,7 +754,67 @@ async function judge(draft, facts, recent, speaker) {
     return found;
 }
 
-function correctionPrompt(draft, flagged) {
+async function ensureFactEmbeddings(facts, { announce = true } = {}) {
+    const value = data(false);
+    if (!value) throw new Error('현재 채팅의 기억 저장소를 찾지 못했어요.');
+    const provider = embeddingProvider();
+    const model = EMBEDDING_MODELS[provider];
+    const index = value.embeddingIndex ??= { provider, model, entries: {} };
+    if (index.provider !== provider || index.model !== model) {
+        index.provider = provider;
+        index.model = model;
+        index.entries = {};
+    }
+    index.entries ??= {};
+    const activeIds = new Set(facts.map((fact) => fact.id));
+    let changed = false;
+    for (const id of Object.keys(index.entries)) {
+        if (!activeIds.has(id)) { delete index.entries[id]; changed = true; }
+    }
+    const missing = facts.filter((fact) => {
+        const text = embeddingText(fact);
+        const entry = index.entries[fact.id];
+        return !entry || entry.text !== text || !entry.vector;
+    });
+    if (missing.length) {
+        if (announce) status(`${embeddingLabel(provider)}로 사실 ${missing.length}개를 임베딩하고 있어요…`);
+        const batchSize = provider === 'google-ai-studio' ? 40 : 4;
+        for (let start = 0; start < missing.length; start += batchSize) {
+            const batch = missing.slice(start, start + batchSize);
+            const texts = batch.map(embeddingText);
+            const vectors = await requestEmbeddings(texts, 'RETRIEVAL_DOCUMENT', provider);
+            batch.forEach((fact, indexInBatch) => {
+                index.entries[fact.id] = { text: texts[indexInBatch], vector: packEmbedding(vectors[indexInBatch]) };
+            });
+            changed = true;
+            if (announce && missing.length > batchSize) status(`${embeddingLabel(provider)} 사실 임베딩 ${Math.min(start + batch.length, missing.length)}/${missing.length}`);
+        }
+    }
+    if (changed) await context().saveMetadata();
+    return index;
+}
+
+async function selectInjectionFactsWithJev(facts, ctx) {
+    const recent = recentChat(ctx);
+    const latestUser = [...ctx.chat].reverse().find((message) => message?.is_user && isVisibleChatMessage(message));
+    const focus = `${latestUser?.name ?? ctx.name1}: ${String(latestUser?.mes ?? '').slice(0, 4000)}\n\n${recent}`;
+    const candidateLimit = Math.min(24, Math.max(12, settings().maxInjectedMemories * 2));
+    const index = await ensureFactEmbeddings(facts);
+    status('현재 장면을 임베딩하고 가까운 기억 후보를 찾고 있어요…');
+    const [queryVector] = await requestEmbeddings([focus], 'RETRIEVAL_QUERY');
+    const candidates = rankFactsByVectors(queryVector, facts, index.entries, candidateLimit);
+    if (!candidates.length) throw new Error('사용 가능한 사실 임베딩이 없어요. 임베딩 연결을 다시 확인해 주세요.');
+    status(`임베딩 후보 ${candidates.length}개를 Jev가 최종 판정 중이에요…`);
+    const relevance = buildRelevanceChecks(focus, candidates, recent);
+    const answers = [];
+    for (const batch of relevance) {
+        const body = await requestJev(batch.state, batch.questions);
+        answers.push(body.answers);
+    }
+    return { selected: selectRelevantFacts(focus, relevance, answers, settings().maxInjectedMemories), candidateCount: candidates.length };
+}
+
+function correctionPrompt(draft, flagged, selectedContext = '') {
     const issues = flagged.map((item) => ({
         segment: item.segmentIndex + 1,
         issue: item.kind === 'knowledge_leak' ? 'This character acts on information they have not learned.' : 'Current story state conflicts with an established fact.',
@@ -647,7 +823,7 @@ function correctionPrompt(draft, flagged) {
         source: item.fact.sourceText ?? '',
         conflicting_passage: item.segment.slice(0, 1250)
     }));
-    return `Revise the following unpublished character reply. The listed passages contradict approved story facts. Fix only the specific contradictions; preserve the rest of the reply, its language, voice, pacing, POV, and formatting. Do not quote these instructions or explain the edit. Output only the full revised character reply.\n\nApproved issues: ${JSON.stringify(issues)}\n\nUnpublished reply:\n${draft}`;
+    return `${selectedContext ? `${selectedContext}\n\n` : ''}Revise the following unpublished character reply. The listed passages contradict approved story facts. Fix only the specific contradictions; preserve the rest of the reply, its language, voice, pacing, POV, and formatting. Do not quote these instructions or explain the edit. Output only the full revised character reply.\n\nApproved issues: ${JSON.stringify(issues)}\n\nUnpublished reply:\n${draft}`;
 }
 
 function stillSameChat(key, lastMessage) {
@@ -677,22 +853,24 @@ async function commitReply(text, key, lastMessage) {
     }
 }
 
-async function runHidden(key, lastMessage) {
+async function runHidden(key, lastMessage, selectedContext = '') {
     try {
         const ctx = context();
         if (!stillSameChat(key, lastMessage)) throw new Error('대화가 바뀌어 생성을 중단했어요.');
         const facts = data(false)?.facts.filter((item) => item.active && isCurrent(item)).map((item) => ({ ...item })) ?? [];
         if (!apiKey()) throw new Error('확장 설정에 Jev API 키를 먼저 입력해 주세요.');
         const recent = recentChat(ctx);
+        const activeContext = selectedContext || memoryInjection(facts, recent, settings().maxInjectedMemories);
         status('메인 AI가 숨은 초안을 작성 중이에요…');
-        const draft = String(await ctx.generateQuietPrompt({ quietPrompt: 'Write the next in-character roleplay reply to the latest user message. Output only the reply, with no preface or explanation.' }) ?? '').trim();
+        const draftInstruction = 'Write the next in-character roleplay reply to the latest user message. Use the supplied recent-memory notes only as continuity constraints. Output only the reply, with no preface or explanation.';
+        const draft = String(await ctx.generateQuietPrompt({ quietPrompt: `${activeContext ? `${activeContext}\n\n` : ''}${draftInstruction}` }) ?? '').trim();
         if (!stillSameChat(key, lastMessage)) throw new Error('대화가 바뀌어 생성을 중단했어요.');
         status('Jev가 최근 100개 기억과 초안을 엄격 검수 중이에요…');
         const flagged = await judge(draft, facts, recent, ctx.name2);
         let final = draft;
         if (flagged.length) {
             status(`설정 충돌 ${flagged.length}곳을 발견했어요. 메인 AI에게 수정 요청 중이에요…`);
-            final = String(await ctx.generateQuietPrompt({ quietPrompt: correctionPrompt(draft, flagged) }) ?? '').trim();
+            final = String(await ctx.generateQuietPrompt({ quietPrompt: correctionPrompt(draft, flagged, activeContext) }) ?? '').trim();
             if (!final) throw new Error('수정 답변이 비어 있어 게시하지 않았어요.');
             status('수정 답변을 한 번 더 확인하고 있어요…');
             const again = await judge(final, facts, recent, ctx.name2);
@@ -702,24 +880,69 @@ async function runHidden(key, lastMessage) {
         await commitReply(final, key, lastMessage);
         status(flagged.length ? `충돌 ${flagged.length}곳을 고쳐 게시했어요.` : '설정 충돌 없이 답변을 게시했어요.');
     } catch (error) { console.error('[100LOG] 생성/검수 실패:', error); status(`답변을 표시하지 않았어요: ${error.message}`); }
-    finally { busy = false; normalGenerating = false; render(); if (memoryPending) scheduleMemory(); }
+    finally {
+        try { await refreshMemoryPrompt(); } catch (error) { console.error('[100LOG] 기억 주입 복원 실패:', error); }
+        busy = false; normalGenerating = false; render(); if (memoryPending) scheduleMemory();
+    }
 }
 
-globalThis.hundredlogGenerationInterceptor = async function (_promptChat, _size, abort, type) {
+function injectSelectedMemory(promptChat, selectedContext) {
+    if (!selectedContext || !Array.isArray(promptChat)) return false;
+    const note = {
+        is_user: false,
+        is_system: true,
+        name: '100LOG',
+        send_date: Date.now(),
+        mes: selectedContext,
+        extra: { hundredlog_injection: true },
+    };
+    promptChat.splice(Math.max(0, promptChat.length - 1), 0, note);
+    return true;
+}
+
+globalThis.hundredlogGenerationInterceptor = async function (promptChat, _size, abort, type) {
     const ctx = context();
-    if (!settings().enabled || ![undefined, 'normal'].includes(type) || !chatKey(ctx)) return;
+    const config = settings();
+    if ((!config.jevMemorySelection && !config.strictReview) || ![undefined, 'normal'].includes(type) || !chatKey(ctx)) return;
     const confirmed = data(false)?.facts.filter((fact) => fact.active && isCurrent(fact)) ?? [];
     if (!confirmed.length) return;
-    abort(true);
-    if (extracting || translating) { status('최근 기억 분석 또는 번역을 마친 뒤 답변을 생성해 주세요.'); return; }
-    if (busy) { status('이미 답변을 검수하고 있어요. 잠시 기다려 주세요.'); return; }
+    if (!apiKey()) { abort(true); status('Jev API 키가 없어 맞춤 기억 또는 엄격 검수를 실행하지 못했어요.'); return; }
+    if (config.jevMemorySelection && !embeddingKey()) { abort(true); status(`${embeddingLabel()} 임베딩 키가 없어 맞춤 기억을 실행하지 못했어요.`); return; }
+    if (extracting || translating) { abort(true); status('최근 기억 분석 또는 번역을 마친 뒤 답변을 생성해 주세요.'); return; }
+    if (busy) { abort(true); status('이미 Jev 기억 선별 또는 검수를 진행하고 있어요. 잠시 기다려 주세요.'); return; }
     const last = ctx.chat.at(-1);
-    if (!last?.is_user) { status('마지막 메시지가 사용자 메시지가 아니라 생성 요청을 멈췄어요.'); return; }
+    if (config.strictReview && !last?.is_user) { abort(true); status('마지막 메시지가 사용자 메시지가 아니라 엄격 검수 생성을 멈췄어요.'); return; }
     const key = chatKey(ctx);
     busy = true;
-    status('100LOG가 답변을 표시하지 않고 잠시 보류했어요…'); render();
+    render();
+    let selectedContext = '';
+    let selectionStats = null;
+    try {
+        if (config.jevMemorySelection) {
+            status(`${embeddingLabel()} 임베딩으로 현재 장면과 가까운 기억을 찾고 있어요…`);
+            const result = await selectInjectionFactsWithJev(confirmed, ctx);
+            if (chatKey(context()) !== key) throw new Error('대화가 바뀌어 기억 주입을 중단했어요.');
+            selectionStats = { candidates: result.candidateCount, selected: result.selected.length };
+            selectedContext = memoryInjection(result.selected, recentChat(ctx), config.maxInjectedMemories, true);
+        }
+    } catch (error) {
+        abort(true);
+        busy = false;
+        status(`Jev 맞춤 기억 선별을 실패해 생성을 멈췄어요: ${error.message}`);
+        render();
+        return;
+    }
+    if (!config.strictReview) {
+        injectSelectedMemory(promptChat, selectedContext);
+        busy = false;
+        status(selectedContext ? `임베딩 후보 ${selectionStats.candidates}개 중 Jev가 고른 ${selectionStats.selected}개 기억을 주입했어요.` : '현재 장면에 따로 주입할 최근 기억이 없어요.');
+        render();
+        return;
+    }
+    abort(true);
+    status('맞춤 기억 주입을 마쳤어요. 답변을 숨은 초안으로 생성할게요…'); render();
     // Let SillyTavern finish unwinding the aborted normal generation first.
-    setTimeout(() => { void runHidden(key, last); }, 300);
+    setTimeout(() => { void runHidden(key, last, selectedContext); }, 300);
 };
 
 function closeWand() {
@@ -816,7 +1039,7 @@ function addWandButton() {
 async function main() {
     const ctx = context();
     installMemoryHooks(ctx);
-    if ($id('enabled')) { addWandButton(); return; }
+    if ($id('jev-memory')) { addWandButton(); return; }
     const response = await fetch(new URL('./settings.html', import.meta.url), { credentials: 'same-origin' });
     if (!response.ok) throw new Error(`설정 화면 파일을 읽지 못했어요 (${response.status}).`);
     const html = await response.text();
@@ -839,6 +1062,62 @@ async function main() {
     $id('translate-all')?.addEventListener('click', () => { void translateRecords('all'); });
     $id('translate-missing')?.addEventListener('click', () => { void translateRecords('missing'); });
     $id('translate-stop')?.addEventListener('click', () => { stopTranslationRequested = true; status('진행 중인 묶음을 마치고 번역을 멈출게요.'); });
+    function embeddingError(message = '') {
+        const element = $id('embedding-error');
+        if (!element) return;
+        element.textContent = message;
+        element.hidden = !message;
+    }
+    function loadEmbeddingKeyUi() {
+        if (!$id('embedding-key') || !$id('embedding-state')) return;
+        const key = embeddingKey();
+        $id('embedding-key').value = key;
+        $id('embedding-state').textContent = key ? '키 저장됨 · 연결 확인 필요' : 'API 키를 입력해 주세요';
+        embeddingError();
+    }
+    $id('embedding-provider')?.addEventListener('change', (event) => {
+        settings().embeddingProvider = event.target.value === 'vertex-express' ? 'vertex-express' : 'google-ai-studio';
+        ctx.saveSettingsDebounced();
+        loadEmbeddingKeyUi();
+        status(`${embeddingLabel()} 임베딩을 사용하도록 선택했어요.`);
+    });
+    $id('embedding-key')?.addEventListener('input', () => { $id('embedding-state').textContent = '키 입력 중'; embeddingError(); });
+    $id('embedding-key')?.addEventListener('change', () => {
+        try {
+            const value = $id('embedding-key').value.trim();
+            const storage = `${EMBEDDING_KEY_PREFIX}${embeddingProvider()}`;
+            if (value) localStorage.setItem(storage, value); else localStorage.removeItem(storage);
+            $id('embedding-state').textContent = value ? '키 저장됨 · 연결 확인 필요' : 'API 키를 입력해 주세요';
+        } catch { status('이 브라우저에 임베딩 키를 저장하지 못했어요.'); }
+    });
+    $id('embedding-test')?.addEventListener('click', async () => {
+        try {
+            const key = $id('embedding-key').value.trim();
+            if (!key) throw new Error('임베딩 API 키를 입력해 주세요.');
+            localStorage.setItem(`${EMBEDDING_KEY_PREFIX}${embeddingProvider()}`, key);
+            busy = true; render();
+            $id('embedding-state').textContent = `${embeddingLabel()} 연결 확인 중…`;
+            const [vector] = await requestEmbeddings(['현재 장면에 필요한 최근 기억 검색'], 'RETRIEVAL_QUERY');
+            if (!Array.isArray(vector) || vector.length < 8) throw new Error('임베딩 테스트 결과를 확인할 수 없어요.');
+            const facts = data(false)?.facts.filter((fact) => fact.active && isCurrent(fact)) ?? [];
+            if (facts.length) await ensureFactEmbeddings(facts);
+            $id('embedding-state').textContent = `${embeddingLabel()} 연결됨`;
+            embeddingError();
+            status(facts.length ? `임베딩 연결 완료 · 현재 사실 ${facts.length}개를 준비했어요.` : '임베딩 연결을 확인했어요. 저장된 현재 사실은 아직 없어요.');
+        } catch (error) {
+            $id('embedding-state').textContent = '연결 실패';
+            embeddingError(error.message);
+            status(error.message);
+        } finally { busy = false; render(); }
+    });
+    $id('embedding-clearkey')?.addEventListener('click', () => {
+        localStorage.removeItem(`${EMBEDDING_KEY_PREFIX}${embeddingProvider()}`);
+        $id('embedding-key').value = '';
+        $id('embedding-state').textContent = 'API 키를 입력해 주세요';
+        embeddingError();
+        status(`${embeddingLabel()} 임베딩 키를 삭제했어요.`);
+    });
+    loadEmbeddingKeyUi();
     if ($id('key')) $id('key').value = apiKey();
     if ($id('server')) $id('server').textContent = apiKey() ? '키 저장됨 · 연결 확인 필요' : 'API 키를 입력해 주세요';
     function connectionError(message = '') {
@@ -882,14 +1161,30 @@ async function main() {
         $id('key').value = '';
         $id('server').textContent = 'API 키를 입력해 주세요';
         connectionError();
+        settings().jevMemorySelection = false;
+        settings().strictReview = false;
         settings().enabled = false;
         ctx.saveSettingsDebounced();
         status('브라우저에 저장된 키를 삭제했어요.');
         render();
     });
-    $id('enabled')?.addEventListener('change', (event) => {
+    $id('jev-memory')?.addEventListener('change', async (event) => {
         if (event.target.checked && !apiKey()) { status('Jev API 키를 먼저 입력해 주세요.'); showView('settings'); render(); return; }
-        settings().enabled = event.target.checked; ctx.saveSettingsDebounced(); render();
+        if (event.target.checked && !embeddingKey()) { status(`${embeddingLabel()} 임베딩 키를 먼저 입력해 주세요.`); showView('settings'); render(); return; }
+        settings().jevMemorySelection = event.target.checked;
+        settings().enabled = Boolean(settings().strictReview);
+        ctx.saveSettingsDebounced();
+        await refreshMemoryPrompt();
+        render();
+        status(event.target.checked ? 'Jev가 현재 RP에 맞는 기억을 생성 전에 골라 주입해요.' : 'Jev 맞춤 기억을 껐어요. 기본 기억 주입을 사용해요.');
+    });
+    $id('strict-review')?.addEventListener('change', (event) => {
+        if (event.target.checked && !apiKey()) { status('Jev API 키를 먼저 입력해 주세요.'); showView('settings'); render(); return; }
+        settings().strictReview = event.target.checked;
+        settings().enabled = event.target.checked;
+        ctx.saveSettingsDebounced();
+        render();
+        status(event.target.checked ? '답변을 공개하기 전에 Jev 엄격 검수와 자동 재작성을 사용해요.' : '엄격 검수를 껐어요. 맞춤 기억 설정은 그대로 유지돼요.');
     });
     $id('add')?.addEventListener('click', async () => {
         const value = data();
