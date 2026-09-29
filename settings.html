@@ -1,5 +1,5 @@
 <section id="hundredlog" class="inline-drawer">
-  <div class="inline-drawer-toggle inline-drawer-header"><b>💯 100LOG</b><div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div></div>
+  <div class="inline-drawer-toggle inline-drawer-header"><b id="hundredlog-title">💯 100LOG</b><div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div></div>
   <div class="inline-drawer-content hundredlog-panel">
     <div class="hundredlog-overview">
       <div><strong>최근 100개, 틀린 답변은 공개 전에 차단.</strong><p class="hundredlog-help">장기 기억은 건드리지 않고 약속·오해·비밀·정정사항을 연속성 규칙으로 관리해요.</p></div>
@@ -52,12 +52,29 @@
       <details class="hundredlog-fold" open><summary>JEV 공개 전 엄격 검수</summary>
         <label class="hundredlog-toggle hundredlog-setting-toggle"><input id="hundredlog-strict-review" type="checkbox"><span>답변 공개 전 엄격 검수 · 자동 재작성</span></label>
         <p class="hundredlog-help">메인 AI 답변을 숨은 초안으로 받은 뒤 JEV가 현재 규칙 전체와 한 번에 비교해요. 이상이 없으면 바로 표시하고, 충돌이 발견된 경우에만 메인 AI 재작성과 재검수를 한 번 더 실행해요.</p>
-        <p class="hundredlog-help">정상 답변은 ‘메인 AI 초안 1회 + JEV 검수 1회’만 사용해요. 임베딩과 JEV 기억 선별 단계는 사용하지 않아요.</p>
+        <p class="hundredlog-help">정상 답변은 ‘메인 AI 초안 1회 + JEV 검수 1회’만 사용해요.</p>
         <label for="hundredlog-key" class="hundredlog-label">Jev API 키</label><input id="hundredlog-key" type="password" autocomplete="off" spellcheck="false" placeholder="TypeSafe API 키">
         <div class="hundredlog-row hundredlog-connection-actions"><button type="button" id="hundredlog-test" class="menu_button">연결 확인</button><button type="button" id="hundredlog-clearkey" class="menu_button">키 삭제</button><span id="hundredlog-server" class="hundredlog-state" aria-live="polite">API 키를 입력해 주세요</span></div>
         <p id="hundredlog-connection-error" class="hundredlog-help hundredlog-connection-error" role="alert" hidden></p>
         <p class="hundredlog-help">JEV 키는 새 규칙을 저장할 때 인물별 ‘알고 있음/아직 모름’도 검증해요. 이름만 언급되었거나 일부 내용만 아는 인물에게 전체 사실을 넘기지 않아요.</p>
       </details>
+      <section id="hundredlog-developer" class="hundredlog-developer" hidden>
+        <details class="hundredlog-fold" open><summary>개발자 모드 · 맞춤 규칙 주입</summary>
+          <label class="hundredlog-toggle hundredlog-setting-toggle"><input id="hundredlog-developer-memory" type="checkbox"><span>임베딩 + JEV 맞춤 규칙 주입</span></label>
+          <p class="hundredlog-help">현재 장면과 가까운 규칙을 임베딩으로 먼저 찾고, JEV가 실제로 필요한 규칙만 골라 메인 AI에게 전달해요. 엄격 검수와 함께 켜면 맞춤 주입 후 전체 규칙으로 공개 전 검수해요.</p>
+          <div class="hundredlog-setting-grid">
+            <label for="hundredlog-injection-limit"><span>한 번에 주입할 규칙 수</span><span class="hundredlog-number-field"><input id="hundredlog-injection-limit" type="number" min="1" step="1" inputmode="numeric"><span>개</span></span></label>
+          </div>
+          <label for="hundredlog-embedding-provider" class="hundredlog-label">임베딩 제공처</label>
+          <select id="hundredlog-embedding-provider" class="hundredlog-profile-select"><option value="google-ai-studio">Google AI Studio</option><option value="vertex-express">Vertex AI Express</option></select>
+          <label for="hundredlog-embedding-key" class="hundredlog-label">임베딩 API 키</label>
+          <input id="hundredlog-embedding-key" type="password" autocomplete="off" spellcheck="false" placeholder="선택한 제공처의 API 키">
+          <div class="hundredlog-row hundredlog-connection-actions"><button type="button" id="hundredlog-embedding-test" class="menu_button">연결 확인</button><button type="button" id="hundredlog-embedding-retry" class="menu_button">누락 임베딩 재시도</button><button type="button" id="hundredlog-embedding-clearkey" class="menu_button">키 삭제</button><span id="hundredlog-embedding-state" class="hundredlog-state" aria-live="polite">API 키를 입력해 주세요</span></div>
+          <div id="hundredlog-embedding-progress" class="hundredlog-embedding-progress" aria-live="polite">임베딩 현황을 확인 중이에요.</div>
+          <p id="hundredlog-embedding-error" class="hundredlog-help hundredlog-connection-error" role="alert" hidden></p>
+          <div class="hundredlog-row hundredlog-developer-actions"><button type="button" id="hundredlog-developer-lock" class="menu_button">개발자 모드 잠그기</button></div>
+        </details>
+      </section>
     </div>
     <p id="hundredlog-status" class="hundredlog-status" role="status" aria-live="polite">준비 중이에요.</p>
   </div>

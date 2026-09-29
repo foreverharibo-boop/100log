@@ -25,6 +25,8 @@
 #hundredlog .hundredlog-section-help { margin: -2px 0 8px; }
 #hundredlog .hundredlog-connection-actions { margin-top: 7px; }
 #hundredlog .hundredlog-connection-error { opacity: 1; padding: 6px 8px; border: 1px solid var(--SmartThemeBorderColor); border-radius: 6px; }
+#hundredlog .hundredlog-embedding-progress { margin-top: 6px; font-size: .82em; line-height: 1.4; opacity: .82; }
+#hundredlog .hundredlog-developer-actions { margin-top: 10px; justify-content: flex-end; }
 #hundredlog .hundredlog-add { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 #hundredlog .hundredlog-add textarea { flex: 1 1 100%; }
 #hundredlog textarea, #hundredlog input[type="password"], #hundredlog input[type="text"], #hundredlog input[type="number"], #hundredlog select { min-width: 0; max-width: 100%; color: var(--SmartThemeBodyColor); background: var(--SmartThemeBlurTintColor); border: 1px solid var(--SmartThemeBorderColor); border-radius: 6px; padding: 6px 8px; font: inherit; line-height: 1.35; }

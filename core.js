@@ -44,6 +44,54 @@ function tokens(text) {
     return [...new Set(String(text).toLocaleLowerCase().match(/[\p{L}\p{N}]{2,}/gu) ?? [])];
 }
 
+function cosineSimilarity(left, right) {
+    if (!left?.length || left.length !== right?.length) return -1;
+    let score = 0;
+    let leftMagnitude = 0;
+    let rightMagnitude = 0;
+    for (let index = 0; index < left.length; index++) {
+        score += left[index] * right[index];
+        leftMagnitude += left[index] * left[index];
+        rightMagnitude += right[index] * right[index];
+    }
+    return leftMagnitude && rightMagnitude ? score / Math.sqrt(leftMagnitude * rightMagnitude) : -1;
+}
+
+export function packEmbedding(values) {
+    if (!Array.isArray(values) || values.length < 8 || values.some((value) => !Number.isFinite(value))) throw new Error('임베딩 벡터 형식이 올바르지 않아요.');
+    const magnitude = Math.sqrt(values.reduce((sum, value) => sum + value * value, 0));
+    if (!magnitude) throw new Error('비어 있는 임베딩 벡터를 받았어요.');
+    const normalized = values.map((value) => value / magnitude);
+    const max = Math.max(...normalized.map(Math.abs));
+    const scale = max / 127;
+    const bytes = new Uint8Array(normalized.length);
+    normalized.forEach((value, index) => { bytes[index] = Math.max(1, Math.min(255, Math.round(value / scale) + 128)); });
+    let binary = '';
+    for (let start = 0; start < bytes.length; start += 8192) binary += String.fromCharCode(...bytes.subarray(start, start + 8192));
+    return { dimensions: bytes.length, scale, data: btoa(binary) };
+}
+
+export function unpackEmbedding(packed) {
+    if (!packed?.data || !Number.isInteger(packed.dimensions) || packed.dimensions < 8 || !Number.isFinite(packed.scale) || packed.scale <= 0) return null;
+    try {
+        const binary = atob(packed.data);
+        if (binary.length !== packed.dimensions) return null;
+        return Float32Array.from(binary, (character) => (character.charCodeAt(0) - 128) * packed.scale);
+    } catch { return null; }
+}
+
+export function rankFactsByVectors(queryVector, facts, entries, limit = 24) {
+    const active = facts.filter((fact) => fact?.active && !fact.archived && !fact.supersededBy && fact.text).slice(0, MAX_FACTS);
+    return active.flatMap((fact) => {
+        const vector = unpackEmbedding(entries?.[fact.id]?.vector);
+        if (!vector) return [];
+        const knowledge = normalizeKnowledge(fact.knowledge);
+        const safety = fact.pinned ? .18 : (fact.kind === 'commitment' ? .09 : Object.values(knowledge).includes('unknown') ? .07 : 0);
+        return [{ fact, score: cosineSimilarity(queryVector, vector) + safety }];
+    }).sort((left, right) => right.score - left.score || (right.fact.createdAt || 0) - (left.fact.createdAt || 0))
+        .slice(0, Math.max(1, Math.min(MAX_FACTS, Number(limit) || 24))).map(({ fact }) => fact);
+}
+
 export function pickFacts(segment, facts, limit = 6) {
     const words = tokens(segment);
     return facts.map((fact) => {
@@ -111,6 +159,40 @@ export function suggestReplacement(value, candidate) {
         && String(fact.attribute ?? '').trim().toLocaleLowerCase() === attribute
         && Number.isInteger(fact.sourceId) && fact.sourceId < candidate.sourceId);
     return matching.sort((a, b) => b.sourceId - a.sourceId)[0]?.id ?? null;
+}
+
+export function buildRelevanceChecks(draft, facts, recent = '') {
+    chunksOfDraft(draft);
+    const active = facts.filter((fact) => fact.active && !fact.archived && !fact.supersededBy).slice(0, MAX_FACTS);
+    const batches = [];
+    for (let start = 0; start < active.length; start += 20) {
+        const batchFacts = active.slice(start, start + 20);
+        const questions = {};
+        batchFacts.forEach((_fact, index) => {
+            questions[`r${index}`] = {
+                type: 'noul',
+                instructions: `Is the fact at facts[${index}] relevant to any statement in draft, including synonyms, paraphrases, changed states, or information known by a character? Use recent_chat to resolve names and context. Answer yes when relevance is uncertain.`
+            };
+        });
+        batches.push({ state: { draft, recent_chat: recent.slice(-6000), facts: batchFacts.map((fact) => ({ text: fact.text, knowledge: normalizeKnowledge(fact.knowledge), source: fact.sourceText ?? '' })) }, questions, facts: batchFacts });
+    }
+    return batches;
+}
+
+export function selectRelevantFacts(draft, batches, answersByBatch, limit = 16) {
+    const scored = [];
+    batches.forEach((batch, batchIndex) => {
+        const answers = answersByBatch[batchIndex];
+        batch.facts.forEach((fact, index) => {
+            const answer = answers?.[`r${index}`];
+            if (answer?.type !== 'noul' || !Number.isFinite(answer.noul) || answer.noul < 0 || answer.noul > 1) throw new Error('Jev 관련 사실 판정 형식을 확인할 수 없어요.');
+            scored.push({ fact, score: answer.noul });
+        });
+    });
+    const lexical = new Set(pickFacts(draft, scored.map(({ fact }) => fact), limit).map((fact) => fact.id));
+    return scored.filter(({ fact, score }) => score >= .35 || lexical.has(fact.id))
+        .sort((a, b) => (b.score + (lexical.has(b.fact.id) ? .1 : 0)) - (a.score + (lexical.has(a.fact.id) ? .1 : 0)))
+        .slice(0, limit).map(({ fact }) => fact);
 }
 
 export function buildChecks(draft, facts, recent = '', speaker = '') {
