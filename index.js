@@ -209,6 +209,11 @@ async function requestJev(state, questions) {
     return result;
 }
 
+function positiveInteger(value, fallback) {
+    const number = Math.floor(Number(value));
+    return Number.isFinite(number) && number >= 1 ? number : fallback;
+}
+
 function settings() {
     const ctx = context();
     if (!ctx.extensionSettings[NAME] && ctx.extensionSettings[LEGACY_NAME]) {
@@ -222,8 +227,8 @@ function settings() {
     ctx.extensionSettings[NAME].injectMemory ??= true;
     ctx.extensionSettings[NAME].extractionProfileId ??= '';
     ctx.extensionSettings[NAME].translationProfileId ??= '@extraction';
-    ctx.extensionSettings[NAME].analysisInterval ??= 1;
-    ctx.extensionSettings[NAME].maxInjectedMemories ??= 12;
+    ctx.extensionSettings[NAME].analysisInterval = positiveInteger(ctx.extensionSettings[NAME].analysisInterval, 1);
+    ctx.extensionSettings[NAME].maxInjectedMemories = positiveInteger(ctx.extensionSettings[NAME].maxInjectedMemories, 12);
     ctx.extensionSettings[NAME].embeddingProvider ??= 'google-ai-studio';
     return ctx.extensionSettings[NAME];
 }
@@ -267,7 +272,6 @@ function showView(view) {
         $id(`view-${name}`).hidden = name !== view;
         $id(`tab-${name}`).setAttribute('aria-pressed', String(name === view));
     }
-    if ($id('translation-tools')) $id('translation-tools').hidden = view === 'settings';
     const body = $id('wand-body');
     if (body) body.scrollTop = 0;
 }
@@ -583,7 +587,7 @@ function completedAssistantCount(ctx, start = 0) {
 function memoryProgressText(value, ctx) {
     const auto = initializeAuto(value, ctx.chat);
     const count = completedAssistantCount(ctx, auto.cursor);
-    const interval = Math.max(1, Math.min(10, Number(settings().analysisInterval) || 1));
+    const interval = positiveInteger(settings().analysisInterval, 1);
     const start = recentWindowStart(ctx.chat);
     const visible = ctx.chat.slice(start).filter(isVisibleChatMessage).length;
     return `관리 범위 최근 ${visible}/${RECENT_MESSAGE_LIMIT}개 · 다음 자동 정리 ${Math.min(count, interval)}/${interval}`;
@@ -593,7 +597,7 @@ function memoryDue(value = data(false), ctx = context()) {
     if (!value) return false;
     const auto = initializeAuto(value, ctx.chat);
     if (auto.offset > 0) return true;
-    return completedAssistantCount(ctx, auto.cursor) >= Math.max(1, Math.min(10, Number(settings().analysisInterval) || 1));
+    return completedAssistantCount(ctx, auto.cursor) >= positiveInteger(settings().analysisInterval, 1);
 }
 
 function scheduleMemory({ force = false } = {}) {
@@ -781,7 +785,8 @@ async function selectInjectionFactsWithJev(facts, ctx) {
     const recent = recentChat(ctx);
     const latestUser = [...ctx.chat].reverse().find((message) => message?.is_user && isVisibleChatMessage(message));
     const focus = `${latestUser?.name ?? ctx.name1}: ${String(latestUser?.mes ?? '').slice(0, 4000)}\n\n${recent}`;
-    const candidateLimit = Math.min(24, Math.max(12, settings().maxInjectedMemories * 2));
+    const requested = positiveInteger(settings().maxInjectedMemories, 12);
+    const candidateLimit = Math.max(12, requested * 2);
     const index = await ensureFactEmbeddings(facts);
     status('현재 장면을 임베딩하고 가까운 기억 후보를 찾고 있어요…');
     const [queryVector] = await requestEmbeddings([focus], 'RETRIEVAL_QUERY');
@@ -1212,14 +1217,16 @@ async function main() {
         settings().injectMemory = event.target.checked; context().saveSettingsDebounced(); await refreshMemoryPrompt();
     });
     $id('analysis-interval')?.addEventListener('change', (event) => {
-        settings().analysisInterval = Math.max(1, Math.min(5, Number(event.target.value) || 1));
+        settings().analysisInterval = positiveInteger(event.target.value, 1);
+        event.target.value = String(settings().analysisInterval);
         context().saveSettingsDebounced();
         render();
         scheduleMemory();
         status(`AI 답변 ${settings().analysisInterval}개마다 기억을 자동 정리해요.`);
     });
     $id('injection-limit')?.addEventListener('change', async (event) => {
-        settings().maxInjectedMemories = Math.max(4, Math.min(20, Number(event.target.value) || 12));
+        settings().maxInjectedMemories = positiveInteger(event.target.value, 12);
+        event.target.value = String(settings().maxInjectedMemories);
         context().saveSettingsDebounced();
         await refreshMemoryPrompt();
         render();

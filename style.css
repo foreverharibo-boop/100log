@@ -26,7 +26,10 @@
 #hundredlog .hundredlog-connection-error { opacity: 1; padding: 8px 10px; border: 1px solid var(--SmartThemeBorderColor); border-radius: 7px; }
 #hundredlog .hundredlog-add { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 #hundredlog .hundredlog-add textarea { flex: 1 1 100%; }
-#hundredlog textarea, #hundredlog input[type="password"], #hundredlog input[type="text"], #hundredlog select { min-width: 0; max-width: 100%; color: var(--SmartThemeBodyColor); background: var(--SmartThemeBlurTintColor); border: 1px solid var(--SmartThemeBorderColor); border-radius: 7px; padding: 9px 10px; font: inherit; line-height: 1.45; }
+#hundredlog textarea, #hundredlog input[type="password"], #hundredlog input[type="text"], #hundredlog input[type="number"], #hundredlog select { min-width: 0; max-width: 100%; color: var(--SmartThemeBodyColor); background: var(--SmartThemeBlurTintColor); border: 1px solid var(--SmartThemeBorderColor); border-radius: 7px; padding: 9px 10px; font: inherit; line-height: 1.45; }
+#hundredlog .hundredlog-number-field { display: flex; align-items: center; gap: 7px; }
+#hundredlog .hundredlog-number-field input { flex: 1 1 auto; width: 100%; }
+#hundredlog .hundredlog-number-field > span { flex: 0 0 auto; opacity: .75; white-space: nowrap; }
 #hundredlog-key { display: block; width: 100%; }
 #hundredlog textarea { resize: vertical; caret-color: var(--SmartThemeBodyColor); }
 #hundredlog .hundredlog-add .hundredlog-select { flex: 1 1 160px; }
@@ -79,7 +82,7 @@
 #hundredlog .hundredlog-guide ol { margin: 8px 0; padding-left: 20px; line-height: 1.7; }
 #hundredlog .hundredlog-guide li + li { margin-top: 6px; }
 #hundredlog .hundredlog-profile-select { display: block; width: 100%; }
-#hundredlog .hundredlog-translation-tools { margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--SmartThemeBorderColor); }
+#hundredlog .hundredlog-translation-tools { margin: 0 0 16px; padding: 0 0 12px; border-top: 0; border-bottom: 1px solid var(--SmartThemeBorderColor); }
 #hundredlog .hundredlog-translation-tools > .hundredlog-muted { display: block; margin-top: 7px; }
 #hundredlog .hundredlog-translation-tools .hundredlog-help-fold { margin: 5px 0 0; }
 #hundredlog .hundredlog-original { margin-top: 9px; font-size: .83em; opacity: .8; }
@@ -88,6 +91,5 @@
 #hundredlog .hundredlog-setting-toggle { margin-top: 14px; }
 #hundredlog .hundredlog-edit textarea { display: block; width: 100%; }
 #hundredlog .hundredlog-history .hundredlog-list, #hundredlog-history { margin-top: 12px; }
-#hundredlog .hundredlog-translation-tools { border-bottom: 0; margin-top: 16px; margin-bottom: 0; padding-bottom: 0; }
 #hundredlog .hundredlog-translation-tools > .hundredlog-row { margin-top: 10px; }
 #hundredlog .hundredlog-section-title { flex-wrap: wrap; }

@@ -203,19 +203,19 @@ export function reconcileMemory(value, chat) {
 
 export function memoryInjection(facts, recent = '', limit = 12, forceSelected = false) {
     const active = facts.filter((fact) => fact.active && isCurrent(fact));
-    const safeLimit = Math.max(4, Math.min(20, Number(limit) || 12));
+    const requested = Math.floor(Number(limit));
+    const safeLimit = Number.isFinite(requested) && requested >= 1 ? requested : 12;
     const related = new Set(pickFacts(recent, active, safeLimit * 2).map((fact) => fact.id));
     const eligible = forceSelected ? active : active.filter((fact) => fact.pinned || related.has(fact.id)
         || ['commitment', 'relationship', 'temporary', 'state'].includes(fact.kind) || Number(fact.importance) >= 4);
     const ranked = eligible.map((fact) => ({ fact, score: (fact.pinned ? 20 : 0) + (related.has(fact.id) ? 8 : 0)
         + (fact.kind === 'commitment' ? 4 : 0) + (fact.kind === 'relationship' ? 2 : 0) + (fact.importance || 3) }))
         .sort((a, b) => b.score - a.score || (b.fact.createdAt || 0) - (a.fact.createdAt || 0));
-    const selected = []; let size = 0;
+    const selected = [];
     for (const { fact } of ranked) {
         const row = { kind: fact.kind || 'fact', memory: fact.text, knowledge: normalizeKnowledge(fact.knowledge) };
-        const length = JSON.stringify(row).length;
-        if (size + length > 5500 || selected.length >= safeLimit) continue;
-        selected.push(row); size += length;
+        if (selected.length >= safeLimit) break;
+        selected.push(row);
     }
     return selected.length ? '<LOG100_CONTEXT>\nContinuity notes extracted from the latest 100 visible RP messages. These are not dialogue or permanent lore. Respect established facts while allowing explicitly supported new changes. Commitments are pending, never already completed. A character must not act on information explicitly marked unknown to them. Follow the existing RP output language, not the language of these notes.\n' + JSON.stringify(selected) + '\n</LOG100_CONTEXT>' : '';
 }
