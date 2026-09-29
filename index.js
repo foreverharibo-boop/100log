@@ -27,6 +27,7 @@ let memoryForcePending = false;
 let memoryEpoch = 0;
 let normalGenerating = false;
 let memoryHooksInstalled = false;
+let activeReviewToast = null;
 
 const context = () => SillyTavern.getContext();
 const $id = (id) => document.getElementById(`hundredlog-${id}`);
@@ -305,6 +306,28 @@ async function save() {
 function status(value) {
     statusText = value;
     if ($id('status')) $id('status').textContent = value;
+}
+
+function clearReviewToast() {
+    try {
+        if (activeReviewToast && typeof globalThis.toastr?.clear === 'function') globalThis.toastr.clear(activeReviewToast);
+    } catch { /* a toast failure must never stop generation */ }
+    activeReviewToast = null;
+}
+
+function reviewNotice(message, level = 'info', persistent = true) {
+    clearReviewToast();
+    try {
+        const notify = globalThis.toastr?.[level];
+        if (typeof notify !== 'function') return;
+        activeReviewToast = notify(message, '100LOG', {
+            timeOut: persistent ? 0 : 2200,
+            extendedTimeOut: persistent ? 0 : 500,
+            closeButton: persistent,
+            tapToDismiss: !persistent,
+            newestOnTop: true,
+        });
+    } catch { activeReviewToast = null; }
 }
 
 function showView(view) {
@@ -844,16 +867,23 @@ async function runHidden(key, lastMessage) {
         let final = draft;
         if (flagged.length) {
             status(`설정 충돌 ${flagged.length}곳을 발견했어요. 메인 AI에게 수정 요청 중이에요…`);
+            reviewNotice(`연속성 오류 ${flagged.length}곳을 발견해 답변을 수정 중이에요…`, 'warning', true);
             final = String(await ctx.generateQuietPrompt({ quietPrompt: correctionPrompt(draft, flagged, activeContext) }) ?? '').trim();
             if (!final) throw new Error('수정 답변이 비어 있어 게시하지 않았어요.');
             status('수정 답변을 한 번 더 확인하고 있어요…');
+            reviewNotice('수정된 답변을 JEV가 다시 검수 중이에요…', 'info', true);
             const again = await judge(final, facts, recent, ctx.name2);
             if (again.length) throw new Error(`재검수 후에도 설정 충돌 ${again.length}곳이 남아 있어 답변을 표시하지 않았어요.`);
         }
         if (!final || final.length > 18000) throw new Error('최종 답변의 길이를 확인할 수 없어 게시하지 않았어요.');
         await commitReply(final, key, lastMessage);
         status(flagged.length ? `충돌 ${flagged.length}곳을 고쳐 게시했어요.` : '설정 충돌 없이 답변을 게시했어요.');
-    } catch (error) { console.error('[100LOG] 생성/검수 실패:', error); status(`답변을 표시하지 않았어요: ${error.message}`); }
+        reviewNotice(flagged.length ? `연속성 오류 ${flagged.length}곳을 수정하고 답변을 표시했어요.` : '검수 완료 · 답변을 표시했어요.', 'success', false);
+    } catch (error) {
+        console.error('[100LOG] 생성/검수 실패:', error);
+        status(`답변을 표시하지 않았어요: ${error.message}`);
+        reviewNotice(`검수를 통과하지 못해 답변을 표시하지 않았어요. ${error.message}`, 'error', false);
+    }
     finally {
         try { await clearLegacyPrompt(); } catch (error) { console.error('[100LOG] 이전 주입문 정리 실패:', error); }
         busy = false; normalGenerating = false; render(); if (memoryPending) scheduleMemory();
@@ -866,9 +896,9 @@ globalThis.hundredlogGenerationInterceptor = async function (_promptChat, _size,
     if (!config.strictReview || ![undefined, 'normal'].includes(type) || !chatKey(ctx)) return;
     const confirmed = data(false)?.facts.filter((fact) => fact.active && isCurrent(fact)) ?? [];
     if (!confirmed.length) return;
-    if (!apiKey()) { abort(true); status('Jev API 키가 없어 공개 전 엄격 검수를 실행하지 못했어요.'); return; }
-    if (extracting || translating) { abort(true); status('연속성 규칙 갱신 또는 번역을 마친 뒤 답변을 생성해 주세요.'); return; }
-    if (busy) { abort(true); status('이미 JEV 엄격 검수를 진행하고 있어요. 잠시 기다려 주세요.'); return; }
+    if (!apiKey()) { abort(true); status('Jev API 키가 없어 공개 전 엄격 검수를 실행하지 못했어요.'); reviewNotice('JEV API 키가 없어 답변 검수를 시작하지 못했어요.', 'error', false); return; }
+    if (extracting || translating) { abort(true); status('연속성 규칙 갱신 또는 번역을 마친 뒤 답변을 생성해 주세요.'); reviewNotice('규칙 갱신 또는 번역이 끝난 뒤 다시 보내 주세요.', 'warning', false); return; }
+    if (busy) { abort(true); status('이미 JEV 엄격 검수를 진행하고 있어요. 잠시 기다려 주세요.'); reviewNotice('이미 답변을 생성하고 검수 중이에요.', 'info', false); return; }
     const last = ctx.chat.at(-1);
     if (!last?.is_user) { abort(true); status('마지막 메시지가 사용자 메시지가 아니라 엄격 검수 생성을 멈췄어요.'); return; }
     const key = chatKey(ctx);
@@ -876,6 +906,7 @@ globalThis.hundredlogGenerationInterceptor = async function (_promptChat, _size,
     render();
     abort(true);
     status('답변을 화면에 표시하지 않고 숨은 초안으로 생성할게요…'); render();
+    reviewNotice('답변을 생성하고 JEV가 공개 전에 검수 중이에요…', 'info', true);
     // Let SillyTavern finish unwinding the aborted normal generation first.
     setTimeout(() => { void runHidden(key, last); }, 300);
 };
