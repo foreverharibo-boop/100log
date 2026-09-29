@@ -6,7 +6,7 @@
       <label class="memorybean-toggle"><input id="memorybean-auto-memory" type="checkbox"><span>자동 기억</span></label>
     </div>
     <details class="memorybean-guide"><summary>처음이라면 · 딱 이것만 알아두세요</summary>
-      <p class="memorybean-help">설정에서 기억을 정리할 AI의 연결 프로필을 고르고 평소처럼 RP하세요. 답변이 끝나면 AI가 기억을 자동으로 추가·갱신해요. 후보를 하나씩 승인할 필요 없어요.</p>
+      <p class="memorybean-help">설정에서 기억을 정리할 AI의 연결 프로필을 고르고 평소처럼 RP하세요. 설정한 답변 수가 쌓이면 AI가 기억을 자동으로 추가·갱신해요. 후보를 하나씩 승인할 필요 없어요.</p>
       <p class="memorybean-help">‘내일 만나자’는 약속으로 기억하고, 실제로 만나면 지난 기억으로 보내요. 계획만 했거나 결과가 애매하면 완료 처리하지 않아요. 새 기억은 한국어로 요약해요.</p>
       <p class="memorybean-help">잘못된 것만 수정하거나 삭제하면 돼요. ‘보호’한 기억은 AI가 자동 변경하지 않아요. 새 답변 뒤에 정리용 API가 추가로 호출돼요.</p>
     </details>
@@ -16,7 +16,7 @@
       <button type="button" id="memorybean-tab-settings" class="memorybean-tab" aria-pressed="false" aria-controls="memorybean-view-settings">설정</button>
     </nav>
     <div id="memorybean-view-memory" class="memorybean-view" role="region" aria-labelledby="memorybean-tab-memory">
-      <div class="memorybean-section-title"><strong>지금 기억 중</strong><span id="memorybean-count"></span><button type="button" id="memorybean-sync-now" class="menu_button">지금 정리</button></div>
+      <div class="memorybean-section-title"><strong>지금 기억 중</strong><span id="memorybean-count"></span><div class="memorybean-title-actions"><button type="button" id="memorybean-sync-now" class="menu_button">지금 정리</button><button type="button" id="memorybean-undo-last" class="menu_button">최근 정리 되돌리기</button></div></div>
       <div id="memorybean-facts" class="memorybean-list"></div>
       <details class="memorybean-fold memorybean-compose"><summary>직접 추가 · 기존 기억 갱신</summary>
         <label for="memorybean-newfact" class="memorybean-label">기억할 내용</label>
@@ -40,6 +40,11 @@
       <label for="memorybean-extraction-profile" class="memorybean-label">자동 기억 · 이전 대화 정리용 프로필</label><select id="memorybean-extraction-profile" class="memorybean-profile-select"></select>
       <label for="memorybean-translation-profile" class="memorybean-label">한국어 번역용 프로필</label><select id="memorybean-translation-profile" class="memorybean-profile-select"></select>
       <p class="memorybean-help">실리태번에 저장한 연결 프로필을 선택해요. 별도 프로필을 고르면 RP용 메인 API를 바꾸지 않고 그 AI가 기억을 정리해요.</p>
+      <div class="memorybean-setting-grid">
+        <label for="memorybean-analysis-interval"><span>자동 정리 주기</span><select id="memorybean-analysis-interval"><option value="1">AI 답변 1개마다</option><option value="2">AI 답변 2개마다</option><option value="3">AI 답변 3개마다</option><option value="5">AI 답변 5개마다</option></select></label>
+        <label for="memorybean-injection-limit"><span>한 번에 전달할 기억</span><select id="memorybean-injection-limit"><option value="8">최대 8개</option><option value="12">최대 12개</option><option value="16">최대 16개</option><option value="20">최대 20개</option></select></label>
+      </div>
+      <p class="memorybean-help">기본값은 답변 3개마다 정리하고, 관련성·중요도가 높은 기억을 최대 12개 전달해요. 지금 정리는 주기를 기다리지 않고 실행해요.</p>
       <label class="memorybean-toggle memorybean-setting-toggle"><input id="memorybean-inject-memory" type="checkbox"><span>현재 기억을 다음 RP에 전달</span></label>
       <p class="memorybean-help">현재 기억 중 관련성·중요도에 따라 최대 20개를 전달해요. 지난 기억은 제외해요.</p>
       <details class="memorybean-fold"><summary>이전 대화 가져오기 · 장면 관리</summary>
@@ -49,7 +54,7 @@
       </details>
       <details class="memorybean-fold"><summary>선택 기능 · Jev 답변 검수</summary>
         <label class="memorybean-toggle memorybean-setting-toggle"><input id="memorybean-enabled" type="checkbox"><span>답변을 보여주기 전에 검수</span></label>
-        <p class="memorybean-help">현재 기억과 답변이 충돌하면 메인 AI에 한 번 수정을 요청해요. 자동 기억만 사용할 때는 Jev 키가 필요 없어요.</p>
+        <p class="memorybean-help">Jev는 기억을 만들거나 저장하지 않아요. 공개되기 전 답변이 현재 기억과 충돌하는지만 판정하고, 충돌하면 메인 AI에 한 번 수정을 요청해요. 자동 기억만 사용할 때는 Jev 키가 필요 없어요.</p>
         <label for="memorybean-key" class="memorybean-label">Jev API 키</label><input id="memorybean-key" type="password" autocomplete="off" spellcheck="false" placeholder="TypeSafe API 키">
         <div class="memorybean-row memorybean-connection-actions"><button type="button" id="memorybean-test" class="menu_button">연결 확인</button><button type="button" id="memorybean-clearkey" class="menu_button">키 삭제</button><span id="memorybean-server" class="memorybean-state" aria-live="polite">API 키를 입력해 주세요</span></div>
         <p id="memorybean-connection-error" class="memorybean-help memorybean-connection-error" role="alert" hidden></p>

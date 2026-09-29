@@ -16,6 +16,9 @@
 #memorybean .memorybean-state { font-size: .82em; overflow-wrap: anywhere; }
 #memorybean .memorybean-section { border-top: 1px solid var(--SmartThemeBorderColor); padding-top: 16px; margin-top: 18px; }
 #memorybean .memorybean-section-title { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+#memorybean .memorybean-title-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+#memorybean .memorybean-setting-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 14px; }
+#memorybean .memorybean-setting-grid label { display: grid; gap: 6px; font-size: .86em; }
 #memorybean .memorybean-section-title span, #memorybean .memorybean-muted, #memorybean-history-count { opacity: .72; font-size: .82em; }
 #memorybean .memorybean-label { display: block; margin: 12px 0 6px; font-size: .88em; }
 #memorybean .memorybean-help { margin: 7px 0 0; font-size: .85em; line-height: 1.6; opacity: .78; }
@@ -69,6 +72,7 @@
   #memorybean-wand-body { padding-left: 14px; padding-right: 8px; }
   #memorybean .memorybean-overview { gap: 10px; }
   #memorybean .memorybean-tabs { margin-bottom: 14px; }
+  #memorybean .memorybean-setting-grid { grid-template-columns: 1fr; }
 }
 
 #memorybean .memorybean-guide { margin: 0 0 14px; padding-bottom: 12px; border-bottom: 1px solid var(--SmartThemeBorderColor); font-size: .88em; }

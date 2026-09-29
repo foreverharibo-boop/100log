@@ -1,4 +1,4 @@
-import { MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, memoryInjection } from './memory-engine.js';
+import { MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection } from './memory-engine.js';
 import { availableProfiles, generateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, buildRelevanceChecks, selectRelevantFacts, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId } from './core.js';
 
 const NAME = 'memorybean';
@@ -20,6 +20,7 @@ let previousFocus = null;
 let memoryRun = null;
 let memoryTimer = null;
 let memoryPending = false;
+let memoryForcePending = false;
 let memoryEpoch = 0;
 let normalGenerating = false;
 let memoryHooksInstalled = false;
@@ -127,6 +128,8 @@ function settings() {
     ctx.extensionSettings[NAME].injectMemory ??= true;
     ctx.extensionSettings[NAME].extractionProfileId ??= '';
     ctx.extensionSettings[NAME].translationProfileId ??= '@extraction';
+    ctx.extensionSettings[NAME].analysisInterval ??= 3;
+    ctx.extensionSettings[NAME].maxInjectedMemories ??= 12;
     return ctx.extensionSettings[NAME];
 }
 
@@ -302,7 +305,10 @@ function render() {
     $id('auto-memory').checked = settings().autoMemory;
     $id('auto-memory').disabled = busy || translating;
     $id('inject-memory').checked = settings().injectMemory;
+    $id('analysis-interval').value = String(settings().analysisInterval);
+    $id('injection-limit').value = String(settings().maxInjectedMemories);
     $id('sync-now').disabled = working || !value || !settings().autoMemory;
+    $id('undo-last').disabled = working || !value || !value.autoMemory?.journal?.some((entry) => entry.changes?.length && !entry.undoneAt);
     refreshProfiles();
     const allRecords = value ? [...value.facts, ...value.candidates] : [];
     const missing = allRecords.filter((record) => !hasTranslation(record)).length;
@@ -311,7 +317,7 @@ function render() {
     $id('translate-missing').disabled = working || !missing;
     $id('translate-stop').disabled = !translating;
     $id('translate-stop').hidden = !translating;
-    for (const id of ['extraction-profile', 'translation-profile', 'profiles-refresh']) $id(id).disabled = working;
+    for (const id of ['extraction-profile', 'translation-profile', 'profiles-refresh', 'analysis-interval', 'injection-limit']) $id(id).disabled = working;
     $id('enabled').checked = Boolean(settings().enabled);
     $id('enabled').disabled = working;
     $id('key').disabled = working;
@@ -331,7 +337,7 @@ function render() {
     $id('count').textContent = value ? `${currentFacts.filter((item) => item.active).length}개 기억 중` : '채팅을 선택해 주세요';
     $id('history-count').textContent = `${history.length}개`;
     $id('candidate-count').textContent = value ? `${value.candidates.length}개` : '';
-    $id('progress').textContent = value ? `읽은 대화 ${value.extractionCursor}/${context().chat.length}` : '';
+    $id('progress').textContent = value ? memoryProgressText(value, context()) : '';
     const manualChoice = $id('replaces').value;
     $id('replaces').replaceChildren(...(value ? [...replacementSelect(value, manualChoice).children] : []));
     if (value) $id('replaces').value = currentFacts.some((item) => item.id === manualChoice && item.active) ? manualChoice : '';
@@ -451,25 +457,49 @@ async function refreshMemoryPrompt() {
     const ctx = context();
     const value = data(false);
     const enabled = settings().autoMemory && settings().injectMemory;
-    const text = enabled && value ? memoryInjection(value.facts, recentChat(ctx)) : '';
+    const text = enabled && value ? memoryInjection(value.facts, recentChat(ctx), settings().maxInjectedMemories) : '';
     if (typeof ctx.setExtensionPrompt === 'function') await ctx.setExtensionPrompt('memorybean-memory', text, 1, 1, false, 0);
 }
 
-function scheduleMemory() {
+function completedAssistantCount(ctx, start = 0) {
+    return ctx.chat.slice(Math.max(0, start)).filter((message) => message && !message.is_user && !message.is_system
+        && !message.is_hidden && !message.hidden && String(message.mes ?? '').trim()).length;
+}
+
+function memoryProgressText(value, ctx) {
+    const auto = initializeAuto(value, ctx.chat);
+    const count = completedAssistantCount(ctx, auto.cursor);
+    const interval = Math.max(1, Math.min(10, Number(settings().analysisInterval) || 3));
+    return `읽은 대화 ${value.extractionCursor}/${ctx.chat.length} · 다음 자동 정리 ${Math.min(count, interval)}/${interval}`;
+}
+
+function memoryDue(value = data(false), ctx = context()) {
+    if (!value) return false;
+    const auto = initializeAuto(value, ctx.chat);
+    if (auto.offset > 0) return true;
+    return completedAssistantCount(ctx, auto.cursor) >= Math.max(1, Math.min(10, Number(settings().analysisInterval) || 3));
+}
+
+function scheduleMemory({ force = false } = {}) {
     if (!settings().autoMemory || !chatKey(context())) return;
+    if (!force && !memoryDue()) { memoryPending = false; render(); return; }
     memoryPending = true;
+    memoryForcePending ||= force;
     if (memoryTimer !== null) clearTimeout(memoryTimer);
     memoryTimer = setTimeout(() => {
         memoryTimer = null;
         if (!memoryPending || normalGenerating || busy || extracting || translating) return;
-        void syncMemories();
+        const runForced = memoryForcePending;
+        memoryForcePending = false;
+        void syncMemories({ force: runForced });
     }, 450);
 }
 
 export function syncMemories(options = {}) {
     if (memoryRun) return memoryRun;
     if (busy || extracting || translating || !chatKey(context())) return Promise.resolve();
-    const task = performMemorySync(options);
+    const task = performMemorySync({ ...options, force: Boolean(options.force || memoryForcePending) });
+    memoryForcePending = false;
     memoryRun = task;
     void task.finally(() => {
         memoryRun = null;
@@ -478,7 +508,7 @@ export function syncMemories(options = {}) {
     return task;
 }
 
-async function performMemorySync({ fromStart = false } = {}) {
+async function performMemorySync({ fromStart = false, force = false } = {}) {
     const ctx = context();
     const key = chatKey(ctx);
     const value = data();
@@ -486,6 +516,7 @@ async function performMemorySync({ fromStart = false } = {}) {
     const epoch = memoryEpoch;
     const sameChat = () => chatKey(context()) === key && data(false) === value && epoch === memoryEpoch;
     const auto = initializeAuto(value, ctx.chat);
+    if (!fromStart && !force && !memoryDue(value, ctx)) return;
     memoryPending = false;
     extracting = true; stopExtractionRequested = false;
     render();
@@ -542,7 +573,7 @@ export function installMemoryHooks(ctx = context()) {
         if (dryRun || ['quiet', 'impersonate'].includes(type) || eventData?.quiet_prompt) return;
         normalGenerating = true;
         if (memoryRun) await memoryRun;
-        if (memoryPending && !busy && !extracting && !translating) await syncMemories();
+        if (memoryPending && !busy && !extracting && !translating) await syncMemories({ force: memoryForcePending });
         const value = data(false);
         if (value && reconcileMemory(value, context().chat)) await save();
         await refreshMemoryPrompt();
@@ -561,7 +592,7 @@ export function installMemoryHooks(ctx = context()) {
             reconcileMemory(value, context().chat);
             void save().catch((error) => status(error.message));
         }
-        scheduleMemory();
+        scheduleMemory({ force: true });
     });
 }
 
@@ -858,7 +889,16 @@ async function main() {
         status(temporary.length ? `임시 사실 ${temporary.length}개를 껐어요. 다시 켜면 복구할 수 있어요.` : '현재 켜진 임시 사실이 없어요.');
     });
     $id('extract')?.addEventListener('click', () => { void collectHistory(); });
-    $id('sync-now')?.addEventListener('click', () => { void syncMemories(); });
+    $id('sync-now')?.addEventListener('click', () => { void syncMemories({ force: true }); });
+    $id('undo-last')?.addEventListener('click', async () => {
+        const value = data(false);
+        if (!value) return;
+        const count = undoLatestMemoryBatch(value);
+        if (!count) { status('되돌릴 자동 변경이 없거나, 이후 직접 수정·보호한 기억이라 건드리지 않았어요.'); render(); return; }
+        await save();
+        render();
+        status(`최근 자동 정리에서 바뀐 기억 ${count}개를 되돌렸어요.`);
+    });
     $id('auto-memory')?.addEventListener('change', async (event) => {
         settings().autoMemory = event.target.checked;
         memoryEpoch++; memoryPending = false;
@@ -870,6 +910,20 @@ async function main() {
     });
     $id('inject-memory')?.addEventListener('change', async (event) => {
         settings().injectMemory = event.target.checked; context().saveSettingsDebounced(); await refreshMemoryPrompt();
+    });
+    $id('analysis-interval')?.addEventListener('change', (event) => {
+        settings().analysisInterval = Math.max(1, Math.min(5, Number(event.target.value) || 3));
+        context().saveSettingsDebounced();
+        render();
+        scheduleMemory();
+        status(`AI 답변 ${settings().analysisInterval}개마다 기억을 자동 정리해요.`);
+    });
+    $id('injection-limit')?.addEventListener('change', async (event) => {
+        settings().maxInjectedMemories = Math.max(4, Math.min(20, Number(event.target.value) || 12));
+        context().saveSettingsDebounced();
+        await refreshMemoryPrompt();
+        render();
+        status(`다음 RP에 관련 기억을 최대 ${settings().maxInjectedMemories}개 전달해요.`);
     });
     $id('stop')?.addEventListener('click', () => { stopExtractionRequested = true; status('진행 중인 묶음을 마치고 수집을 멈출게요.'); });
     ctx.eventSource.on((ctx.eventTypes ?? ctx.event_types).CHAT_CHANGED, () => {
