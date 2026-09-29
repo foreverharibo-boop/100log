@@ -1,5 +1,5 @@
 import { MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow } from './memory-engine.js';
-import { RECENT_MESSAGE_LIMIT, availableProfiles, generateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, buildRelevanceChecks, selectRelevantFacts, packEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, isVisibleChatMessage } from './core.js';
+import { RECENT_MESSAGE_LIMIT, availableProfiles, generateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, buildRelevanceChecks, selectRelevantFacts, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, isVisibleChatMessage } from './core.js';
 
 const NAME = 'hundredlog';
 const LEGACY_NAME = 'memorybean';
@@ -103,6 +103,17 @@ async function googleTranslateInputs(inputs) {
 function embeddingText(fact) {
     return [fact.text, fact.keywords, fact.entity, fact.attribute, Object.keys(normalizeKnowledge(fact.knowledge)).join(' ')]
         .filter(Boolean).join(' ').trim().slice(0, 6000);
+}
+
+export function embeddingCoverage(facts, index, provider = 'google-ai-studio') {
+    const model = EMBEDDING_MODELS[provider] ?? EMBEDDING_MODELS['google-ai-studio'];
+    const active = facts.filter((fact) => fact?.active && isCurrent(fact));
+    const compatible = index?.provider === provider && index?.model === model;
+    const completed = compatible ? active.filter((fact) => {
+        const entry = index?.entries?.[fact.id];
+        return entry?.text === embeddingText(fact) && Boolean(unpackEmbedding(entry.vector));
+    }).length : 0;
+    return { completed, total: active.length, missing: active.length - completed };
 }
 
 async function requestGoogleJson(url, key, payload, label) {
@@ -258,6 +269,73 @@ async function requestJev(state, questions) {
     if (!result?.answers || typeof result.answers !== 'object') throw new Error('Jev 응답에 판정 결과가 없어요.');
     lastJevTransport = transport;
     return result;
+}
+
+export async function reviewExtractedKnowledge(operations, rows, contextRows = [], currentFacts = []) {
+    const reviewed = operations.map((operation) => ({ ...operation, knowledge: normalizeKnowledge(operation.knowledge) }));
+    const checks = [];
+    reviewed.forEach((operation, operationIndex) => {
+        if (!['add', 'update'].includes(operation.action)) return;
+        for (const [character, proposedStatus] of Object.entries(operation.knowledge)) {
+            checks.push({ operationIndex, character, proposedStatus });
+        }
+    });
+    if (!checks.length) return { operations: reviewed, checked: 0, changed: 0, removed: 0, noKey: false };
+    if (!apiKey()) {
+        for (const operation of reviewed) operation.knowledge = {};
+        return { operations: reviewed, checked: 0, changed: 0, removed: checks.length, noKey: true };
+    }
+    let changed = 0, removed = 0;
+    for (let start = 0; start < checks.length; start += 20) {
+        const batch = checks.slice(start, start + 20);
+        const knowledgeChecks = batch.map(({ operationIndex, character, proposedStatus }) => {
+            const operation = reviewed[operationIndex];
+            const prior = currentFacts.find((fact) => fact.id === operation.id);
+            return {
+                character,
+                proposed_status: proposedStatus,
+                proposed_memory: operation.text,
+                exact_new_evidence: operation.sourceText ?? '',
+                previous_memory: prior ? { text: prior.text, knowledge: normalizeKnowledge(prior.knowledge) } : null,
+            };
+        });
+        const questions = {};
+        batch.forEach((_check, index) => {
+            questions[`k${index}`] = {
+                type: 'choice',
+                instructions: `Decide whether the character in knowledge_checks[${index}] knows EVERY clause of proposed_memory at this exact point in the story. Evaluate only recent_context, new_messages, exact_new_evidence, and previous_memory. A name appearing in the memory or knowing only one clause is not enough. For a private exchange, an absent third party does not know what was said unless sharing is shown. If the compound memory contains any clause the character does not know, choose unknown. Do not invent off-screen information transfer.`,
+                criteria: {
+                    known: 'The character directly participated, witnessed the entire event, was told every clause, disclosed it themselves, or previous_memory explicitly proves complete knowledge.',
+                    unknown: 'The context supports that the character did not witness or receive at least one clause, was outside the private exchange, or is explicitly unaware.',
+                    unverified: 'The supplied context cannot establish either complete knowledge or supported lack of knowledge.',
+                },
+            };
+        });
+        const body = await requestJev({
+            recent_context: contextRows.slice(-8),
+            new_messages: rows.map(({ id, role, name, text }) => ({ id, role, name, text })),
+            knowledge_checks: knowledgeChecks,
+        }, questions);
+        batch.forEach(({ operationIndex, character, proposedStatus }, index) => {
+            const answer = body.answers?.[`k${index}`];
+            const confidence = Number(answer?.confidence);
+            const operation = reviewed[operationIndex];
+            if (answer?.type !== 'choice' || !['known', 'unknown', 'unverified'].includes(answer.choice)
+                || !Number.isFinite(confidence) || confidence < .65) {
+                delete operation.knowledge[character];
+                removed++;
+                return;
+            }
+            if (answer.choice === 'unverified') {
+                delete operation.knowledge[character];
+                removed++;
+                return;
+            }
+            operation.knowledge[character] = answer.choice;
+            if (answer.choice !== proposedStatus) changed++;
+        });
+    }
+    return { operations: reviewed, checked: checks.length, changed, removed, noKey: false };
 }
 
 function positiveInteger(value, fallback) {
@@ -470,6 +548,7 @@ function knowledgeEditor(record, persist) {
 function render() {
     if (!$id('facts')) return;
     const value = data();
+    const currentFacts = value?.facts.filter(isCurrent) ?? [];
     const working = busy || extracting || translating;
     $id('auto-memory').checked = settings().autoMemory;
     $id('auto-memory').disabled = busy || translating;
@@ -505,6 +584,9 @@ function render() {
     $id('embedding-key').disabled = working;
     $id('embedding-test').disabled = working;
     $id('embedding-clearkey').disabled = working;
+    const coverage = embeddingCoverage(currentFacts, value?.embeddingIndex, embeddingProvider());
+    $id('embedding-progress').textContent = `현재 기억 임베딩 ${coverage.completed}/${coverage.total}개 완료${coverage.missing ? ` · ${coverage.missing}개 미완료` : ''}`;
+    $id('embedding-retry').disabled = working || !embeddingKey() || coverage.total === 0 || coverage.missing === 0;
     $id('extract').disabled = working || !value;
     $id('stop').disabled = !extracting;
     $id('add').disabled = working || !value;
@@ -514,7 +596,6 @@ function render() {
     $id('facts').replaceChildren();
     $id('candidates').replaceChildren();
     $id('history').replaceChildren();
-    const currentFacts = value?.facts.filter(isCurrent) ?? [];
     const history = value?.facts.filter((item) => !isCurrent(item)) ?? [];
     $id('count').textContent = value ? `${currentFacts.filter((item) => item.active).length}개 기억 중` : '채팅을 선택해 주세요';
     $id('history-count').textContent = `${history.length}개`;
@@ -530,7 +611,7 @@ function render() {
     for (const fact of currentFacts) {
         const item = document.createElement('div'); item.className = 'hundredlog-item';
         const title = document.createElement('div'); title.className = 'hundredlog-text'; title.textContent = displayText(fact); item.append(title);
-        const meta = document.createElement('div'); meta.className = 'hundredlog-meta'; meta.textContent = `${MEMORY_KINDS[fact.kind] || '중요한 사실'} · ${fact.pinned ? '보호됨' : fact.origin === 'auto' ? '자동 관리' : '직접 저장'}${fact.active ? '' : ' · 잠시 꺼짐'}${Number.isInteger(fact.sourceId) ? ` · 대화 #${fact.sourceId}` : ''}`; item.append(meta);
+        const meta = document.createElement('div'); meta.className = 'hundredlog-meta'; meta.textContent = `${MEMORY_KINDS[fact.kind] || '중요한 사실'} · ${fact.scope === 'scene' ? '임시 기억' : '지속 기억'} · ${fact.pinned ? '자동 변경 잠금' : fact.origin === 'auto' ? '자동 관리' : '직접 저장'}${fact.active ? '' : ' · 잠시 꺼짐'}${Number.isInteger(fact.sourceId) ? ` · 대화 #${fact.sourceId}` : ''}`; item.append(meta);
         const actions = document.createElement('div'); actions.className = 'hundredlog-actions';
         actions.append(makeButton('수정', () => {
             if (data(false) !== value) return;
@@ -540,13 +621,13 @@ function render() {
             controls.append(makeButton('수정 저장', async () => {
                 if (data(false) !== value || !input.value.trim()) return;
                 fact.text = input.value.trim(); fact.pinned = true; delete fact.translatedKo;
-                await save(); render(); status('수정한 기억을 보호했어요. AI가 자동으로 바꾸지 않아요.');
+                await save(); render(); status('수정한 기억을 자동 변경 잠금했어요. AI가 자동으로 바꾸지 않아요.');
             }), makeButton('취소', () => render()));
             editor.append(input, controls); item.replaceChildren(editor);
         }));
-        actions.append(makeButton(fact.pinned ? '보호 해제' : '보호', async () => { if (data(false) !== value) return; fact.pinned = !fact.pinned; await save(); render(); }));
+        actions.append(makeButton(fact.pinned ? '자동 잠금 해제' : '자동 변경 잠금', async () => { if (data(false) !== value) return; fact.pinned = !fact.pinned; await save(); render(); }));
         actions.append(makeButton(fact.active ? '잠시 끄기' : '다시 켜기', async () => { fact.active = !fact.active; await save(); render(); }));
-        actions.append(makeButton(fact.scope === 'scene' ? '지속 설정으로' : '현재 장면만', async () => { fact.scope = fact.scope === 'scene' ? 'always' : 'scene'; await save(); render(); }));
+        actions.append(makeButton(fact.scope === 'scene' ? '지속 기억으로' : '임시 기억으로', async () => { fact.scope = fact.scope === 'scene' ? 'always' : 'scene'; await save(); render(); }));
         actions.append(makeButton('삭제', async () => { if (data(false) !== value) return; removeFact(value, fact.id); await save(); render(); }));
         item.append(actions); $id('facts').append(item);
         appendOriginal(item, fact);
@@ -569,7 +650,7 @@ function render() {
             for (let i = 0; current?.supersededBy && i < value.facts.length; i++) current = value.facts.find((entry) => entry.id === current.supersededBy);
             try {
                 approveFact(value, restored, current?.active && isCurrent(current) ? current.id : null);
-                await save(); render(); status('현재 기억으로 복원하고 보호했어요.');
+                await save(); render(); status('현재 기억으로 복원하고 자동 변경 잠금했어요.');
             } catch (error) { status(error.message); }
         }));
         $id('history').append(item);
@@ -704,7 +785,7 @@ async function performMemorySync({ rebuildRecent = false, force = false } = {}) 
     memoryPending = false;
     extracting = true; stopExtractionRequested = false;
     render();
-    let changed = 0, uncertain = 0;
+    let changed = 0, uncertain = 0, knowledgeChecked = 0, knowledgeCorrected = 0, knowledgeRemoved = 0;
     try {
         if (rebuildRecent) resetRecentWindow(value, ctx.chat);
         else pruneToRecentWindow(value, ctx.chat);
@@ -735,6 +816,15 @@ async function performMemorySync({ rebuildRecent = false, force = false } = {}) 
                     return;
                 }
                 parsed = parseMemoryOperations(raw, rows, value.facts);
+                if (parsed.operations.some((operation) => Object.keys(normalizeKnowledge(operation.knowledge)).length)) {
+                    status(`Jev가 새 기억의 인물별 지식을 검증 중이에요…`);
+                    const review = await reviewExtractedKnowledge(parsed.operations, rows, contextRows, value.facts);
+                    if (!sameChat()) return;
+                    parsed.operations = review.operations;
+                    knowledgeChecked += review.checked;
+                    knowledgeCorrected += review.changed;
+                    knowledgeRemoved += review.removed;
+                }
             }
             if (!sameChat()) return;
             const result = applyMemoryOperations(value, parsed.operations);
@@ -744,8 +834,13 @@ async function performMemorySync({ rebuildRecent = false, force = false } = {}) 
             value.extractionCursor = auto.cursor; value.extractionOffset = auto.offset;
             await save(); render();
         }
-        if (sameChat()) status(stopExtractionRequested ? `정리 중단 · 기억 ${changed}개 반영. 다음에 이어서 정리해요.`
-            : `최근 ${RECENT_MESSAGE_LIMIT}개 정리 완료 · ${changed}개 반영${uncertain ? ` · 불확실하거나 중복된 제안 ${uncertain}개는 건너뛰었어요` : ''}`);
+        if (sameChat()) {
+            const knowledgeResult = knowledgeChecked
+                ? ` · Jev 지식 ${knowledgeChecked}개 검증${knowledgeCorrected ? `, ${knowledgeCorrected}개 수정` : ''}${knowledgeRemoved ? `, ${knowledgeRemoved}개 제외` : ''}`
+                : knowledgeRemoved ? ` · Jev 키가 없어 자동 지식 표시 ${knowledgeRemoved}개 제외` : '';
+            status(stopExtractionRequested ? `정리 중단 · 기억 ${changed}개 반영. 다음에 이어서 정리해요.${knowledgeResult}`
+                : `최근 ${RECENT_MESSAGE_LIMIT}개 정리 완료 · ${changed}개 반영${uncertain ? ` · 불확실하거나 중복된 제안 ${uncertain}개는 건너뛰었어요` : ''}${knowledgeResult}`);
+        }
     } catch (error) { if (sameChat()) status(`기억 정리를 멈췄어요: ${error.message} ‘지금 정리’로 다시 시도할 수 있어요.`); }
     finally { extracting = false; render(); }
 }
@@ -825,7 +920,7 @@ async function ensureFactEmbeddings(facts, { announce = true } = {}) {
     const missing = facts.filter((fact) => {
         const text = embeddingText(fact);
         const entry = index.entries[fact.id];
-        return !entry || entry.text !== text || !entry.vector;
+        return !entry || entry.text !== text || !unpackEmbedding(entry.vector);
     });
     if (missing.length) {
         if (announce) status(`${embeddingLabel(provider)}로 사실 ${missing.length}개를 임베딩하고 있어요…`);
@@ -1168,6 +1263,26 @@ async function main() {
             status(error.message);
         } finally { busy = false; render(); }
     });
+    $id('embedding-retry')?.addEventListener('click', async () => {
+        try {
+            if (!embeddingKey()) throw new Error('임베딩 API 키를 먼저 입력해 주세요.');
+            const facts = data(false)?.facts.filter((fact) => fact.active && isCurrent(fact)) ?? [];
+            const before = embeddingCoverage(facts, data(false)?.embeddingIndex, embeddingProvider());
+            if (!before.total) { status('임베딩할 현재 기억이 없어요.'); return; }
+            if (!before.missing) { status(`현재 기억 ${before.total}개가 모두 임베딩되어 있어요.`); return; }
+            busy = true; render();
+            $id('embedding-state').textContent = `${embeddingLabel()} 누락 임베딩 재시도 중…`;
+            await ensureFactEmbeddings(facts);
+            const after = embeddingCoverage(facts, data(false)?.embeddingIndex, embeddingProvider());
+            $id('embedding-state').textContent = `${embeddingLabel()} 연결됨`;
+            embeddingError();
+            status(`누락 임베딩 재시도 완료 · ${after.completed}/${after.total}개 성공${after.missing ? ` · ${after.missing}개 미완료` : ''}`);
+        } catch (error) {
+            $id('embedding-state').textContent = '재시도 실패';
+            embeddingError(error.message);
+            status(error.message);
+        } finally { busy = false; render(); }
+    });
     $id('embedding-clearkey')?.addEventListener('click', () => {
         localStorage.removeItem(`${EMBEDDING_KEY_PREFIX}${embeddingProvider()}`);
         $id('embedding-key').value = '';
@@ -1261,7 +1376,7 @@ async function main() {
         const temporary = value.facts.filter((fact) => fact.active && isCurrent(fact) && fact.scope === 'scene');
         for (const fact of temporary) fact.active = false;
         await save(); render();
-        status(temporary.length ? `임시 사실 ${temporary.length}개를 껐어요. 다시 켜면 복구할 수 있어요.` : '현재 켜진 임시 사실이 없어요.');
+        status(temporary.length ? `임시 기억 ${temporary.length}개를 주입에서 제외했어요. 각 기억의 ‘다시 켜기’로 복구할 수 있어요.` : '현재 켜진 임시 기억이 없어요.');
     });
     $id('extract')?.addEventListener('click', () => { void collectHistory(); });
     $id('sync-now')?.addEventListener('click', () => { void syncMemories({ force: true }); });
@@ -1269,7 +1384,7 @@ async function main() {
         const value = data(false);
         if (!value) return;
         const count = undoLatestMemoryBatch(value);
-        if (!count) { status('되돌릴 자동 변경이 없거나, 이후 직접 수정·보호한 기억이라 건드리지 않았어요.'); render(); return; }
+        if (!count) { status('되돌릴 자동 변경이 없거나, 이후 직접 수정·자동 변경 잠금한 기억이라 건드리지 않았어요.'); render(); return; }
         await save();
         render();
         status(`최근 자동 정리에서 바뀐 기억 ${count}개를 되돌렸어요.`);

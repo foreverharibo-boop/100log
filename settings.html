@@ -19,12 +19,13 @@
       <button type="button" id="hundredlog-tab-settings" class="hundredlog-tab" aria-pressed="false" aria-controls="hundredlog-view-settings">설정</button>
     </nav>
     <div id="hundredlog-view-memory" class="hundredlog-view" role="region" aria-labelledby="hundredlog-tab-memory">
-      <div class="hundredlog-section-title"><strong>최근 100개에서 기억 중</strong><span id="hundredlog-count"></span><div class="hundredlog-title-actions"><button type="button" id="hundredlog-sync-now" class="menu_button">지금 갱신</button><button type="button" id="hundredlog-undo-last" class="menu_button">최근 갱신 되돌리기</button></div></div>
+      <div class="hundredlog-section-title"><strong>최근 100개에서 기억 중</strong><span id="hundredlog-count"></span><div class="hundredlog-title-actions"><button type="button" id="hundredlog-sync-now" class="menu_button">새 대화만 갱신</button><button type="button" id="hundredlog-undo-last" class="menu_button">최근 갱신 되돌리기</button></div></div>
+      <p class="hundredlog-help hundredlog-section-help">기존 기억은 유지하고 아직 정리하지 않은 새 대화만 이어서 반영해요.</p>
       <div id="hundredlog-facts" class="hundredlog-list"></div>
       <details class="hundredlog-fold hundredlog-compose"><summary>직접 추가 · 기존 기억 갱신</summary>
         <label for="hundredlog-newfact" class="hundredlog-label">기억할 내용</label>
         <div class="hundredlog-add"><textarea id="hundredlog-newfact" rows="2" placeholder="예: 서연의 왼쪽 손목에는 오래된 흉터가 있다."></textarea><select id="hundredlog-replaces" class="hundredlog-select" aria-label="기존 기억 갱신 대상"></select><button type="button" id="hundredlog-add" class="menu_button">저장</button></div>
-        <p class="hundredlog-help">직접 쓴 기억은 자동 변경되지 않도록 보호해요. AI가 관리하게 하려면 보호를 해제하세요.</p>
+        <p class="hundredlog-help">직접 쓴 기억은 자동 변경 잠금 상태로 저장해요. AI가 관리하게 하려면 잠금을 해제하세요.</p>
       </details>
     </div>
     <div id="hundredlog-view-candidates" class="hundredlog-view" role="region" aria-labelledby="hundredlog-tab-candidates" hidden>
@@ -45,10 +46,11 @@
       <p class="hundredlog-help">1 이상의 정수를 직접 입력하면 그 값 그대로 저장해요. 기본값은 AI 답변 1개마다 정리하고 기억을 최대 12개 전달해요. 실제 관련 기억이 적으면 입력한 수보다 적게 전달될 수 있어요.</p>
       <label class="hundredlog-toggle hundredlog-setting-toggle"><input id="hundredlog-inject-memory" type="checkbox"><span>현재 기억을 다음 RP에 전달</span></label>
       <p class="hundredlog-help">현재 기억 중 관련성·중요도가 높은 항목을 위에서 입력한 개수까지 전달해요. 지난 기억은 제외해요.</p>
-      <details class="hundredlog-fold"><summary>최근 100개 다시 분석 · 장면 관리</summary>
-        <p class="hundredlog-help">기존 자동 기억을 비우고 현재 채팅의 최근 100개만 처음부터 다시 분석해요. 직접 추가하거나 보호한 기억은 유지해요.</p>
-        <div class="hundredlog-row hundredlog-controls"><button type="button" id="hundredlog-extract" class="menu_button">최근 100개 다시 분석</button><button type="button" id="hundredlog-stop" class="menu_button" disabled>분석 중단</button><span id="hundredlog-progress" class="hundredlog-muted"></span></div>
-        <div class="hundredlog-scene"><button type="button" id="hundredlog-endscene" class="menu_button">임시 기억 잠시 끄기</button></div>
+      <details class="hundredlog-fold"><summary>최근 100개 재수집 · 임시 기억 관리</summary>
+        <p class="hundredlog-help">자동으로 만든 기존 기억을 비우고 최근 100개를 처음부터 다시 수집해요. 직접 추가하거나 자동 변경 잠금한 기억은 유지해요.</p>
+        <div class="hundredlog-row hundredlog-controls"><button type="button" id="hundredlog-extract" class="menu_button">최근 100개 처음부터 재수집</button><button type="button" id="hundredlog-stop" class="menu_button" disabled>수집 중단</button><span id="hundredlog-progress" class="hundredlog-muted"></span></div>
+        <div class="hundredlog-scene"><button type="button" id="hundredlog-endscene" class="menu_button">임시 기억 모두 끄기</button></div>
+        <p class="hundredlog-help">임시 기억은 현재 장면이나 가까운 몇 턴에만 필요한 사건이에요. 모두 끄기는 삭제하지 않고 주입에서 제외하며, 각 기억의 ‘다시 켜기’로 복구할 수 있어요.</p>
       </details>
       <details class="hundredlog-fold"><summary>Jev 맞춤 기억 · 엄격 검수</summary>
         <div class="hundredlog-section-title"><strong>사실 임베딩 연결</strong></div>
@@ -56,7 +58,8 @@
         <select id="hundredlog-embedding-provider" class="hundredlog-profile-select"><option value="google-ai-studio">Google AI Studio</option><option value="vertex-express">Vertex AI Express</option></select>
         <label for="hundredlog-embedding-key" class="hundredlog-label">임베딩 API 키</label>
         <input id="hundredlog-embedding-key" type="password" autocomplete="off" spellcheck="false" placeholder="선택한 제공처의 API 키">
-        <div class="hundredlog-row hundredlog-connection-actions"><button type="button" id="hundredlog-embedding-test" class="menu_button">연결 확인</button><button type="button" id="hundredlog-embedding-clearkey" class="menu_button">키 삭제</button><span id="hundredlog-embedding-state" class="hundredlog-state" aria-live="polite">API 키를 입력해 주세요</span></div>
+        <div class="hundredlog-row hundredlog-connection-actions"><button type="button" id="hundredlog-embedding-test" class="menu_button">연결 확인</button><button type="button" id="hundredlog-embedding-retry" class="menu_button">누락 임베딩 재시도</button><button type="button" id="hundredlog-embedding-clearkey" class="menu_button">키 삭제</button><span id="hundredlog-embedding-state" class="hundredlog-state" aria-live="polite">API 키를 입력해 주세요</span></div>
+        <div id="hundredlog-embedding-progress" class="hundredlog-embedding-progress" aria-live="polite">임베딩 현황을 확인 중이에요.</div>
         <p id="hundredlog-embedding-error" class="hundredlog-help hundredlog-connection-error" role="alert" hidden></p>
         <p class="hundredlog-help">Google AI Studio 키 또는 Vertex AI Express Mode 키 하나만 입력하면 돼요. 현재 사실은 자동으로 임베딩되고, 내용이 바뀐 사실만 다시 임베딩해요. 키는 이 브라우저에만 저장해요.</p>
         <label class="hundredlog-toggle hundredlog-setting-toggle"><input id="hundredlog-jev-memory" type="checkbox"><span>Jev 맞춤 기억 주입</span></label>
@@ -66,6 +69,7 @@
         <label for="hundredlog-key" class="hundredlog-label">Jev API 키</label><input id="hundredlog-key" type="password" autocomplete="off" spellcheck="false" placeholder="TypeSafe API 키">
         <div class="hundredlog-row hundredlog-connection-actions"><button type="button" id="hundredlog-test" class="menu_button">연결 확인</button><button type="button" id="hundredlog-clearkey" class="menu_button">키 삭제</button><span id="hundredlog-server" class="hundredlog-state" aria-live="polite">API 키를 입력해 주세요</span></div>
         <p id="hundredlog-connection-error" class="hundredlog-help hundredlog-connection-error" role="alert" hidden></p>
+        <p class="hundredlog-help">Jev 키가 있으면 새 기억을 저장하기 전에 인물별 지식을 자동 검증해요. 누군가가 이름만 언급되었거나 일부 내용만 안다는 이유로 전체 기억을 ‘알고 있음’ 처리하지 않아요. 키가 없으면 안전을 위해 정리 AI가 만든 자동 지식 표시는 저장하지 않아요.</p>
       </details>
     </div>
     <p id="hundredlog-status" class="hundredlog-status" role="status" aria-live="polite">준비 중이에요.</p>
