@@ -1,9 +1,9 @@
 {
-  "display_name": "🌱메모리콩",
+  "display_name": "💯 100LOG",
   "js": "index.js",
   "css": "style.css",
   "author": "담은",
-  "version": "0.5.0",
+  "version": "1.0.0",
   "minimum_client_version": "1.12.14",
-  "generate_interceptor": "memorybeanGenerationInterceptor"
+  "generate_interceptor": "hundredlogGenerationInterceptor"
 }

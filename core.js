@@ -1,7 +1,25 @@
-export const MAX_FACTS = 80;
-export const MAX_HISTORY = 500;
+export const RECENT_MESSAGE_LIMIT = 100;
+export const MAX_FACTS = 40;
+export const MAX_HISTORY = 200;
 export const MAX_DRAFT = 18000;
-export const newId = () => `mb-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+export const newId = () => `log100-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+export function isVisibleChatMessage(message) {
+    return Boolean(message && !message.is_system && !message.is_hidden && !message.hidden
+        && typeof message.mes === 'string' && message.mes.trim());
+}
+
+export function recentWindowStart(chat, limit = RECENT_MESSAGE_LIMIT) {
+    const rows = Array.isArray(chat) ? chat : [];
+    const safeLimit = Math.max(1, Number(limit) || RECENT_MESSAGE_LIMIT);
+    let seen = 0;
+    for (let index = rows.length - 1; index >= 0; index--) {
+        if (!isVisibleChatMessage(rows[index])) continue;
+        seen++;
+        if (seen >= safeLimit) return index;
+    }
+    return 0;
+}
 
 export function chatKey(context) {
     if (context.groupId || context.characterId === undefined || context.characterId === null || !context.chatId) return null;
@@ -60,7 +78,7 @@ export function approveFact(value, proposed, replacesId = null) {
     const previous = replacesId ? value.facts.find((fact) => fact.id === replacesId) : null;
     if (replacesId && (!previous || !previous.active || previous.supersededBy)) throw new Error('갱신하려는 현재 사실을 찾을 수 없어요.');
     if (value.facts.length >= MAX_HISTORY) throw new Error('보관 가능한 사실 이력이 가득 찼어요.');
-    if (!previous && value.facts.filter((fact) => fact.active && !fact.archived && !fact.supersededBy).length >= MAX_FACTS) throw new Error('현재 사실은 최대 80개예요.');
+    if (!previous && value.facts.filter((fact) => fact.active && !fact.archived && !fact.supersededBy).length >= MAX_FACTS) throw new Error('최근 기억은 최대 40개예요.');
     const record = { ...proposed, id: proposed.id ?? newId(), active: true, knowledge: normalizeKnowledge(proposed.knowledge) };
     delete record.replacesId;
     if (previous) {
@@ -108,7 +126,7 @@ export function buildRelevanceChecks(draft, facts, recent = '') {
                 instructions: `Is the fact at facts[${index}] relevant to any statement in draft, including synonyms, paraphrases, changed states, or information known by a character? Use recent_chat to resolve names and context. Answer yes when relevance is uncertain.`
             };
         });
-        batches.push({ state: { draft, recent_chat: recent.slice(-2200), facts: batchFacts.map((fact) => ({ text: fact.text, knowledge: normalizeKnowledge(fact.knowledge), source: fact.sourceText ?? '' })) }, questions, facts: batchFacts });
+        batches.push({ state: { draft, recent_chat: recent.slice(-6000), facts: batchFacts.map((fact) => ({ text: fact.text, knowledge: normalizeKnowledge(fact.knowledge), source: fact.sourceText ?? '' })) }, questions, facts: batchFacts });
     }
     return batches;
 }
@@ -160,7 +178,7 @@ export function buildChecks(draft, facts, recent = '', speaker = '') {
                 speaker,
                 established_facts: slice.map((item, index) => ({ q: `q${index}`, id: item.fact.id, text: item.fact.text, scope: item.fact.scope, source: item.fact.sourceText ?? '', knowledge: normalizeKnowledge(item.fact.knowledge) })),
                 candidate_segments: slice.map((item, index) => ({ q: `q${index}`, segment_id: item.segmentIndex + 1, text: item.segment })),
-                recent_chat: recent.slice(-2200)
+                recent_chat: recent.slice(-6000)
             },
             questions,
             tasks: slice

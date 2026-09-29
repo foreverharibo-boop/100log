@@ -1,8 +1,10 @@
-import { MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection } from './memory-engine.js';
-import { availableProfiles, generateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, buildRelevanceChecks, selectRelevantFacts, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId } from './core.js';
+import { MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow } from './memory-engine.js';
+import { RECENT_MESSAGE_LIMIT, availableProfiles, generateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, buildRelevanceChecks, selectRelevantFacts, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, isVisibleChatMessage } from './core.js';
 
-const NAME = 'memorybean';
-const KEY_STORAGE = 'memorybean.typesafeKey';
+const NAME = 'hundredlog';
+const LEGACY_NAME = 'memorybean';
+const KEY_STORAGE = 'hundredlog.typesafeKey';
+const LEGACY_KEY_STORAGE = 'memorybean.typesafeKey';
 const JEV_URL = 'https://api.typesafe.ai/v1/systemone';
 const ST_JEV_ROUTE = '/api/backends/chat-completions/generate';
 const ST_STRIP = ['messages', 'prompt', 'stream', 'temperature', 'max_tokens', 'max_completion_tokens', 'presence_penalty', 'frequency_penalty', 'top_p', 'top_k', 'stop', 'logit_bias', 'seed', 'n', 'logprobs', 'top_logprobs', 'tools', 'tool_choice', 'response_format', 'reasoning_effort', 'verbosity'];
@@ -26,10 +28,10 @@ let normalGenerating = false;
 let memoryHooksInstalled = false;
 
 const context = () => SillyTavern.getContext();
-const $id = (id) => document.getElementById(`memorybean-${id}`);
+const $id = (id) => document.getElementById(`hundredlog-${id}`);
 
 function apiKey() {
-    try { return localStorage.getItem(KEY_STORAGE)?.trim() ?? ''; } catch { return ''; }
+    try { return localStorage.getItem(KEY_STORAGE)?.trim() || localStorage.getItem(LEGACY_KEY_STORAGE)?.trim() || ''; } catch { return ''; }
 }
 
 async function requestJev(state, questions) {
@@ -110,7 +112,7 @@ async function requestJev(state, questions) {
     }
     if (!response.ok) {
         if (response.status === 401) throw new Error(`Jev 인증 오류 (401, ${transport}). 키를 다시 확인해 주세요.`);
-        if (response.status === 422) throw new Error('Jev 요청 형식 오류 (422). 메모리콩을 최신 버전으로 업데이트해 주세요.');
+        if (response.status === 422) throw new Error('Jev 요청 형식 오류 (422). 100LOG을 최신 버전으로 업데이트해 주세요.');
         if (response.status === 429) throw new Error('Jev 요청 한도 초과 (429). 잠시 후 다시 시도해 주세요.');
         throw new Error(`Jev 연결 오류 (${response.status}). 서비스 상태 또는 실리태번 프록시 설정을 확인해 주세요.`);
     }
@@ -123,12 +125,15 @@ async function requestJev(state, questions) {
 
 function settings() {
     const ctx = context();
+    if (!ctx.extensionSettings[NAME] && ctx.extensionSettings[LEGACY_NAME]) {
+        ctx.extensionSettings[NAME] = { ...ctx.extensionSettings[LEGACY_NAME], migratedFromMemorybean: true };
+    }
     ctx.extensionSettings[NAME] ??= { enabled: false };
     ctx.extensionSettings[NAME].autoMemory ??= true;
     ctx.extensionSettings[NAME].injectMemory ??= true;
     ctx.extensionSettings[NAME].extractionProfileId ??= '';
     ctx.extensionSettings[NAME].translationProfileId ??= '@extraction';
-    ctx.extensionSettings[NAME].analysisInterval ??= 3;
+    ctx.extensionSettings[NAME].analysisInterval ??= 1;
     ctx.extensionSettings[NAME].maxInjectedMemories ??= 12;
     return ctx.extensionSettings[NAME];
 }
@@ -136,6 +141,10 @@ function settings() {
 function data(create = true) {
     const ctx = context();
     if (!chatKey(ctx)) return null;
+    if (!ctx.chatMetadata[NAME] && ctx.chatMetadata[LEGACY_NAME]) {
+        ctx.chatMetadata[NAME] = JSON.parse(JSON.stringify(ctx.chatMetadata[LEGACY_NAME]));
+        ctx.chatMetadata[NAME].migratedFromMemorybean = true;
+    }
     if (create) ctx.chatMetadata[NAME] ??= { facts: [], candidates: [], extractionCursor: 0 };
     const value = ctx.chatMetadata[NAME];
     if (!value) return null;
@@ -144,10 +153,16 @@ function data(create = true) {
     value.extractionCursor ??= 0;
     value.extractionOffset ??= 0;
     for (const fact of value.facts) fact.knowledge ??= {};
+    pruneToRecentWindow(value, ctx.chat);
     return value;
 }
 
-async function save() { await context().saveMetadata(); await refreshMemoryPrompt(); }
+async function save() {
+    const value = data(false);
+    if (value) pruneToRecentWindow(value, context().chat);
+    await context().saveMetadata();
+    await refreshMemoryPrompt();
+}
 function status(value) {
     statusText = value;
     if ($id('status')) $id('status').textContent = value;
@@ -180,12 +195,12 @@ function displayText(record) { return hasTranslation(record) ? record.translated
 function appendOriginal(parent, record) {
     if (!hasTranslation(record)) return;
     const details = document.createElement('details');
-    details.className = 'memorybean-original';
+    details.className = 'hundredlog-original';
     const summary = document.createElement('summary'); summary.textContent = '원문 보기';
-    const text = document.createElement('div'); text.className = 'memorybean-text'; text.textContent = record.text;
+    const text = document.createElement('div'); text.className = 'hundredlog-text'; text.textContent = record.text;
     details.append(summary, text);
     if (record.sourceText) {
-        const source = document.createElement('div'); source.className = 'memorybean-meta'; source.textContent = `출처: ${record.sourceText}`;
+        const source = document.createElement('div'); source.className = 'hundredlog-meta'; source.textContent = `출처: ${record.sourceText}`;
         details.append(source);
     }
     parent.append(details);
@@ -247,7 +262,7 @@ export async function translateRecords(mode = 'missing') {
 
 function replacementSelect(value, selectedId, onChange) {
     const select = document.createElement('select');
-    select.className = 'memorybean-select';
+    select.className = 'hundredlog-select';
     select.disabled = busy || extracting || translating;
     select.setAttribute('aria-label', '기존 사실 갱신 대상');
     const none = document.createElement('option');
@@ -267,12 +282,12 @@ function replacementSelect(value, selectedId, onChange) {
 
 function knowledgeEditor(record, persist) {
     const details = document.createElement('details');
-    details.className = 'memorybean-knowledge';
+    details.className = 'hundredlog-knowledge';
     const summary = document.createElement('summary');
     summary.textContent = `인물별 지식 · ${Object.keys(normalizeKnowledge(record.knowledge)).length}명`;
     details.append(summary);
     const tags = document.createElement('div');
-    tags.className = 'memorybean-knowledge-tags';
+    tags.className = 'hundredlog-knowledge-tags';
     for (const [name, state] of Object.entries(normalizeKnowledge(record.knowledge))) {
         tags.append(makeButton(`${name}: ${state === 'known' ? '알고 있음' : '아직 모름'} ×`, async () => {
             setKnowledge(record, name, null);
@@ -281,11 +296,11 @@ function knowledgeEditor(record, persist) {
     }
     details.append(tags);
     const controls = document.createElement('div');
-    controls.className = 'memorybean-knowledge-controls';
+    controls.className = 'hundredlog-knowledge-controls';
     const name = document.createElement('input');
     name.type = 'text'; name.maxLength = 50; name.placeholder = '인물 이름'; name.setAttribute('aria-label', '인물 이름');
     const choice = document.createElement('select');
-    choice.className = 'memorybean-select';
+    choice.className = 'hundredlog-select';
     choice.setAttribute('aria-label', '인물이 아는지 여부');
     for (const [label, state] of [['알고 있음', 'known'], ['아직 모름', 'unknown']]) {
         const option = document.createElement('option'); option.value = state; option.textContent = label; choice.append(option);
@@ -343,18 +358,18 @@ function render() {
     if (value) $id('replaces').value = currentFacts.some((item) => item.id === manualChoice && item.active) ? manualChoice : '';
     if (!value) { status('캐릭터 채팅을 선택하면 사용할 수 있어요.'); return; }
     if (!currentFacts.length) {
-        const empty = document.createElement('p'); empty.className = 'memorybean-empty'; empty.textContent = 'RP를 이어가면 핵심 기억을 자동으로 모아요.\n이전 이야기까지 기억하려면 설정에서 이전 대화를 가져오세요.'; $id('facts').append(empty);
+        const empty = document.createElement('p'); empty.className = 'hundredlog-empty'; empty.textContent = '최근 100개 메시지에서 이어질 핵심이 생기면 여기에 자동으로 정리해요.\n장기 설정과 장면 상태는 저장하지 않아요.'; $id('facts').append(empty);
     }
     for (const fact of currentFacts) {
-        const item = document.createElement('div'); item.className = 'memorybean-item';
-        const title = document.createElement('div'); title.className = 'memorybean-text'; title.textContent = displayText(fact); item.append(title);
-        const meta = document.createElement('div'); meta.className = 'memorybean-meta'; meta.textContent = `${MEMORY_KINDS[fact.kind] || '중요한 사실'} · ${fact.pinned ? '보호됨' : fact.origin === 'auto' ? '자동 관리' : '직접 저장'}${fact.active ? '' : ' · 잠시 꺼짐'}${Number.isInteger(fact.sourceId) ? ` · 대화 #${fact.sourceId}` : ''}`; item.append(meta);
-        const actions = document.createElement('div'); actions.className = 'memorybean-actions';
+        const item = document.createElement('div'); item.className = 'hundredlog-item';
+        const title = document.createElement('div'); title.className = 'hundredlog-text'; title.textContent = displayText(fact); item.append(title);
+        const meta = document.createElement('div'); meta.className = 'hundredlog-meta'; meta.textContent = `${MEMORY_KINDS[fact.kind] || '중요한 사실'} · ${fact.pinned ? '보호됨' : fact.origin === 'auto' ? '자동 관리' : '직접 저장'}${fact.active ? '' : ' · 잠시 꺼짐'}${Number.isInteger(fact.sourceId) ? ` · 대화 #${fact.sourceId}` : ''}`; item.append(meta);
+        const actions = document.createElement('div'); actions.className = 'hundredlog-actions';
         actions.append(makeButton('수정', () => {
             if (data(false) !== value) return;
-            const editor = document.createElement('div'); editor.className = 'memorybean-edit';
+            const editor = document.createElement('div'); editor.className = 'hundredlog-edit';
             const input = document.createElement('textarea'); input.rows = 3; input.value = fact.text; input.maxLength = 300;
-            const controls = document.createElement('div'); controls.className = 'memorybean-actions';
+            const controls = document.createElement('div'); controls.className = 'hundredlog-actions';
             controls.append(makeButton('수정 저장', async () => {
                 if (data(false) !== value || !input.value.trim()) return;
                 fact.text = input.value.trim(); fact.pinned = true; delete fact.translatedKo;
@@ -371,14 +386,14 @@ function render() {
         item.append(knowledgeEditor(fact, async () => { if (data(false) !== value) return; await save(); render(); }));
     }
     for (const fact of history) {
-        const item = document.createElement('div'); item.className = 'memorybean-item';
-        const title = document.createElement('div'); title.className = 'memorybean-text'; title.textContent = displayText(fact);
+        const item = document.createElement('div'); item.className = 'hundredlog-item';
+        const title = document.createElement('div'); title.className = 'hundredlog-text'; title.textContent = displayText(fact);
         const next = value.facts.find((entry) => entry.id === fact.supersededBy);
-        const meta = document.createElement('div'); meta.className = 'memorybean-meta';
+        const meta = document.createElement('div'); meta.className = 'hundredlog-meta';
         const reason = { completed: '완료됨', cancelled: '취소됨', past_scene: '지난 상황', updated: '새 상태로 갱신', restored: '이전 기억 복원' }[fact.archived] || '지난 상태';
         meta.textContent = `${reason}${fact.archiveReason ? ` · ${fact.archiveReason}` : ''}${next ? ` → ${displayText(next)}` : ''}`;
         item.append(title, meta); appendOriginal(item, fact);
-        if (fact.closedEvidence) { const evidence = document.createElement('div'); evidence.className = 'memorybean-meta'; evidence.textContent = `변경 근거: ${fact.closedEvidence}`; item.append(evidence); }
+        if (fact.closedEvidence) { const evidence = document.createElement('div'); evidence.className = 'hundredlog-meta'; evidence.textContent = `변경 근거: ${fact.closedEvidence}`; item.append(evidence); }
         item.append(makeButton('현재 기억으로 복원', async () => {
             if (data(false) !== value) return;
             const restored = { ...fact, id: newId(), active: true, pinned: true, origin: 'manual', restoredFrom: fact.id };
@@ -392,22 +407,22 @@ function render() {
         }));
         $id('history').append(item);
     }
-    if (!history.length) { const empty = document.createElement('p'); empty.className = 'memorybean-empty'; empty.textContent = '완료된 약속이나 바뀌기 전의 상태가 여기에 남아요.'; $id('history').append(empty); }
+    if (!history.length) { const empty = document.createElement('p'); empty.className = 'hundredlog-empty'; empty.textContent = '완료된 약속이나 바뀌기 전의 상태가 여기에 남아요.'; $id('history').append(empty); }
     if (!value.candidates.length) {
-        const empty = document.createElement('p'); empty.className = 'memorybean-empty'; empty.textContent = '검토할 후보가 없어요.'; $id('candidates').append(empty);
+        const empty = document.createElement('p'); empty.className = 'hundredlog-empty'; empty.textContent = '검토할 후보가 없어요.'; $id('candidates').append(empty);
     }
     for (const candidate of value.candidates) {
-        const item = document.createElement('div'); item.className = 'memorybean-item';
-        const title = document.createElement('div'); title.className = 'memorybean-text'; title.textContent = displayText(candidate); item.append(title);
-        const meta = document.createElement('div'); meta.className = 'memorybean-meta'; meta.textContent = `대화 #${candidate.sourceId}: ${hasTranslation(candidate) ? candidate.translatedKo.sourceText : candidate.sourceText}`; item.append(meta);
+        const item = document.createElement('div'); item.className = 'hundredlog-item';
+        const title = document.createElement('div'); title.className = 'hundredlog-text'; title.textContent = displayText(candidate); item.append(title);
+        const meta = document.createElement('div'); meta.className = 'hundredlog-meta'; meta.textContent = `대화 #${candidate.sourceId}: ${hasTranslation(candidate) ? candidate.translatedKo.sourceText : candidate.sourceText}`; item.append(meta);
         const replacement = replacementSelect(value, suggestReplacement(value, candidate), async (selected) => {
             if (data(false) !== value) return;
             candidate.replacesId = selected;
             await save();
         });
-        const replaceRow = document.createElement('div'); replaceRow.className = 'memorybean-replace';
+        const replaceRow = document.createElement('div'); replaceRow.className = 'hundredlog-replace';
         replaceRow.append(replacement); item.append(replaceRow);
-        const actions = document.createElement('div'); actions.className = 'memorybean-actions';
+        const actions = document.createElement('div'); actions.className = 'hundredlog-actions';
         actions.append(makeButton('승인', async () => {
             if (data(false) !== value) return;
             try {
@@ -450,7 +465,7 @@ function parseJson(raw) {
 }
 
 export async function collectHistory() {
-    return syncMemories({ fromStart: true });
+    return syncMemories({ rebuildRecent: true, force: true });
 }
 
 async function refreshMemoryPrompt() {
@@ -458,7 +473,7 @@ async function refreshMemoryPrompt() {
     const value = data(false);
     const enabled = settings().autoMemory && settings().injectMemory;
     const text = enabled && value ? memoryInjection(value.facts, recentChat(ctx), settings().maxInjectedMemories) : '';
-    if (typeof ctx.setExtensionPrompt === 'function') await ctx.setExtensionPrompt('memorybean-memory', text, 1, 1, false, 0);
+    if (typeof ctx.setExtensionPrompt === 'function') await ctx.setExtensionPrompt('100log-context', text, 1, 1, false, 0);
 }
 
 function completedAssistantCount(ctx, start = 0) {
@@ -469,15 +484,17 @@ function completedAssistantCount(ctx, start = 0) {
 function memoryProgressText(value, ctx) {
     const auto = initializeAuto(value, ctx.chat);
     const count = completedAssistantCount(ctx, auto.cursor);
-    const interval = Math.max(1, Math.min(10, Number(settings().analysisInterval) || 3));
-    return `읽은 대화 ${value.extractionCursor}/${ctx.chat.length} · 다음 자동 정리 ${Math.min(count, interval)}/${interval}`;
+    const interval = Math.max(1, Math.min(10, Number(settings().analysisInterval) || 1));
+    const start = recentWindowStart(ctx.chat);
+    const visible = ctx.chat.slice(start).filter(isVisibleChatMessage).length;
+    return `관리 범위 최근 ${visible}/${RECENT_MESSAGE_LIMIT}개 · 다음 자동 정리 ${Math.min(count, interval)}/${interval}`;
 }
 
 function memoryDue(value = data(false), ctx = context()) {
     if (!value) return false;
     const auto = initializeAuto(value, ctx.chat);
     if (auto.offset > 0) return true;
-    return completedAssistantCount(ctx, auto.cursor) >= Math.max(1, Math.min(10, Number(settings().analysisInterval) || 3));
+    return completedAssistantCount(ctx, auto.cursor) >= Math.max(1, Math.min(10, Number(settings().analysisInterval) || 1));
 }
 
 function scheduleMemory({ force = false } = {}) {
@@ -508,22 +525,24 @@ export function syncMemories(options = {}) {
     return task;
 }
 
-async function performMemorySync({ fromStart = false, force = false } = {}) {
+async function performMemorySync({ rebuildRecent = false, force = false } = {}) {
     const ctx = context();
     const key = chatKey(ctx);
     const value = data();
-    if (!value || (!settings().autoMemory && !fromStart)) return;
+    if (!value || (!settings().autoMemory && !rebuildRecent)) return;
     const epoch = memoryEpoch;
     const sameChat = () => chatKey(context()) === key && data(false) === value && epoch === memoryEpoch;
-    const auto = initializeAuto(value, ctx.chat);
-    if (!fromStart && !force && !memoryDue(value, ctx)) return;
+    let auto = initializeAuto(value, ctx.chat);
+    if (!rebuildRecent && !force && !memoryDue(value, ctx)) return;
     memoryPending = false;
     extracting = true; stopExtractionRequested = false;
     render();
     let changed = 0, uncertain = 0;
     try {
+        if (rebuildRecent) resetRecentWindow(value, ctx.chat);
+        else pruneToRecentWindow(value, ctx.chat);
+        auto = initializeAuto(value, ctx.chat);
         if (reconcileMemory(value, ctx.chat)) await save();
-        if (fromStart) { auto.cursor = 0; auto.offset = 0; }
         // A user message alone is not a completed RP exchange.
         let end = ctx.chat.length;
         while (end > 0 && (ctx.chat[end - 1]?.is_user || ctx.chat[end - 1]?.is_system || ctx.chat[end - 1]?.is_hidden || ctx.chat[end - 1]?.hidden || !String(ctx.chat[end - 1]?.mes ?? '').trim())) end--;
@@ -538,7 +557,7 @@ async function performMemorySync({ fromStart = false, force = false } = {}) {
             const tracked = [];
             for (let id = start; id < Math.min(end, batch.nextCursor + (batch.nextOffset ? 1 : 0)); id++) tracked.push({ id, signature: messageSignature(ctx.chat[id]) });
             const contextRows = ctx.chat.slice(Math.max(0, start - 2), start).filter((message) => !message.is_system && !message.is_hidden && !message.hidden).map((message) => ({ name: message.name, text: String(message.mes ?? '').slice(-1800) }));
-            status(`기억 자동 정리 중 · 대화 ${start}/${end} · 반영 ${changed}개`);
+            status(`최근 ${RECENT_MESSAGE_LIMIT}개 정리 중 · 대화 #${start}/${end} · 반영 ${changed}개`);
             let parsed = { operations: [], rejected: 0 };
             if (rows.length) {
                 const raw = await generateUtility(ctx, memoryRequest(value.facts, rows, contextRows), profileId);
@@ -559,7 +578,7 @@ async function performMemorySync({ fromStart = false, force = false } = {}) {
             await save(); render();
         }
         if (sameChat()) status(stopExtractionRequested ? `정리 중단 · 기억 ${changed}개 반영. 다음에 이어서 정리해요.`
-            : `기억 정리 완료 · ${changed}개 반영${uncertain ? ` · 불확실하거나 중복된 제안 ${uncertain}개는 건너뛰었어요` : ''}`);
+            : `최근 ${RECENT_MESSAGE_LIMIT}개 정리 완료 · ${changed}개 반영${uncertain ? ` · 불확실하거나 중복된 제안 ${uncertain}개는 건너뛰었어요` : ''}`);
     } catch (error) { if (sameChat()) status(`기억 정리를 멈췄어요: ${error.message} ‘지금 정리’로 다시 시도할 수 있어요.`); }
     finally { extracting = false; render(); }
 }
@@ -597,7 +616,9 @@ export function installMemoryHooks(ctx = context()) {
 }
 
 function recentChat(ctx) {
-    return ctx.chat.slice(-6).map((message) => `${message.name ?? (message.is_user ? ctx.name1 : ctx.name2)}: ${String(message.mes ?? '').slice(0, 500)}`).join('\n');
+    const start = recentWindowStart(ctx.chat);
+    return ctx.chat.slice(start).filter(isVisibleChatMessage)
+        .slice(-12).map((message) => `${message.name ?? (message.is_user ? ctx.name1 : ctx.name2)}: ${String(message.mes ?? '').slice(0, 1000)}`).join('\n');
 }
 
 async function judge(draft, facts, recent, speaker) {
@@ -640,7 +661,7 @@ async function commitReply(text, key, lastMessage) {
     if (typeof ctx.addOneMessage !== 'function' || typeof ctx.saveChat !== 'function') throw new Error('이 SillyTavern 버전에서 답변 저장 기능을 찾지 못했어요.');
     const message = {
         name: ctx.name2, is_user: false, is_system: false, send_date: new Date().toISOString(),
-        mes: text, extra: { gen_id: Date.now(), memorybean: true }, swipes: [text], swipe_id: 0
+        mes: text, extra: { gen_id: Date.now(), hundredlog: true }, swipes: [text], swipe_id: 0
     };
     ctx.chat.push(message);
     try {
@@ -651,7 +672,7 @@ async function commitReply(text, key, lastMessage) {
         await ctx.saveChat();
     } catch (error) {
         // Never remove a message after rendering or after another extension has observed it.
-        console.error('[메모리콩] 답변 게시 중 오류:', error);
+        console.error('[100LOG] 답변 게시 중 오류:', error);
         throw new Error('답변 표시 또는 저장 중 오류가 났어요. 채팅에 답변이 보이는지 확인해 주세요.');
     }
 }
@@ -666,7 +687,7 @@ async function runHidden(key, lastMessage) {
         status('메인 AI가 숨은 초안을 작성 중이에요…');
         const draft = String(await ctx.generateQuietPrompt({ quietPrompt: 'Write the next in-character roleplay reply to the latest user message. Output only the reply, with no preface or explanation.' }) ?? '').trim();
         if (!stillSameChat(key, lastMessage)) throw new Error('대화가 바뀌어 생성을 중단했어요.');
-        status('Jev가 초안과 관련된 사실을 찾고 검수 중이에요…');
+        status('Jev가 최근 100개 기억과 초안을 엄격 검수 중이에요…');
         const flagged = await judge(draft, facts, recent, ctx.name2);
         let final = draft;
         if (flagged.length) {
@@ -680,30 +701,30 @@ async function runHidden(key, lastMessage) {
         if (!final || final.length > 18000) throw new Error('최종 답변의 길이를 확인할 수 없어 게시하지 않았어요.');
         await commitReply(final, key, lastMessage);
         status(flagged.length ? `충돌 ${flagged.length}곳을 고쳐 게시했어요.` : '설정 충돌 없이 답변을 게시했어요.');
-    } catch (error) { console.error('[메모리콩] 생성/검수 실패:', error); status(`답변을 표시하지 않았어요: ${error.message}`); }
+    } catch (error) { console.error('[100LOG] 생성/검수 실패:', error); status(`답변을 표시하지 않았어요: ${error.message}`); }
     finally { busy = false; normalGenerating = false; render(); if (memoryPending) scheduleMemory(); }
 }
 
-globalThis.memorybeanGenerationInterceptor = async function (_promptChat, _size, abort, type) {
+globalThis.hundredlogGenerationInterceptor = async function (_promptChat, _size, abort, type) {
     const ctx = context();
     if (!settings().enabled || ![undefined, 'normal'].includes(type) || !chatKey(ctx)) return;
     const confirmed = data(false)?.facts.filter((fact) => fact.active && isCurrent(fact)) ?? [];
     if (!confirmed.length) return;
     abort(true);
-    if (extracting || translating) { status('수집 또는 번역을 마친 뒤 답변을 생성해 주세요.'); return; }
+    if (extracting || translating) { status('최근 기억 분석 또는 번역을 마친 뒤 답변을 생성해 주세요.'); return; }
     if (busy) { status('이미 답변을 검수하고 있어요. 잠시 기다려 주세요.'); return; }
     const last = ctx.chat.at(-1);
     if (!last?.is_user) { status('마지막 메시지가 사용자 메시지가 아니라 생성 요청을 멈췄어요.'); return; }
     const key = chatKey(ctx);
     busy = true;
-    status('답변을 잠시 보류하고 있어요…'); render();
+    status('100LOG가 답변을 표시하지 않고 잠시 보류했어요…'); render();
     // Let SillyTavern finish unwinding the aborted normal generation first.
     setTimeout(() => { void runHidden(key, last); }, 300);
 };
 
 function closeWand() {
-    const overlay = document.getElementById('memorybean-wand-overlay');
-    const panel = document.getElementById('memorybean');
+    const overlay = document.getElementById('hundredlog-wand-overlay');
+    const panel = document.getElementById('hundredlog');
     if (panel && settingsHome && panel.parentElement !== settingsHome) settingsHome.append(panel);
     if (overlay) overlay.hidden = true;
     previousFocus?.focus?.({ preventScroll: true });
@@ -711,31 +732,31 @@ function closeWand() {
 }
 
 function openWand() {
-    const panel = document.getElementById('memorybean');
+    const panel = document.getElementById('hundredlog');
     if (!panel) return;
-    let overlay = document.getElementById('memorybean-wand-overlay');
+    let overlay = document.getElementById('hundredlog-wand-overlay');
     if (!overlay) {
         overlay = document.createElement('div');
-        overlay.id = 'memorybean-wand-overlay';
+        overlay.id = 'hundredlog-wand-overlay';
         overlay.hidden = true;
         const popup = document.createElement('div');
-        popup.id = 'memorybean-wand-popup';
+        popup.id = 'hundredlog-wand-popup';
         popup.setAttribute('role', 'dialog');
-        popup.setAttribute('aria-label', '메모리콩 설정');
+        popup.setAttribute('aria-label', '100LOG 설정');
         popup.setAttribute('aria-modal', 'true');
         const header = document.createElement('div');
-        header.id = 'memorybean-wand-header';
+        header.id = 'hundredlog-wand-header';
         const title = document.createElement('strong');
-        title.textContent = '🌱 메모리콩';
+        title.textContent = '💯 100LOG';
         const close = document.createElement('button');
         close.type = 'button';
-        close.id = 'memorybean-wand-close';
+        close.id = 'hundredlog-wand-close';
         close.className = 'menu_button';
         close.textContent = '닫기';
         close.addEventListener('click', closeWand);
         header.append(title, close);
         const body = document.createElement('div');
-        body.id = 'memorybean-wand-body';
+        body.id = 'hundredlog-wand-body';
         popup.append(header, body);
         overlay.append(popup);
         overlay.addEventListener('click', (event) => { if (event.target === overlay) closeWand(); });
@@ -755,7 +776,7 @@ function openWand() {
     }
     if (overlay.hidden) previousFocus = document.activeElement;
     if (!settingsHome) settingsHome = panel.parentElement;
-    document.getElementById('memorybean-wand-body').append(panel);
+    document.getElementById('hundredlog-wand-body').append(panel);
     overlay.hidden = false;
     const menu = document.getElementById('extensionsMenu');
     if (menu) menu.style.display = 'none';
@@ -764,7 +785,7 @@ function openWand() {
 }
 
 function addWandButton() {
-    if (document.getElementById('memorybean-wand-button')) {
+    if (document.getElementById('hundredlog-wand-button')) {
         wandMenuObserver?.disconnect();
         wandMenuObserver = null;
         return;
@@ -780,11 +801,11 @@ function addWandButton() {
     wandMenuObserver?.disconnect();
     wandMenuObserver = null;
     const button = document.createElement('div');
-    button.id = 'memorybean-wand-button';
+    button.id = 'hundredlog-wand-button';
     button.className = 'list-group-item flex-container flexGap5 interactable';
     button.tabIndex = 0;
     button.setAttribute('role', 'button');
-    button.innerHTML = '<span class="extensionsMenuExtensionButton" aria-hidden="true">🌱</span><span>메모리콩</span>';
+    button.innerHTML = '<span class="extensionsMenuExtensionButton" aria-hidden="true">💯</span><span>100LOG</span>';
     button.addEventListener('click', openWand);
     button.addEventListener('keydown', (event) => {
         if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openWand(); }
@@ -857,6 +878,7 @@ async function main() {
     });
     $id('clearkey')?.addEventListener('click', () => {
         localStorage.removeItem(KEY_STORAGE);
+        localStorage.removeItem(LEGACY_KEY_STORAGE);
         $id('key').value = '';
         $id('server').textContent = 'API 키를 입력해 주세요';
         connectionError();
@@ -905,14 +927,14 @@ async function main() {
         if (!settings().autoMemory) stopExtractionRequested = true;
         context().saveSettingsDebounced();
         await refreshMemoryPrompt(); render();
-        status(settings().autoMemory ? '앞으로 오가는 RP의 핵심 기억을 자동 관리해요.' : '자동 기억을 잠시 껐어요. 저장된 기억은 유지돼요.');
+        status(settings().autoMemory ? '최근 100개 메시지의 핵심 기억을 자동 관리해요.' : '100LOG를 잠시 껐어요. 저장된 기억은 유지돼요.');
         if (settings().autoMemory) scheduleMemory();
     });
     $id('inject-memory')?.addEventListener('change', async (event) => {
         settings().injectMemory = event.target.checked; context().saveSettingsDebounced(); await refreshMemoryPrompt();
     });
     $id('analysis-interval')?.addEventListener('change', (event) => {
-        settings().analysisInterval = Math.max(1, Math.min(5, Number(event.target.value) || 3));
+        settings().analysisInterval = Math.max(1, Math.min(5, Number(event.target.value) || 1));
         context().saveSettingsDebounced();
         render();
         scheduleMemory();
@@ -925,7 +947,7 @@ async function main() {
         render();
         status(`다음 RP에 관련 기억을 최대 ${settings().maxInjectedMemories}개 전달해요.`);
     });
-    $id('stop')?.addEventListener('click', () => { stopExtractionRequested = true; status('진행 중인 묶음을 마치고 수집을 멈출게요.'); });
+    $id('stop')?.addEventListener('click', () => { stopExtractionRequested = true; status('진행 중인 묶음을 마치고 최근 기억 분석을 멈출게요.'); });
     ctx.eventSource.on((ctx.eventTypes ?? ctx.event_types).CHAT_CHANGED, () => {
         memoryEpoch++; normalGenerating = false; memoryPending = false;
         const value = data();
@@ -939,14 +961,15 @@ async function main() {
     await refreshMemoryPrompt();
     render();
     addWandButton();
+    if (initial && initializeAuto(initial, ctx.chat).cursor < ctx.chat.length) scheduleMemory();
 }
 
 const initialContext = context();
 const appReady = (initialContext.eventTypes ?? initialContext.event_types)?.APP_READY;
 if (appReady) {
     initialContext.eventSource.on(appReady, () => {
-        void main().catch((error) => console.error('[메모리콩] 설정 화면 시작 실패:', error));
+        void main().catch((error) => console.error('[100LOG] 설정 화면 시작 실패:', error));
     });
 } else {
-    void main().catch((error) => console.error('[메모리콩] 설정 화면 시작 실패:', error));
+    void main().catch((error) => console.error('[100LOG] 설정 화면 시작 실패:', error));
 }
