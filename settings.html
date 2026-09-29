@@ -47,26 +47,26 @@
       <p class="hundredlog-help">1 이상의 정수를 직접 입력하면 그 값 그대로 저장해요. 기본값은 AI 답변 1개마다 새 규칙을 갱신해요.</p>
       <p id="hundredlog-interval-warning" class="hundredlog-help hundredlog-warning" hidden>갱신 주기가 50 이상이면 정리되기 전에 오래된 메시지가 최근 100개 범위에서 빠질 수 있어요.</p>
       <label class="hundredlog-toggle hundredlog-setting-toggle"><input id="hundredlog-auto-cleanup" type="checkbox"><span>수집 후 규칙 자동 청소</span></label>
-      <p class="hundredlog-help">현재 규칙이 20개 이상이면 수집 뒤 정리용 AI가 중복 규칙 병합, 끝난 약속 보관, 옛 규칙 종료, 충돌 발견, 40개 한도 근처의 낮은 중요도 규칙 정리를 실행해요. 직접 추가하거나 자동 변경 잠금한 규칙은 건드리지 않아요.</p>
+      <p class="hundredlog-help">현재 규칙이 20개 이상이면 정리용 AI가 청소안을 만들고, JEV가 원문과 기존 규칙으로 다시 승인한 병합·종료만 적용해요. 충돌은 JEV가 대체·양립·확인 필요로 나눠 처리하며, 직접 추가하거나 자동 변경 잠금한 규칙은 건드리지 않아요.</p>
       <p id="hundredlog-cleanup-summary" class="hundredlog-help" aria-live="polite"></p>
-      <details class="hundredlog-fold"><summary>최근 100개 재수집 · 장면 한정 규칙 관리</summary>
+      <section class="hundredlog-fold"><div class="hundredlog-fold-title"><strong>최근 100개 재수집 · 장면 한정 규칙 관리</strong></div>
         <p class="hundredlog-help">자동으로 만든 기존 규칙을 비우고 최근 100개를 처음부터 다시 수집해요. 직접 추가하거나 자동 변경 잠금한 규칙은 유지해요.</p>
         <div class="hundredlog-row hundredlog-controls"><button type="button" id="hundredlog-extract" class="menu_button">최근 100개 처음부터 재수집</button><button type="button" id="hundredlog-stop" class="menu_button" disabled>수집 중단</button><span id="hundredlog-progress" class="hundredlog-muted"></span></div>
         <div class="hundredlog-scene"><button type="button" id="hundredlog-endscene" class="menu_button">장면 한정 규칙 모두 끄기</button></div>
         <p class="hundredlog-help">장면 한정 규칙은 현재 장면이나 가까운 몇 턴에만 필요한 사실이에요. 모두 끄기는 삭제하지 않고 검사에서 제외하며, 각 규칙의 ‘다시 켜기’로 복구할 수 있어요.</p>
-      </details>
-      <details class="hundredlog-fold" open><summary>JEV 공개 전 엄격 검수</summary>
+      </section>
+      <section class="hundredlog-fold"><div class="hundredlog-fold-title"><strong>JEV 공개 전 엄격 검수</strong></div>
         <label class="hundredlog-toggle hundredlog-setting-toggle"><input id="hundredlog-strict-review" type="checkbox"><span>답변 공개 전 엄격 검수 · 자동 재작성</span></label>
         <label class="hundredlog-toggle hundredlog-setting-toggle"><input id="hundredlog-strict-review-swipes" type="checkbox"><span>스와이프 답변도 엄격 검수</span></label>
-        <p class="hundredlog-help">메인 AI 답변을 숨은 초안으로 받은 뒤 JEV가 현재 규칙 전체와 한 번에 비교해요. 이상이 없으면 바로 표시하고, 충돌이 발견된 경우에만 메인 AI 재작성과 재검수를 한 번 더 실행해요.</p>
-        <p class="hundredlog-help">정상 답변은 ‘메인 AI 초안 1회 + JEV 검수 1회’만 사용해요. 스와이프 검수를 켜면 스와이프도 같은 시간이 걸려요. 진행 상황은 아래 상태 문구에만 표시하고 별도 토스트는 띄우지 않아요.</p>
+        <p class="hundredlog-help">일반 답변과 재생성 답변을 숨은 초안으로 받은 뒤 JEV가 현재 규칙 전체와 비교해요. 이상이 없으면 표시하고, 충돌이 발견된 경우에만 메인 AI 재작성과 재검수를 한 번 더 실행해요. 스와이프는 위 옵션을 켰을 때 같은 검수를 해요.</p>
+        <p class="hundredlog-help">정상 답변은 ‘메인 AI 초안 1회 + JEV 검수 1회’만 사용해요. 진행 상황은 아래 상태 문구에 표시하며, 재검수 후에도 충돌이 남아 답변을 숨긴 경우에만 오류 토스트를 띄워요.</p>
         <label for="hundredlog-key" class="hundredlog-label">Jev API 키</label><input id="hundredlog-key" type="password" autocomplete="off" spellcheck="false" placeholder="TypeSafe API 키">
         <div class="hundredlog-row hundredlog-connection-actions"><button type="button" id="hundredlog-test" class="menu_button">연결 확인</button><button type="button" id="hundredlog-clearkey" class="menu_button">키 삭제</button><span id="hundredlog-server" class="hundredlog-state" aria-live="polite">API 키를 입력해 주세요</span></div>
         <p id="hundredlog-connection-error" class="hundredlog-help hundredlog-connection-error" role="alert" hidden></p>
         <p class="hundredlog-help">JEV 키는 새 규칙 자체가 원문과 맞는지 먼저 확인하고, 인물별 ‘알고 있음/아직 모름’도 함께 검증해요. 이름만 언급되었거나 일부 내용만 아는 인물에게 전체 사실을 넘기지 않아요.</p>
-      </details>
+      </section>
       <section id="hundredlog-developer" class="hundredlog-developer" hidden>
-        <details class="hundredlog-fold" open><summary>개발자 모드 · 맞춤 규칙 주입</summary>
+        <section class="hundredlog-fold"><div class="hundredlog-fold-title"><strong>개발자 모드 · 맞춤 규칙 주입</strong></div>
           <label class="hundredlog-toggle hundredlog-setting-toggle"><input id="hundredlog-developer-memory" type="checkbox"><span>임베딩 + JEV 맞춤 규칙 주입</span></label>
           <p class="hundredlog-help">현재 장면과 가까운 규칙을 임베딩으로 먼저 찾고, JEV가 실제로 필요한 규칙만 골라 메인 AI에게 전달해요. 엄격 검수와 함께 켜면 맞춤 주입 후 전체 규칙으로 공개 전 검수해요.</p>
           <div class="hundredlog-setting-grid">
@@ -80,7 +80,7 @@
           <div id="hundredlog-embedding-progress" class="hundredlog-embedding-progress" aria-live="polite">임베딩 현황을 확인 중이에요.</div>
           <p id="hundredlog-embedding-error" class="hundredlog-help hundredlog-connection-error" role="alert" hidden></p>
           <div class="hundredlog-row hundredlog-developer-actions"><button type="button" id="hundredlog-developer-lock" class="menu_button">개발자 모드 잠그기</button></div>
-        </details>
+        </section>
       </section>
     </div>
     <p id="hundredlog-status" class="hundredlog-status" role="status" aria-live="polite">준비 중이에요.</p>

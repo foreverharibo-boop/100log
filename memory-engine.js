@@ -42,6 +42,22 @@ export function memoryRequest(facts, rows, contextRows = []) {
     ].join('\n\n');
 }
 
+export function compoundSplitRequest(operations, facts, rows, contextRows = []) {
+    const current = facts.filter(isCurrent).map(({ id, text, kind, sourceId, knowledge, pinned, active }) => ({
+        id, text, kind: kind || 'fact', sourceId, knowledge: normalizeKnowledge(knowledge),
+        pinned: Boolean(pinned), paused: !active,
+    }));
+    return [
+        'Split ONLY the rejected compound continuity memories below into atomic Korean memory operations. Return JSON only in exactly this shape: {"operations":[{"action":"add|update|complete|cancel|archive","id":"existing id or null","kind":"fact|relationship|commitment|knowledge|temporary","text":"one atomic Korean memory","sourceId":0,"evidence":"exact quote from NEW_MESSAGES","evidenceType":"occurred|explicit_statement|promise|intention|explicit_cancellation","confidence":0.0,"importance":3,"knowledge":{"Name":"known|unknown"},"reason":"short Korean reason"}]}.',
+        'Each output operation must contain exactly ONE independently verifiable event, statement, promise, intention, or knowledge change. If two clauses were witnessed or learned by different people, they MUST be separate operations. Never combine an event with a later private conversation, reaction, message, advice request, secret, or plan. A character may be marked known only when they know every clause of that one atomic memory. Omit a character when their knowledge is not established.',
+        'Preserve only claims directly supported by NEW_MESSAGES. Evidence must be an exact excerpt from the matching numbered source. CONTEXT is interpretation only. Do not invent off-screen events or knowledge transfer. Do not repeat an already-current memory. For an update, use the existing id only when the atomic output genuinely replaces that same memory; otherwise use add. Protected or paused memories must not be changed.',
+        `REJECTED_COMPOUND_OPERATIONS: ${JSON.stringify(operations)}`,
+        `CURRENT_MEMORIES: ${JSON.stringify(current)}`,
+        `CONTEXT: ${JSON.stringify(contextRows)}`,
+        `NEW_MESSAGES: ${JSON.stringify(rows)}`,
+    ].join('\n\n');
+}
+
 export function cleanupRequest(facts, rows) {
     const current = facts.filter((fact) => isCurrent(fact) && fact.active).map(({ id, text, kind, sourceId, sourceText, knowledge, pinned, origin, importance }) => ({
         id, text, kind: kind || 'fact', sourceId, sourceText: sourceText ?? '', knowledge: normalizeKnowledge(knowledge),

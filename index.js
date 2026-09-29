@@ -1,4 +1,4 @@
-import { MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions } from './memory-engine.js';
+import { MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, compoundSplitRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions } from './memory-engine.js';
 import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, generateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, buildRelevanceChecks, selectRelevantFacts, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js';
 
 const NAME = 'hundredlog';
@@ -290,13 +290,14 @@ export async function reviewExtractedKnowledge(operations, rows, contextRows = [
         }
     });
     const checks = [...factChecks, ...knowledgeChecks];
-    if (!checks.length) return { operations: reviewed, factsChecked: 0, factsRejected: 0, checked: 0, changed: 0, removed: 0, noKey: false };
+    if (!checks.length) return { operations: reviewed, compoundOperations: [], factsChecked: 0, factsRejected: 0, compoundCount: 0, checked: 0, changed: 0, removed: 0, noKey: false };
     if (!apiKey()) {
         for (const operation of reviewed) operation.knowledge = {};
-        return { operations: reviewed, factsChecked: 0, factsRejected: 0, checked: 0, changed: 0, removed: knowledgeChecks.length, noKey: true };
+        return { operations: reviewed, compoundOperations: [], factsChecked: 0, factsRejected: 0, compoundCount: 0, checked: 0, changed: 0, removed: knowledgeChecks.length, noKey: true };
     }
     let factsChecked = 0, factsRejected = 0, changed = 0, removed = 0;
     const rejectedOperations = new Set();
+    const compoundOperations = new Set();
     for (let start = 0; start < checks.length; start += 20) {
         const batch = checks.slice(start, start + 20);
         const reviewChecks = batch.map((check) => {
@@ -329,9 +330,10 @@ export async function reviewExtractedKnowledge(operations, rows, contextRows = [
         batch.forEach((check, index) => {
             questions[check.questionId] = check.kind === 'fact' ? {
                 type: 'choice',
-                instructions: `Verify review_checks[${index}]. Decide whether proposed_operation is directly and completely supported by source_message, exact_new_evidence, new_messages, and previous_memory. Validate both the memory text and the requested action. Do not accept invented off-screen events, participants who were not shown, false attribution of knowledge or presence, a character's lie or belief rewritten as objective truth, an intention rewritten as completion, or a partial quote expanded beyond its meaning.`,
+                instructions: `Verify review_checks[${index}]. Decide whether proposed_operation is directly and completely supported by source_message, exact_new_evidence, new_messages, and previous_memory. Validate both the memory text and the requested action. The memory must also be atomic: one independently verifiable event, statement, promise, intention, or knowledge change. If it combines clauses learned or witnessed by different people, or combines an event with a later private conversation, reaction, message, secret, advice request, or plan, choose compound even when every clause is individually true. Do not accept invented off-screen events, participants who were not shown, false attribution of knowledge or presence, a character's lie or belief rewritten as objective truth, an intention rewritten as completion, or a partial quote expanded beyond its meaning.`,
                 criteria: {
                     supported: 'Every material clause and the operation action are directly supported; uncertainty, hearsay, lies and intentions remain correctly labeled.',
+                    compound: 'The claims may be supported, but this operation combines two or more independently useful facts or clauses with different knowledge boundaries and must be split.',
                     distorted: 'The source exists, but the proposed memory changes its meaning, certainty, speaker, participants, timing, knowledge, or completion state.',
                     unsupported: 'The proposed memory includes invented, off-screen or unshown information, or the cited source does not support its material claim.',
                     unclear: 'The supplied material is insufficient to verify the complete proposed memory and action.',
@@ -357,10 +359,11 @@ export async function reviewExtractedKnowledge(operations, rows, contextRows = [
             const operation = reviewed[check.operationIndex];
             if (check.kind === 'fact') {
                 factsChecked++;
-                if (answer?.type !== 'choice' || !['supported', 'distorted', 'unsupported', 'unclear'].includes(answer.choice)
+                if (answer?.type !== 'choice' || !['supported', 'compound', 'distorted', 'unsupported', 'unclear'].includes(answer.choice)
                     || !Number.isFinite(confidence) || confidence < .7 || answer.choice !== 'supported') {
                     rejectedOperations.add(check.operationIndex);
                     factsRejected++;
+                    if (answer?.choice === 'compound' && confidence >= .7) compoundOperations.add(check.operationIndex);
                 }
                 return;
             }
@@ -381,7 +384,9 @@ export async function reviewExtractedKnowledge(operations, rows, contextRows = [
     }
     return {
         operations: reviewed.filter((_operation, index) => !rejectedOperations.has(index)),
-        factsChecked, factsRejected, checked: knowledgeChecks.length, changed, removed, noKey: false,
+        compoundOperations: [...compoundOperations].map((index) => reviewed[index]),
+        factsChecked, factsRejected, compoundCount: compoundOperations.size,
+        checked: knowledgeChecks.length, changed, removed, noKey: false,
     };
 }
 
@@ -439,6 +444,7 @@ function data(create = true) {
     pruneToRecentWindow(value, ctx.chat);
     const currentIds = new Set(value.facts.filter((fact) => fact.active && isCurrent(fact)).map((fact) => fact.id));
     value.cleanupConflicts = (value.cleanupConflicts ?? []).filter((entry) => Array.isArray(entry.ids) && entry.ids.length === 2 && entry.ids.every((id) => currentIds.has(id)));
+    value.cleanupWarnings = (value.cleanupWarnings ?? []).filter((entry) => Array.isArray(entry.ids) && entry.ids.some((id) => currentIds.has(id)));
     return value;
 }
 
@@ -608,20 +614,33 @@ function replacementSelect(value, selectedId, onChange) {
 }
 
 function knowledgeEditor(record, persist) {
-    const details = document.createElement('details');
-    details.className = 'hundredlog-knowledge';
-    const summary = document.createElement('summary');
-    summary.textContent = `인물별 지식 · ${Object.keys(normalizeKnowledge(record.knowledge)).length}명`;
-    details.append(summary);
+    const panel = document.createElement('div');
+    panel.className = 'hundredlog-knowledge';
+    const title = document.createElement('div');
+    title.className = 'hundredlog-knowledge-title';
+    title.textContent = `인물별 지식 · ${Object.keys(normalizeKnowledge(record.knowledge)).length}명`;
+    panel.append(title);
     const tags = document.createElement('div');
     tags.className = 'hundredlog-knowledge-tags';
     for (const [name, state] of Object.entries(normalizeKnowledge(record.knowledge))) {
-        tags.append(makeButton(`${name}: ${state === 'known' ? '알고 있음' : '아직 모름'} ×`, async () => {
+        const tag = document.createElement('span');
+        tag.className = 'hundredlog-knowledge-tag';
+        const toggle = makeButton(`${name}: ${state === 'known' ? '알고 있음' : '아직 모름'}`, async () => {
+            setKnowledge(record, name, state === 'known' ? 'unknown' : 'known');
+            await persist();
+        });
+        toggle.className += ' hundredlog-knowledge-toggle';
+        toggle.title = '눌러서 알고 있음/아직 모름 전환';
+        const remove = makeButton('×', async () => {
             setKnowledge(record, name, null);
             await persist();
-        }));
+        });
+        remove.className += ' hundredlog-knowledge-remove';
+        remove.setAttribute('aria-label', `${name} 지식 기록 삭제`);
+        tag.append(toggle, remove);
+        tags.append(tag);
     }
-    details.append(tags);
+    panel.append(tags);
     const controls = document.createElement('div');
     controls.className = 'hundredlog-knowledge-controls';
     const name = document.createElement('input');
@@ -636,8 +655,8 @@ function knowledgeEditor(record, persist) {
         try { setKnowledge(record, name.value, choice.value); await persist(); }
         catch (error) { status(error.message); }
     }));
-    details.append(controls);
-    return details;
+    panel.append(controls);
+    return panel;
 }
 
 function render() {
@@ -710,8 +729,12 @@ function render() {
     const cleanupSummary = $id('cleanup-summary');
     if (cleanupSummary) {
         const conflicts = value?.cleanupConflicts?.length ?? 0;
-        cleanupSummary.textContent = conflicts ? `자동 청소가 서로 충돌하는 규칙 ${conflicts}쌍을 발견했어요. 규칙 목록에서 직접 확인해 주세요.`
-            : value?.lastCleanupAt ? '마지막 수집 뒤 규칙 자동 청소까지 완료했어요.' : '규칙이 20개 이상 쌓이면 수집 뒤 자동으로 중복·종료·충돌을 정리해요.';
+        const warnings = value?.cleanupWarnings?.length ?? 0;
+        const review = value?.lastCleanupReview;
+        cleanupSummary.textContent = conflicts ? `JEV 검증 뒤에도 판단할 수 없는 충돌 ${conflicts}쌍을 ‘확인 필요’로 남겼어요.`
+            : warnings ? `JEV가 확신하지 못한 청소 제안 ${warnings}개는 적용하지 않고 ‘확인 필요’로 남겼어요.`
+            : review ? `마지막 자동 청소: JEV가 ${review.checked}개 제안을 검증했고${review.resolved ? ` 충돌 ${review.resolved}쌍을 해결했으며` : ''} 확인이 필요한 충돌은 없어요.`
+            : '규칙이 20개 이상 쌓이면 정리 AI의 제안을 JEV가 재검증한 뒤 안전한 작업만 적용해요.';
     }
     const manualChoice = $id('replaces').value;
     $id('replaces').replaceChildren(...(value ? [...replacementSelect(value, manualChoice).children] : []));
@@ -721,10 +744,11 @@ function render() {
         const empty = document.createElement('p'); empty.className = 'hundredlog-empty'; empty.textContent = '최근 100개 메시지에서 틀리면 안 되는 내용이 생기면 여기에 자동으로 정리해요.\n장기 설정과 단순한 장면 묘사는 저장하지 않아요.'; $id('facts').append(empty);
     }
     const conflictIds = new Set((value.cleanupConflicts ?? []).flatMap((entry) => entry.ids ?? []));
+    const warningIds = new Set((value.cleanupWarnings ?? []).flatMap((entry) => entry.ids ?? []));
     for (const fact of currentFacts) {
         const item = document.createElement('div'); item.className = 'hundredlog-item';
         const title = document.createElement('div'); title.className = 'hundredlog-text'; title.textContent = displayText(fact); item.append(title);
-        const meta = document.createElement('div'); meta.className = 'hundredlog-meta'; meta.textContent = `${MEMORY_KINDS[fact.kind] || '중요한 사실'} · ${fact.scope === 'scene' ? '장면 한정 규칙' : '지속 규칙'} · ${fact.pinned ? '자동 변경 잠금' : fact.origin === 'auto' ? '자동 관리' : '직접 저장'}${fact.active ? '' : ' · 잠시 꺼짐'}${conflictIds.has(fact.id) ? ' · 충돌 의심' : ''}${Number.isInteger(fact.sourceId) ? ` · 대화 #${fact.sourceId}` : ''}`; item.append(meta);
+        const meta = document.createElement('div'); meta.className = 'hundredlog-meta'; meta.textContent = `${MEMORY_KINDS[fact.kind] || '중요한 사실'} · ${fact.scope === 'scene' ? '장면 한정 규칙' : '지속 규칙'} · ${fact.pinned ? '자동 변경 잠금' : fact.origin === 'auto' ? '자동 관리' : '직접 저장'}${fact.active ? '' : ' · 잠시 꺼짐'}${conflictIds.has(fact.id) ? ' · 충돌 의심' : warningIds.has(fact.id) ? ' · 청소 확인 필요' : ''}${Number.isInteger(fact.sourceId) ? ` · 대화 #${fact.sourceId}` : ''}`; item.append(meta);
         const actions = document.createElement('div'); actions.className = 'hundredlog-actions';
         actions.append(makeButton('수정', () => {
             if (data(false) !== value) return;
@@ -839,6 +863,85 @@ function cleanupSignature(facts) {
     return JSON.stringify(facts.filter((fact) => fact.active && isCurrent(fact)).map((fact) => [fact.id, fact.text, fact.kind, fact.importance, fact.sourceId]));
 }
 
+export async function reviewCleanupActions(actions, value, rows) {
+    const active = new Map((value.facts ?? []).filter((fact) => fact.active && isCurrent(fact)).map((fact) => [fact.id, fact]));
+    if (!actions.length) return { actions: [], warnings: [], checked: 0, rejected: 0, conflictsResolved: 0, conflictsPending: 0, noKey: false };
+    if (!apiKey()) return { actions: [], warnings: [], checked: 0, rejected: actions.length, conflictsResolved: 0, conflictsPending: 0, noKey: true };
+    const rules = [...active.values()].map(({ id, text, kind, sourceId, sourceText, knowledge, pinned, origin, importance }) => ({
+        id, text, kind, sourceId, sourceText: sourceText ?? '', knowledge: normalizeKnowledge(knowledge),
+        protected: Boolean(pinned || origin === 'manual'), importance: Number(importance) || 3,
+    }));
+    const answersByIndex = new Map();
+    for (let start = 0; start < actions.length; start += 20) {
+        const batch = actions.slice(start, start + 20);
+        const questions = {};
+        batch.forEach((action, localIndex) => {
+            const id = `c${start + localIndex}`;
+            questions[id] = action.action === 'conflict' ? {
+                type: 'choice',
+                instructions: `Review proposed_actions[${localIndex}] against current_rules and recent_messages. Decide the relationship between the two named rules. Never guess an off-screen change. A newer rule supersedes an older one only when the supplied text or recent source clearly replaces the same state.`,
+                criteria: {
+                    first_superseded: 'The second rule clearly and fully replaces the first rule, so the first may be archived.',
+                    second_superseded: 'The first rule clearly and fully replaces the second rule, so the second may be archived.',
+                    compatible: 'Both rules can be true together; this is not a real conflict and the conflict mark should be cleared.',
+                    unresolved: 'They genuinely conflict, but the supplied evidence cannot safely decide which is current; keep both and mark confirmation needed.',
+                    not_conflict: 'The pair is unrelated or does not contradict; clear the conflict mark.',
+                },
+            } : {
+                type: 'choice',
+                instructions: `Review proposed_actions[${localIndex}] against current_rules and recent_messages. Approve only when every affected rule, knowledge boundary, uncertainty, and cited outcome is preserved. Protected rules may never be rewritten, removed, or archived. An unmentioned promise is not completed.`,
+                criteria: {
+                    approve: 'The merge or archive is directly justified and loses no distinct fact, uncertainty, knowledge boundary, unresolved promise, or protected content.',
+                    reject: 'The action would erase, merge, rewrite, or close information that must remain separate or active.',
+                    unclear: 'The supplied rules and recent messages are insufficient to apply this destructive action safely.',
+                },
+            };
+        });
+        const body = await requestJev({
+            current_rules: rules,
+            recent_messages: rows.map(({ id, role, name, text }) => ({ id, role, name, text })),
+            proposed_actions: batch,
+        }, questions);
+        batch.forEach((_action, localIndex) => answersByIndex.set(start + localIndex, body.answers?.[`c${start + localIndex}`]));
+    }
+    const approved = [];
+    const warnings = [];
+    const reserved = new Set();
+    let rejected = 0, conflictsResolved = 0, conflictsPending = 0;
+    actions.forEach((action, index) => {
+        const answer = answersByIndex.get(index);
+        const confidence = Number(answer?.confidence);
+        if (action.action !== 'conflict') {
+            if (answer?.type === 'choice' && answer.choice === 'approve' && Number.isFinite(confidence) && confidence >= .8) {
+                approved.push(action);
+                if (action.action === 'merge') { reserved.add(action.keepId); action.removeIds.forEach((id) => reserved.add(id)); }
+                if (action.action === 'archive') reserved.add(action.id);
+            } else {
+                rejected++;
+                const ids = action.action === 'merge' ? [action.keepId, ...action.removeIds] : [action.id, action.supersededBy].filter(Boolean);
+                warnings.push({ ids: [...new Set(ids)], reason: `JEV가 자동 청소 제안을 승인하지 않음 · ${action.reason || '근거 불충분'}` });
+            }
+            return;
+        }
+        const [firstId, secondId] = action.ids;
+        const decisive = answer?.type === 'choice' && Number.isFinite(confidence) && confidence >= .75;
+        if (decisive && ['compatible', 'not_conflict'].includes(answer.choice)) { conflictsResolved++; return; }
+        if (decisive && ['first_superseded', 'second_superseded'].includes(answer.choice)) {
+            const oldId = answer.choice === 'first_superseded' ? firstId : secondId;
+            const newId = answer.choice === 'first_superseded' ? secondId : firstId;
+            const oldRule = active.get(oldId);
+            const newRule = active.get(newId);
+            if (oldRule && newRule && !oldRule.pinned && oldRule.origin !== 'manual' && !reserved.has(oldId) && !reserved.has(newId)) {
+                approved.push({ action: 'archive', id: oldId, resolution: 'superseded', supersededBy: newId, reason: 'JEV 충돌 해결: 새 규칙이 이전 규칙을 명확히 대체함' });
+                reserved.add(oldId); reserved.add(newId); conflictsResolved++; return;
+            }
+        }
+        approved.push({ ...action, reason: `확인 필요 · ${action.reason || '두 규칙 중 어느 쪽이 현재 사실인지 판단할 수 없음'}` });
+        conflictsPending++;
+    });
+    return { actions: approved, warnings, checked: actions.length, rejected, conflictsResolved, conflictsPending, noKey: false };
+}
+
 async function runAutomaticCleanup(value, ctx, profileId, sameChat) {
     const active = value.facts.filter((fact) => fact.active && isCurrent(fact));
     if (!settings().autoCleanup || active.length < 20) return { merged: 0, archived: 0, conflicts: 0, changes: [], skipped: true };
@@ -849,8 +952,21 @@ async function runAutomaticCleanup(value, ctx, profileId, sameChat) {
     const raw = await generateUtility(ctx, cleanupRequest(value.facts, rows), profileId);
     if (!sameChat()) return null;
     const actions = parseCleanupActions(raw, value, rows);
-    const result = applyCleanupActions(value, actions);
+    const proposedPairs = new Set(actions.filter((action) => action.action === 'conflict').map((action) => [...action.ids].sort().join('\u0000')));
+    for (const conflict of value.cleanupConflicts ?? []) {
+        const ids = Array.isArray(conflict.ids) ? conflict.ids.filter((id) => active.some((fact) => fact.id === id)).slice(0, 2) : [];
+        const pair = [...ids].sort().join('\u0000');
+        if (ids.length === 2 && !proposedPairs.has(pair)) { actions.push({ action: 'conflict', ids, reason: conflict.reason || '이전 청소에서 발견한 충돌' }); proposedPairs.add(pair); }
+    }
+    status(`Jev가 자동 청소 제안 ${actions.length}개를 원문과 기존 규칙으로 재검증 중이에요…`);
+    const review = await reviewCleanupActions(actions, value, rows);
+    if (!sameChat()) return null;
+    if (review.noKey) return { merged: 0, archived: 0, conflicts: value.cleanupConflicts?.length ?? 0, changes: [], skipped: true, jevRequired: true };
+    const result = { ...applyCleanupActions(value, review.actions), cleanupChecked: review.checked, cleanupRejected: review.rejected,
+        conflictsResolved: review.conflictsResolved, conflictsPending: review.conflictsPending, warnings: review.warnings.length };
+    value.cleanupWarnings = review.warnings;
     value.lastCleanupAt = Date.now();
+    value.lastCleanupReview = { checked: review.checked, rejected: review.rejected, resolved: review.conflictsResolved, pending: review.conflictsPending, at: value.lastCleanupAt };
     value.lastCleanupSignature = cleanupSignature(value.facts);
     const journal = value.autoMemory?.journal;
     if (result.changes.length && Array.isArray(journal) && journal.length) journal.at(-1).changes.push(...result.changes);
@@ -973,12 +1089,29 @@ async function performMemorySync({ rebuildRecent = false, force = false } = {}) 
                     if (!sameChat()) return;
                     parsed.operations = review.operations;
                     factChecked += review.factsChecked;
-                    factRejected += review.factsRejected;
-                    uncertain += review.factsRejected;
+                    factRejected += review.factsRejected - review.compoundCount;
+                    uncertain += review.factsRejected - review.compoundCount;
                     knowledgeChecked += review.checked;
                     knowledgeCorrected += review.changed;
                     knowledgeRemoved += review.removed;
                     jevValidationSkipped ||= review.noKey;
+                    if (review.compoundOperations.length) {
+                        status(`Jev가 복합 규칙 ${review.compoundOperations.length}개를 발견해 인물별 지식 경계에 맞게 다시 나누고 있어요…`);
+                        const splitRaw = await generateUtility(ctx, compoundSplitRequest(review.compoundOperations, value.facts, rows, contextRows), profileId);
+                        if (!sameChat()) return;
+                        const splitParsed = parseMemoryOperations(splitRaw, rows, value.facts);
+                        const splitReview = await reviewExtractedKnowledge(splitParsed.operations, rows, contextRows, value.facts);
+                        if (!sameChat()) return;
+                        parsed.operations.push(...splitReview.operations);
+                        parsed.rejected += splitParsed.rejected;
+                        factChecked += splitReview.factsChecked;
+                        factRejected += splitReview.factsRejected;
+                        uncertain += splitReview.factsRejected;
+                        knowledgeChecked += splitReview.checked;
+                        knowledgeCorrected += splitReview.changed;
+                        knowledgeRemoved += splitReview.removed;
+                        jevValidationSkipped ||= splitReview.noKey;
+                    }
                 }
             }
             if (!sameChat()) return;
@@ -1002,12 +1135,13 @@ async function performMemorySync({ rebuildRecent = false, force = false } = {}) 
             const knowledgeResult = knowledgeChecked
                 ? ` · Jev 지식 ${knowledgeChecked}개 검증${knowledgeCorrected ? `, ${knowledgeCorrected}개 수정` : ''}${knowledgeRemoved ? `, ${knowledgeRemoved}개 제외` : ''}`
                 : knowledgeRemoved ? ` · Jev 키가 없어 자동 지식 표시 ${knowledgeRemoved}개 제외` : '';
-            const cleanupText = cleanupResult.skipped ? '' : ` · 자동 청소: 병합 ${cleanupResult.merged}개, 보관 ${cleanupResult.archived}개${cleanupResult.conflicts ? `, 충돌 ${cleanupResult.conflicts}쌍 발견` : ''}`;
+            const cleanupText = cleanupResult.jevRequired ? ' · JEV 키가 없어 자동 청소는 규칙을 건드리지 않았어요'
+                : cleanupResult.skipped ? '' : ` · 자동 청소: JEV ${cleanupResult.cleanupChecked}개 검증, 병합 ${cleanupResult.merged}개, 보관 ${cleanupResult.archived}개${cleanupResult.conflictsResolved ? `, 충돌 ${cleanupResult.conflictsResolved}쌍 해결` : ''}${cleanupResult.conflicts ? `, 충돌 확인 필요 ${cleanupResult.conflicts}쌍` : ''}${cleanupResult.warnings ? `, 청소 확인 필요 ${cleanupResult.warnings}개` : ''}`;
             if (!stopExtractionRequested && (analyzedAssistantIds.size || !cleanupResult.skipped)) {
                 const activity = [`${analyzedAssistantIds.size}개 답변 분석`, `규칙 ${added}개 추가`, `${updated}개 갱신`];
                 if (archived) activity.push(`${archived}개 종료`);
                 if (factChecked) activity.push(`JEV 검증 ${Math.max(0, factChecked - factRejected)}개 통과${factRejected ? ` · ${factRejected}개 제외` : ''}`);
-                if (!cleanupResult.skipped) activity.push(`자동 청소 ${cleanupResult.merged + cleanupResult.archived}개 정리${cleanupResult.conflicts ? ` · 충돌 ${cleanupResult.conflicts}쌍 발견` : ''}`);
+                if (!cleanupResult.skipped) activity.push(`자동 청소 JEV ${cleanupResult.cleanupChecked}개 검증 · ${cleanupResult.merged + cleanupResult.archived}개 정리${cleanupResult.conflictsResolved ? ` · 충돌 ${cleanupResult.conflictsResolved}쌍 해결` : ''}${cleanupResult.conflicts ? ` · 충돌 확인 필요 ${cleanupResult.conflicts}쌍` : ''}${cleanupResult.warnings ? ` · 청소 확인 필요 ${cleanupResult.warnings}개` : ''}`);
                 value.lastActivity = { text: activity.join(' · '), at: Date.now(), type: 'collection' };
                 await save(); render();
             }
@@ -1141,14 +1275,14 @@ function correctionPrompt(draft, flagged, continuityContext = '') {
 function stillSameChat(key, lastMessage, mode = 'normal') {
     const ctx = context();
     return chatKey(ctx) === key && ctx.chat.at(-1) === lastMessage
-        && (mode === 'swipe' ? !lastMessage?.is_user : Boolean(lastMessage?.is_user));
+        && (mode === 'normal' ? Boolean(lastMessage?.is_user) : !lastMessage?.is_user);
 }
 
 async function commitReply(text, key, lastMessage, mode = 'normal') {
     if (!stillSameChat(key, lastMessage, mode)) throw new Error('대화가 바뀌어 답변을 게시하지 않았어요.');
     const ctx = context();
     if (typeof ctx.addOneMessage !== 'function' || typeof ctx.saveChat !== 'function') throw new Error('이 SillyTavern 버전에서 답변 저장 기능을 찾지 못했어요.');
-    if (mode === 'swipe') {
+    if (mode !== 'normal') {
         const index = ctx.chat.length - 1;
         const message = lastMessage;
         const generatedAt = new Date().toISOString();
@@ -1201,10 +1335,10 @@ async function runHidden(key, lastMessage, selectedContext = null, mode = 'norma
         if (!stillSameChat(key, lastMessage, mode)) throw new Error('대화가 바뀌어 생성을 중단했어요.');
         const facts = data(false)?.facts.filter((item) => item.active && isCurrent(item)).map((item) => ({ ...item })) ?? [];
         if (!apiKey()) throw new Error('확장 설정에 Jev API 키를 먼저 입력해 주세요.');
-        const recent = recentChat(ctx, mode === 'swipe');
+        const recent = recentChat(ctx, mode !== 'normal');
         const activeContext = selectedContext === null ? memoryInjection(facts, recent, MAX_FACTS, true) : selectedContext;
-        status(mode === 'swipe' ? '새 스와이프 답변을 화면에 띄우지 않고 작성 중이에요…' : '메인 AI가 숨은 초안을 작성 중이에요…');
-        const draftInstruction = mode === 'swipe'
+        status(mode === 'swipe' ? '새 스와이프 답변을 화면에 띄우지 않고 작성 중이에요…' : mode === 'regenerate' ? '재생성 답변을 화면에 띄우지 않고 작성 중이에요…' : '메인 AI가 숨은 초안을 작성 중이에요…');
+        const draftInstruction = mode !== 'normal'
             ? 'Write a new alternative in-character roleplay reply to the user message immediately before the existing assistant reply. Replace that assistant reply rather than continuing from it. Make the alternative meaningfully distinct while respecting the supplied recent-continuity rules as factual guardrails. Output only the full alternative reply, with no preface or explanation.'
             : 'Write the next in-character roleplay reply to the latest user message. Treat the supplied recent-continuity rules only as factual guardrails, not as dialogue or permanent lore. Output only the reply, with no preface or explanation.';
         const draft = String(await ctx.generateQuietPrompt({ quietPrompt: `${activeContext ? `${activeContext}\n\n` : ''}${draftInstruction}` }) ?? '').trim();
@@ -1226,16 +1360,18 @@ async function runHidden(key, lastMessage, selectedContext = null, mode = 'norma
         if (store) {
             const injected = selectedContext === null ? facts.length : (selectionStats?.selected ?? 0);
             store.lastActivity = {
-                text: `${mode === 'swipe' ? '스와이프 · ' : ''}관련 규칙 ${injected}개 주입 · 전체 규칙 ${facts.length}개 검수 · ${flagged.length ? `충돌 ${flagged.length}개 수정` : '충돌 없음'}`,
+                text: `${mode === 'swipe' ? '스와이프 · ' : mode === 'regenerate' ? '재생성 · ' : ''}관련 규칙 ${injected}개 주입 · 전체 규칙 ${facts.length}개 검수 · ${flagged.length ? `충돌 ${flagged.length}개 수정` : '충돌 없음'}`,
                 at: Date.now(), type: 'review',
             };
         }
         try { await commitReply(final, key, lastMessage, mode); }
         catch (error) { if (store) store.lastActivity = previousActivity; throw error; }
-        status(flagged.length ? `충돌 ${flagged.length}곳을 고쳐 ${mode === 'swipe' ? '스와이프 답변을' : '답변을'} 게시했어요.` : `설정 충돌 없이 ${mode === 'swipe' ? '스와이프 답변을' : '답변을'} 게시했어요.`);
+        const replyLabel = mode === 'swipe' ? '스와이프 답변을' : mode === 'regenerate' ? '재생성 답변을' : '답변을';
+        status(flagged.length ? `충돌 ${flagged.length}곳을 고쳐 ${replyLabel} 게시했어요.` : `설정 충돌 없이 ${replyLabel} 게시했어요.`);
     } catch (error) {
         console.error('[100LOG] 생성/검수 실패:', error);
         status(`답변을 표시하지 않았어요: ${error.message}`);
+        globalThis.toastr?.error?.(`답변을 표시하지 않았어요. ${error.message}`, '100LOG');
     }
     finally {
         try { await clearLegacyPrompt(); } catch (error) { console.error('[100LOG] 이전 주입문 정리 실패:', error); }
@@ -1261,8 +1397,8 @@ globalThis.hundredlogGenerationInterceptor = async function (promptChat, _size, 
     const ctx = context();
     const config = settings();
     const selectMemory = Boolean(config.developerMemorySelection);
-    const mode = type === 'swipe' ? 'swipe' : [undefined, 'normal'].includes(type) ? 'normal' : null;
-    const strictForThisGeneration = Boolean(config.strictReview && (mode === 'normal' || (mode === 'swipe' && config.strictReviewSwipes)));
+    const mode = type === 'swipe' ? 'swipe' : ['regenerate', 'regen', 'retry'].includes(type) ? 'regenerate' : [undefined, 'normal'].includes(type) ? 'normal' : null;
+    const strictForThisGeneration = Boolean(config.strictReview && (mode === 'normal' || mode === 'regenerate' || (mode === 'swipe' && config.strictReviewSwipes)));
     if (!mode || (!strictForThisGeneration && !(selectMemory && mode === 'normal')) || !chatKey(ctx)) return;
     const confirmed = data(false)?.facts.filter((fact) => fact.active && isCurrent(fact)) ?? [];
     if (!confirmed.length) return;
@@ -1272,7 +1408,7 @@ globalThis.hundredlogGenerationInterceptor = async function (promptChat, _size, 
     if (busy) { abort(true); status('이미 JEV 맞춤 주입 또는 엄격 검수를 진행하고 있어요. 잠시 기다려 주세요.'); return; }
     const last = ctx.chat.at(-1);
     if (mode === 'normal' && !last?.is_user) { abort(true); status('마지막 메시지가 사용자 메시지가 아니라 엄격 검수 생성을 멈췄어요.'); return; }
-    if (mode === 'swipe' && (last?.is_user || !ctx.chat.slice(0, -1).some((message) => message?.is_user))) { abort(true); status('스와이프할 기존 AI 답변이나 이전 사용자 메시지를 찾지 못했어요.'); return; }
+    if (mode !== 'normal' && (last?.is_user || !ctx.chat.slice(0, -1).some((message) => message?.is_user))) { abort(true); status(`${mode === 'swipe' ? '스와이프' : '재생성'}할 기존 AI 답변이나 이전 사용자 메시지를 찾지 못했어요.`); return; }
     const key = chatKey(ctx);
     busy = true;
     render();
@@ -1309,7 +1445,7 @@ globalThis.hundredlogGenerationInterceptor = async function (promptChat, _size, 
         return;
     }
     abort(true);
-    status(mode === 'swipe' ? '스와이프 답변을 화면에 표시하기 전에 검수할게요…' : selectMemory ? '맞춤 규칙 주입을 마쳤어요. 답변을 숨은 초안으로 생성할게요…' : '답변을 화면에 표시하지 않고 숨은 초안으로 생성할게요…'); render();
+    status(mode === 'swipe' ? '스와이프 답변을 화면에 표시하기 전에 검수할게요…' : mode === 'regenerate' ? '재생성 답변을 화면에 표시하기 전에 검수할게요…' : selectMemory ? '맞춤 규칙 주입을 마쳤어요. 답변을 숨은 초안으로 생성할게요…' : '답변을 화면에 표시하지 않고 숨은 초안으로 생성할게요…'); render();
     // Let SillyTavern finish unwinding the aborted generation first.
     setTimeout(() => { void runHidden(key, last, selectedContext, mode, selectionStats); }, 300);
 };
