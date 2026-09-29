@@ -1,4 +1,4 @@
-import { MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow } from './memory-engine.js';
+import { MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions } from './memory-engine.js';
 import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, generateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, buildRelevanceChecks, selectRelevantFacts, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js';
 
 const NAME = 'hundredlog';
@@ -32,7 +32,6 @@ let memoryForcePending = false;
 let memoryEpoch = 0;
 let normalGenerating = false;
 let memoryHooksInstalled = false;
-let activeReviewToast = null;
 let developerTitleClicks = 0;
 let developerTitleTimer = null;
 
@@ -282,37 +281,64 @@ async function requestJev(state, questions) {
 
 export async function reviewExtractedKnowledge(operations, rows, contextRows = [], currentFacts = []) {
     const reviewed = operations.map((operation) => ({ ...operation, knowledge: normalizeKnowledge(operation.knowledge) }));
-    const checks = [];
+    const factChecks = reviewed.map((operation, operationIndex) => ({ kind: 'fact', operationIndex, questionId: `f${operationIndex}` }));
+    const knowledgeChecks = [];
     reviewed.forEach((operation, operationIndex) => {
         if (!['add', 'update'].includes(operation.action)) return;
         for (const [character, proposedStatus] of Object.entries(operation.knowledge)) {
-            checks.push({ operationIndex, character, proposedStatus });
+            knowledgeChecks.push({ kind: 'knowledge', operationIndex, character, proposedStatus, questionId: `k${knowledgeChecks.length}` });
         }
     });
-    if (!checks.length) return { operations: reviewed, checked: 0, changed: 0, removed: 0, noKey: false };
+    const checks = [...factChecks, ...knowledgeChecks];
+    if (!checks.length) return { operations: reviewed, factsChecked: 0, factsRejected: 0, checked: 0, changed: 0, removed: 0, noKey: false };
     if (!apiKey()) {
         for (const operation of reviewed) operation.knowledge = {};
-        return { operations: reviewed, checked: 0, changed: 0, removed: checks.length, noKey: true };
+        return { operations: reviewed, factsChecked: 0, factsRejected: 0, checked: 0, changed: 0, removed: knowledgeChecks.length, noKey: true };
     }
-    let changed = 0, removed = 0;
+    let factsChecked = 0, factsRejected = 0, changed = 0, removed = 0;
+    const rejectedOperations = new Set();
     for (let start = 0; start < checks.length; start += 20) {
         const batch = checks.slice(start, start + 20);
-        const knowledgeChecks = batch.map(({ operationIndex, character, proposedStatus }) => {
+        const reviewChecks = batch.map((check) => {
+            const { operationIndex } = check;
             const operation = reviewed[operationIndex];
             const prior = currentFacts.find((fact) => fact.id === operation.id);
+            const source = rows.find((row) => row.id === operation.sourceId);
+            if (check.kind === 'fact') {
+                return {
+                    check_type: 'fact_validity',
+                    proposed_operation: {
+                        action: operation.action, kind: operation.kind, text: operation.text,
+                        evidence_type: operation.evidenceType, source_id: operation.sourceId,
+                    },
+                    exact_new_evidence: operation.sourceText ?? '',
+                    source_message: source ? { id: source.id, role: source.role, name: source.name, text: source.text } : null,
+                    previous_memory: prior ? { text: prior.text, kind: prior.kind, knowledge: normalizeKnowledge(prior.knowledge) } : null,
+                };
+            }
             return {
-                character,
-                proposed_status: proposedStatus,
+                check_type: 'character_knowledge',
+                character: check.character,
+                proposed_status: check.proposedStatus,
                 proposed_memory: operation.text,
                 exact_new_evidence: operation.sourceText ?? '',
                 previous_memory: prior ? { text: prior.text, knowledge: normalizeKnowledge(prior.knowledge) } : null,
             };
         });
         const questions = {};
-        batch.forEach((_check, index) => {
-            questions[`k${index}`] = {
+        batch.forEach((check, index) => {
+            questions[check.questionId] = check.kind === 'fact' ? {
                 type: 'choice',
-                instructions: `Decide whether the character in knowledge_checks[${index}] knows EVERY clause of proposed_memory at this exact point in the story. Evaluate only recent_context, new_messages, exact_new_evidence, and previous_memory. A name appearing in the memory or knowing only one clause is not enough. For a private exchange, an absent third party does not know what was said unless sharing is shown. If the compound memory contains any clause the character does not know, choose unknown. Do not invent off-screen information transfer.`,
+                instructions: `Verify review_checks[${index}]. Decide whether proposed_operation is directly and completely supported by source_message, exact_new_evidence, new_messages, and previous_memory. Validate both the memory text and the requested action. Do not accept invented off-screen events, participants who were not shown, false attribution of knowledge or presence, a character's lie or belief rewritten as objective truth, an intention rewritten as completion, or a partial quote expanded beyond its meaning.`,
+                criteria: {
+                    supported: 'Every material clause and the operation action are directly supported; uncertainty, hearsay, lies and intentions remain correctly labeled.',
+                    distorted: 'The source exists, but the proposed memory changes its meaning, certainty, speaker, participants, timing, knowledge, or completion state.',
+                    unsupported: 'The proposed memory includes invented, off-screen or unshown information, or the cited source does not support its material claim.',
+                    unclear: 'The supplied material is insufficient to verify the complete proposed memory and action.',
+                },
+            } : {
+                type: 'choice',
+                instructions: `Decide whether the character in review_checks[${index}] knows EVERY clause of proposed_memory at this exact point in the story. Evaluate only recent_context, new_messages, exact_new_evidence, and previous_memory. A name appearing in the memory or knowing only one clause is not enough. For a private exchange, an absent third party does not know what was said unless sharing is shown. If the compound memory contains any clause the character does not know, choose unknown. Do not invent off-screen information transfer.`,
                 criteria: {
                     known: 'The character directly participated, witnessed the entire event, was told every clause, disclosed it themselves, or previous_memory explicitly proves complete knowledge.',
                     unknown: 'The context supports that the character did not witness or receive at least one clause, was outside the private exchange, or is explicitly unaware.',
@@ -323,28 +349,40 @@ export async function reviewExtractedKnowledge(operations, rows, contextRows = [
         const body = await requestJev({
             recent_context: contextRows.slice(-8),
             new_messages: rows.map(({ id, role, name, text }) => ({ id, role, name, text })),
-            knowledge_checks: knowledgeChecks,
+            review_checks: reviewChecks,
         }, questions);
-        batch.forEach(({ operationIndex, character, proposedStatus }, index) => {
-            const answer = body.answers?.[`k${index}`];
+        batch.forEach((check) => {
+            const answer = body.answers?.[check.questionId];
             const confidence = Number(answer?.confidence);
-            const operation = reviewed[operationIndex];
+            const operation = reviewed[check.operationIndex];
+            if (check.kind === 'fact') {
+                factsChecked++;
+                if (answer?.type !== 'choice' || !['supported', 'distorted', 'unsupported', 'unclear'].includes(answer.choice)
+                    || !Number.isFinite(confidence) || confidence < .7 || answer.choice !== 'supported') {
+                    rejectedOperations.add(check.operationIndex);
+                    factsRejected++;
+                }
+                return;
+            }
             if (answer?.type !== 'choice' || !['known', 'unknown', 'unverified'].includes(answer.choice)
                 || !Number.isFinite(confidence) || confidence < .65) {
-                delete operation.knowledge[character];
+                delete operation.knowledge[check.character];
                 removed++;
                 return;
             }
             if (answer.choice === 'unverified') {
-                delete operation.knowledge[character];
+                delete operation.knowledge[check.character];
                 removed++;
                 return;
             }
-            operation.knowledge[character] = answer.choice;
-            if (answer.choice !== proposedStatus) changed++;
+            operation.knowledge[check.character] = answer.choice;
+            if (answer.choice !== check.proposedStatus) changed++;
         });
     }
-    return { operations: reviewed, checked: checks.length, changed, removed, noKey: false };
+    return {
+        operations: reviewed.filter((_operation, index) => !rejectedOperations.has(index)),
+        factsChecked, factsRejected, checked: knowledgeChecks.length, changed, removed, noKey: false,
+    };
 }
 
 function positiveInteger(value, fallback) {
@@ -367,6 +405,8 @@ function settings() {
     config.strictReview ??= legacyJevEnabled;
     config.enabled = Boolean(config.strictReview);
     config.autoMemory ??= true;
+    config.autoCleanup ??= true;
+    config.strictReviewSwipes ??= false;
     config.extractionProfileId ??= '';
     config.translationProfileId ??= '@extraction';
     config.translationProvider = config.translationProvider === 'google' ? 'google' : 'profile';
@@ -397,6 +437,8 @@ function data(create = true) {
     value.embeddingIndex.entries ??= {};
     for (const fact of value.facts) fact.knowledge ??= {};
     pruneToRecentWindow(value, ctx.chat);
+    const currentIds = new Set(value.facts.filter((fact) => fact.active && isCurrent(fact)).map((fact) => fact.id));
+    value.cleanupConflicts = (value.cleanupConflicts ?? []).filter((entry) => Array.isArray(entry.ids) && entry.ids.length === 2 && entry.ids.every((id) => currentIds.has(id)));
     return value;
 }
 
@@ -409,28 +451,6 @@ async function save() {
 function status(value) {
     statusText = value;
     if ($id('status')) $id('status').textContent = value;
-}
-
-function clearReviewToast() {
-    try {
-        if (activeReviewToast && typeof globalThis.toastr?.clear === 'function') globalThis.toastr.clear(activeReviewToast);
-    } catch { /* a toast failure must never stop generation */ }
-    activeReviewToast = null;
-}
-
-function reviewNotice(message, level = 'info', persistent = true) {
-    clearReviewToast();
-    try {
-        const notify = globalThis.toastr?.[level];
-        if (typeof notify !== 'function') return;
-        activeReviewToast = notify(message, '100LOG', {
-            timeOut: persistent ? 0 : 2200,
-            extendedTimeOut: persistent ? 0 : 500,
-            closeButton: persistent,
-            tapToDismiss: !persistent,
-            newestOnTop: true,
-        });
-    } catch { activeReviewToast = null; }
 }
 
 function setDeveloperUnlocked(unlocked) {
@@ -462,13 +482,11 @@ function registerDeveloperTitle(element) {
         if (answer === null || answer === undefined) return;
         if (String(answer).trim() !== DEVELOPER_PASSWORD) {
             status('비밀번호가 맞지 않아요.');
-            globalThis.toastr?.error?.('비밀번호가 맞지 않아요.', '100LOG');
             return;
         }
         setDeveloperUnlocked(true);
         showView('settings');
         status('개발자 모드를 열었어요.');
-        globalThis.toastr?.success?.('개발자 모드를 열었어요.', '100LOG');
     });
 }
 
@@ -630,6 +648,11 @@ function render() {
     $id('auto-memory').checked = settings().autoMemory;
     $id('auto-memory').disabled = busy || translating;
     $id('analysis-interval').value = String(settings().analysisInterval);
+    $id('auto-cleanup').checked = Boolean(settings().autoCleanup);
+    $id('auto-cleanup').disabled = working;
+    const intervalWarning = $id('interval-warning');
+    if (intervalWarning) intervalWarning.hidden = settings().analysisInterval < 50;
+    if ($id('activity')) $id('activity').textContent = value?.lastActivity?.text || '아직 기록된 작업이 없어요.';
     $id('sync-now').disabled = working || !value || !settings().autoMemory;
     $id('undo-last').disabled = working || !value || !value.autoMemory?.journal?.some((entry) => entry.changes?.length && !entry.undoneAt);
     refreshProfiles();
@@ -649,6 +672,8 @@ function render() {
     for (const id of ['extraction-profile', 'translation-profile', 'profiles-refresh', 'analysis-interval']) $id(id).disabled = working;
     $id('strict-review').checked = Boolean(settings().strictReview);
     $id('strict-review').disabled = working;
+    $id('strict-review-swipes').checked = Boolean(settings().strictReviewSwipes);
+    $id('strict-review-swipes').disabled = working || !settings().strictReview;
     $id('key').disabled = working;
     $id('test').disabled = working;
     $id('clearkey').disabled = working;
@@ -682,6 +707,12 @@ function render() {
     $id('history-count').textContent = `${history.length}개`;
     $id('candidate-count').textContent = value ? `${value.candidates.length}개` : '';
     $id('progress').textContent = value ? memoryProgressText(value, context()) : '';
+    const cleanupSummary = $id('cleanup-summary');
+    if (cleanupSummary) {
+        const conflicts = value?.cleanupConflicts?.length ?? 0;
+        cleanupSummary.textContent = conflicts ? `자동 청소가 서로 충돌하는 규칙 ${conflicts}쌍을 발견했어요. 규칙 목록에서 직접 확인해 주세요.`
+            : value?.lastCleanupAt ? '마지막 수집 뒤 규칙 자동 청소까지 완료했어요.' : '규칙이 20개 이상 쌓이면 수집 뒤 자동으로 중복·종료·충돌을 정리해요.';
+    }
     const manualChoice = $id('replaces').value;
     $id('replaces').replaceChildren(...(value ? [...replacementSelect(value, manualChoice).children] : []));
     if (value) $id('replaces').value = currentFacts.some((item) => item.id === manualChoice && item.active) ? manualChoice : '';
@@ -689,10 +720,11 @@ function render() {
     if (!currentFacts.length) {
         const empty = document.createElement('p'); empty.className = 'hundredlog-empty'; empty.textContent = '최근 100개 메시지에서 틀리면 안 되는 내용이 생기면 여기에 자동으로 정리해요.\n장기 설정과 단순한 장면 묘사는 저장하지 않아요.'; $id('facts').append(empty);
     }
+    const conflictIds = new Set((value.cleanupConflicts ?? []).flatMap((entry) => entry.ids ?? []));
     for (const fact of currentFacts) {
         const item = document.createElement('div'); item.className = 'hundredlog-item';
         const title = document.createElement('div'); title.className = 'hundredlog-text'; title.textContent = displayText(fact); item.append(title);
-        const meta = document.createElement('div'); meta.className = 'hundredlog-meta'; meta.textContent = `${MEMORY_KINDS[fact.kind] || '중요한 사실'} · ${fact.scope === 'scene' ? '장면 한정 규칙' : '지속 규칙'} · ${fact.pinned ? '자동 변경 잠금' : fact.origin === 'auto' ? '자동 관리' : '직접 저장'}${fact.active ? '' : ' · 잠시 꺼짐'}${Number.isInteger(fact.sourceId) ? ` · 대화 #${fact.sourceId}` : ''}`; item.append(meta);
+        const meta = document.createElement('div'); meta.className = 'hundredlog-meta'; meta.textContent = `${MEMORY_KINDS[fact.kind] || '중요한 사실'} · ${fact.scope === 'scene' ? '장면 한정 규칙' : '지속 규칙'} · ${fact.pinned ? '자동 변경 잠금' : fact.origin === 'auto' ? '자동 관리' : '직접 저장'}${fact.active ? '' : ' · 잠시 꺼짐'}${conflictIds.has(fact.id) ? ' · 충돌 의심' : ''}${Number.isInteger(fact.sourceId) ? ` · 대화 #${fact.sourceId}` : ''}`; item.append(meta);
         const actions = document.createElement('div'); actions.className = 'hundredlog-actions';
         actions.append(makeButton('수정', () => {
             if (data(false) !== value) return;
@@ -719,7 +751,7 @@ function render() {
         const title = document.createElement('div'); title.className = 'hundredlog-text'; title.textContent = displayText(fact);
         const next = value.facts.find((entry) => entry.id === fact.supersededBy);
         const meta = document.createElement('div'); meta.className = 'hundredlog-meta';
-        const reason = { completed: '완료됨', cancelled: '취소됨', past_scene: '지난 상황', updated: '새 상태로 갱신', restored: '이전 기억 복원' }[fact.archived] || '지난 상태';
+        const reason = { completed: '완료됨', cancelled: '취소됨', past_scene: '지난 상황', updated: '새 상태로 갱신', merged: '비슷한 규칙에 병합', low_importance: '중요도가 낮아 자동 정리', restored: '이전 기억 복원' }[fact.archived] || '지난 상태';
         meta.textContent = `${reason}${fact.archiveReason ? ` · ${fact.archiveReason}` : ''}${next ? ` → ${displayText(next)}` : ''}`;
         item.append(title, meta); appendOriginal(item, fact);
         if (fact.closedEvidence) { const evidence = document.createElement('div'); evidence.className = 'hundredlog-meta'; evidence.textContent = `변경 근거: ${fact.closedEvidence}`; item.append(evidence); }
@@ -786,6 +818,43 @@ function sourceRows(ctx, start, offset = 0, total = ctx.chat.length) {
         offset = 0;
     }
     return { rows, nextCursor: i, nextOffset: offset };
+}
+
+function recentCleanupRows(ctx) {
+    const start = recentWindowStart(ctx.chat);
+    const result = [];
+    let remaining = 30000;
+    for (let id = ctx.chat.length - 1; id >= start && remaining > 0; id--) {
+        const message = ctx.chat[id];
+        if (!isVisibleChatMessage(message)) continue;
+        const full = String(message.mes).trim();
+        const text = full.slice(Math.max(0, full.length - Math.min(1600, remaining)));
+        result.push({ id, role: message.is_user ? 'user' : 'character', name: message.name ?? (message.is_user ? ctx.name1 : ctx.name2), text });
+        remaining -= text.length;
+    }
+    return result.reverse();
+}
+
+function cleanupSignature(facts) {
+    return JSON.stringify(facts.filter((fact) => fact.active && isCurrent(fact)).map((fact) => [fact.id, fact.text, fact.kind, fact.importance, fact.sourceId]));
+}
+
+async function runAutomaticCleanup(value, ctx, profileId, sameChat) {
+    const active = value.facts.filter((fact) => fact.active && isCurrent(fact));
+    if (!settings().autoCleanup || active.length < 20) return { merged: 0, archived: 0, conflicts: 0, changes: [], skipped: true };
+    const signature = cleanupSignature(active);
+    if (value.lastCleanupSignature === signature) return { merged: 0, archived: 0, conflicts: value.cleanupConflicts?.length ?? 0, changes: [], skipped: true };
+    const rows = recentCleanupRows(ctx);
+    status(`규칙 ${active.length}개에서 중복·종료·충돌을 자동 청소 중이에요…`);
+    const raw = await generateUtility(ctx, cleanupRequest(value.facts, rows), profileId);
+    if (!sameChat()) return null;
+    const actions = parseCleanupActions(raw, value, rows);
+    const result = applyCleanupActions(value, actions);
+    value.lastCleanupAt = Date.now();
+    value.lastCleanupSignature = cleanupSignature(value.facts);
+    const journal = value.autoMemory?.journal;
+    if (result.changes.length && Array.isArray(journal) && journal.length) journal.at(-1).changes.push(...result.changes);
+    return result;
 }
 
 function parseJson(raw) {
@@ -862,7 +931,10 @@ async function performMemorySync({ rebuildRecent = false, force = false } = {}) 
     memoryPending = false;
     extracting = true; stopExtractionRequested = false;
     render();
-    let changed = 0, uncertain = 0, knowledgeChecked = 0, knowledgeCorrected = 0, knowledgeRemoved = 0;
+    let changed = 0, added = 0, updated = 0, archived = 0, uncertain = 0, factChecked = 0, factRejected = 0;
+    const analyzedAssistantIds = new Set();
+    let knowledgeChecked = 0, knowledgeCorrected = 0, knowledgeRemoved = 0, jevValidationSkipped = false;
+    let cleanupResult = { merged: 0, archived: 0, conflicts: 0, changes: [], skipped: true };
     try {
         if (rebuildRecent) resetRecentWindow(value, ctx.chat);
         else pruneToRecentWindow(value, ctx.chat);
@@ -878,6 +950,7 @@ async function performMemorySync({ rebuildRecent = false, force = false } = {}) 
             const batch = sourceRows(ctx, start, offset, end);
             const rows = batch.rows.filter((row) => !/^\s*(?:\(OOC\s*:[^()]*\)|\[OOC\s*:[^\[\]]*\])\s*$/i.test(row.text))
                 .map((row) => ({ ...row, role: ctx.chat[row.id].is_user ? 'user' : 'character', signature: messageSignature(ctx.chat[row.id]) }));
+            rows.filter((row) => row.role === 'character').forEach((row) => analyzedAssistantIds.add(row.id));
             // Track skipped sources too, so edits to OOC/system messages invalidate their checkpoint.
             const tracked = [];
             for (let id = start; id < Math.min(end, batch.nextCursor + (batch.nextOffset ? 1 : 0)); id++) tracked.push({ id, signature: messageSignature(ctx.chat[id]) });
@@ -894,30 +967,52 @@ async function performMemorySync({ rebuildRecent = false, force = false } = {}) 
                     return;
                 }
                 parsed = parseMemoryOperations(raw, rows, value.facts);
-                if (parsed.operations.some((operation) => Object.keys(normalizeKnowledge(operation.knowledge)).length)) {
-                    status(`Jev가 새 기억의 인물별 지식을 검증 중이에요…`);
+                if (parsed.operations.length) {
+                    status(`Jev가 새 규칙 ${parsed.operations.length}개와 인물별 지식을 검증 중이에요…`);
                     const review = await reviewExtractedKnowledge(parsed.operations, rows, contextRows, value.facts);
                     if (!sameChat()) return;
                     parsed.operations = review.operations;
+                    factChecked += review.factsChecked;
+                    factRejected += review.factsRejected;
+                    uncertain += review.factsRejected;
                     knowledgeChecked += review.checked;
                     knowledgeCorrected += review.changed;
                     knowledgeRemoved += review.removed;
+                    jevValidationSkipped ||= review.noKey;
                 }
             }
             if (!sameChat()) return;
             const result = applyMemoryOperations(value, parsed.operations);
             recordMemoryBatch(value, { rows: tracked, start, offset, nextCursor: batch.nextCursor, nextOffset: batch.nextOffset, changes: result.changes });
             changed += result.added + result.updated + result.archived;
+            added += result.added; updated += result.updated; archived += result.archived;
             uncertain += parsed.rejected + result.skipped;
             value.extractionCursor = auto.cursor; value.extractionOffset = auto.offset;
             await save(); render();
         }
+        if (sameChat() && !stopExtractionRequested) {
+            cleanupResult = await runAutomaticCleanup(value, ctx, profileId, sameChat) ?? cleanupResult;
+            if (!sameChat()) return;
+            if (!cleanupResult.skipped) { await save(); render(); }
+        }
         if (sameChat()) {
+            const factResult = factChecked
+                ? ` · Jev 사실 ${factChecked}개 검증${factRejected ? `, ${factRejected}개 제외` : ''}`
+                : jevValidationSkipped ? ' · Jev 키가 없어 원문 인용·신뢰도 검사만 적용' : '';
             const knowledgeResult = knowledgeChecked
                 ? ` · Jev 지식 ${knowledgeChecked}개 검증${knowledgeCorrected ? `, ${knowledgeCorrected}개 수정` : ''}${knowledgeRemoved ? `, ${knowledgeRemoved}개 제외` : ''}`
                 : knowledgeRemoved ? ` · Jev 키가 없어 자동 지식 표시 ${knowledgeRemoved}개 제외` : '';
-            status(stopExtractionRequested ? `수집 중단 · 규칙 ${changed}개 반영. 다음에 이어서 수집해요.${knowledgeResult}`
-                : `최근 ${RECENT_MESSAGE_LIMIT}개 대화 수집 완료 · 규칙 ${changed}개 반영${uncertain ? ` · 불확실하거나 중복된 제안 ${uncertain}개는 건너뛰었어요` : ''}${knowledgeResult}`);
+            const cleanupText = cleanupResult.skipped ? '' : ` · 자동 청소: 병합 ${cleanupResult.merged}개, 보관 ${cleanupResult.archived}개${cleanupResult.conflicts ? `, 충돌 ${cleanupResult.conflicts}쌍 발견` : ''}`;
+            if (!stopExtractionRequested && (analyzedAssistantIds.size || !cleanupResult.skipped)) {
+                const activity = [`${analyzedAssistantIds.size}개 답변 분석`, `규칙 ${added}개 추가`, `${updated}개 갱신`];
+                if (archived) activity.push(`${archived}개 종료`);
+                if (factChecked) activity.push(`JEV 검증 ${Math.max(0, factChecked - factRejected)}개 통과${factRejected ? ` · ${factRejected}개 제외` : ''}`);
+                if (!cleanupResult.skipped) activity.push(`자동 청소 ${cleanupResult.merged + cleanupResult.archived}개 정리${cleanupResult.conflicts ? ` · 충돌 ${cleanupResult.conflicts}쌍 발견` : ''}`);
+                value.lastActivity = { text: activity.join(' · '), at: Date.now(), type: 'collection' };
+                await save(); render();
+            }
+            status(stopExtractionRequested ? `수집 중단 · 규칙 ${changed}개 반영. 다음에 이어서 수집해요.${factResult}${knowledgeResult}`
+                : `최근 ${RECENT_MESSAGE_LIMIT}개 대화 수집 완료 · 규칙 ${changed}개 반영${uncertain ? ` · 불확실하거나 중복된 제안 ${uncertain}개는 건너뛰었어요` : ''}${factResult}${knowledgeResult}${cleanupText}`);
         }
     } catch (error) { if (sameChat()) status(`기억 정리를 멈췄어요: ${error.message} ‘지금 정리’로 다시 시도할 수 있어요.`); }
     finally { extracting = false; render(); }
@@ -955,9 +1050,10 @@ export function installMemoryHooks(ctx = context()) {
     });
 }
 
-function recentChat(ctx) {
-    const start = recentWindowStart(ctx.chat);
-    return ctx.chat.slice(start).filter(isVisibleChatMessage)
+function recentChat(ctx, excludeLast = false) {
+    const chat = excludeLast ? ctx.chat.slice(0, -1) : ctx.chat;
+    const start = recentWindowStart(chat);
+    return chat.slice(start).filter(isVisibleChatMessage)
         .slice(-12).map((message) => `${message.name ?? (message.is_user ? ctx.name1 : ctx.name2)}: ${String(message.mes ?? '').slice(0, 1000)}`).join('\n');
 }
 
@@ -1042,15 +1138,45 @@ function correctionPrompt(draft, flagged, continuityContext = '') {
     return `${continuityContext ? `${continuityContext}\n\n` : ''}Revise the following unpublished character reply. The listed issues conflict with approved recent-continuity rules. Fix only those conflicts; preserve the rest of the reply, its language, voice, pacing, POV, and formatting. Do not quote these instructions or explain the edit. Output only the full revised character reply.\n\nApproved issues: ${JSON.stringify(issues)}\n\nUnpublished reply:\n${draft}`;
 }
 
-function stillSameChat(key, lastMessage) {
+function stillSameChat(key, lastMessage, mode = 'normal') {
     const ctx = context();
-    return chatKey(ctx) === key && ctx.chat.at(-1) === lastMessage && Boolean(lastMessage?.is_user);
+    return chatKey(ctx) === key && ctx.chat.at(-1) === lastMessage
+        && (mode === 'swipe' ? !lastMessage?.is_user : Boolean(lastMessage?.is_user));
 }
 
-async function commitReply(text, key, lastMessage) {
-    if (!stillSameChat(key, lastMessage)) throw new Error('대화가 바뀌어 답변을 게시하지 않았어요.');
+async function commitReply(text, key, lastMessage, mode = 'normal') {
+    if (!stillSameChat(key, lastMessage, mode)) throw new Error('대화가 바뀌어 답변을 게시하지 않았어요.');
     const ctx = context();
     if (typeof ctx.addOneMessage !== 'function' || typeof ctx.saveChat !== 'function') throw new Error('이 SillyTavern 버전에서 답변 저장 기능을 찾지 못했어요.');
+    if (mode === 'swipe') {
+        const index = ctx.chat.length - 1;
+        const message = lastMessage;
+        const generatedAt = new Date().toISOString();
+        const generationId = Date.now();
+        message.swipes = Array.isArray(message.swipes) && message.swipes.length ? message.swipes : [String(message.mes ?? '')];
+        message.swipe_info = Array.isArray(message.swipe_info) ? message.swipe_info : [];
+        while (message.swipe_info.length < message.swipes.length) message.swipe_info.push({});
+        message.swipes.push(text);
+        message.swipe_info.push({ send_date: generatedAt, gen_id: generationId, extra: { hundredlog: true } });
+        if (Array.isArray(message.variables)) {
+            while (message.variables.length < message.swipes.length - 1) message.variables.push({});
+            message.variables.push({});
+        }
+        message.swipe_id = message.swipes.length - 1;
+        message.mes = text;
+        message.send_date = generatedAt;
+        message.extra = { ...(message.extra ?? {}), gen_id: generationId, hundredlog: true };
+        try {
+            ctx.addOneMessage(message, { type: 'swipe' });
+            await ctx.eventSource.emit((ctx.eventTypes ?? ctx.event_types).MESSAGE_SWIPED, index);
+            await ctx.eventSource.emit((ctx.eventTypes ?? ctx.event_types).CHARACTER_MESSAGE_RENDERED, index);
+            await ctx.saveChat();
+            return;
+        } catch (error) {
+            console.error('[100LOG] 스와이프 게시 중 오류:', error);
+            throw new Error('스와이프 표시 또는 저장 중 오류가 났어요. 채팅에 답변이 보이는지 확인해 주세요.');
+        }
+    }
     const message = {
         name: ctx.name2, is_user: false, is_system: false, send_date: new Date().toISOString(),
         mes: text, extra: { gen_id: Date.now(), hundredlog: true }, swipes: [text], swipe_id: 0
@@ -1069,39 +1195,47 @@ async function commitReply(text, key, lastMessage) {
     }
 }
 
-async function runHidden(key, lastMessage, selectedContext = null) {
+async function runHidden(key, lastMessage, selectedContext = null, mode = 'normal', selectionStats = null) {
     try {
         const ctx = context();
-        if (!stillSameChat(key, lastMessage)) throw new Error('대화가 바뀌어 생성을 중단했어요.');
+        if (!stillSameChat(key, lastMessage, mode)) throw new Error('대화가 바뀌어 생성을 중단했어요.');
         const facts = data(false)?.facts.filter((item) => item.active && isCurrent(item)).map((item) => ({ ...item })) ?? [];
         if (!apiKey()) throw new Error('확장 설정에 Jev API 키를 먼저 입력해 주세요.');
-        const recent = recentChat(ctx);
+        const recent = recentChat(ctx, mode === 'swipe');
         const activeContext = selectedContext === null ? memoryInjection(facts, recent, MAX_FACTS, true) : selectedContext;
-        status('메인 AI가 숨은 초안을 작성 중이에요…');
-        const draftInstruction = 'Write the next in-character roleplay reply to the latest user message. Treat the supplied recent-continuity rules only as factual guardrails, not as dialogue or permanent lore. Output only the reply, with no preface or explanation.';
+        status(mode === 'swipe' ? '새 스와이프 답변을 화면에 띄우지 않고 작성 중이에요…' : '메인 AI가 숨은 초안을 작성 중이에요…');
+        const draftInstruction = mode === 'swipe'
+            ? 'Write a new alternative in-character roleplay reply to the user message immediately before the existing assistant reply. Replace that assistant reply rather than continuing from it. Make the alternative meaningfully distinct while respecting the supplied recent-continuity rules as factual guardrails. Output only the full alternative reply, with no preface or explanation.'
+            : 'Write the next in-character roleplay reply to the latest user message. Treat the supplied recent-continuity rules only as factual guardrails, not as dialogue or permanent lore. Output only the reply, with no preface or explanation.';
         const draft = String(await ctx.generateQuietPrompt({ quietPrompt: `${activeContext ? `${activeContext}\n\n` : ''}${draftInstruction}` }) ?? '').trim();
-        if (!stillSameChat(key, lastMessage)) throw new Error('대화가 바뀌어 생성을 중단했어요.');
+        if (!stillSameChat(key, lastMessage, mode)) throw new Error('대화가 바뀌어 생성을 중단했어요.');
         status(`Jev가 연속성 규칙 ${facts.length}개와 초안을 한 번에 검수 중이에요…`);
         const flagged = await judge(draft, facts, recent, ctx.name2);
         let final = draft;
         if (flagged.length) {
             status(`설정 충돌 ${flagged.length}곳을 발견했어요. 메인 AI에게 수정 요청 중이에요…`);
-            reviewNotice(`연속성 오류 ${flagged.length}곳을 발견해 답변을 수정 중이에요…`, 'warning', true);
             final = String(await ctx.generateQuietPrompt({ quietPrompt: correctionPrompt(draft, flagged, activeContext) }) ?? '').trim();
             if (!final) throw new Error('수정 답변이 비어 있어 게시하지 않았어요.');
             status('수정 답변을 한 번 더 확인하고 있어요…');
-            reviewNotice('수정된 답변을 JEV가 다시 검수 중이에요…', 'info', true);
             const again = await judge(final, facts, recent, ctx.name2);
             if (again.length) throw new Error(`재검수 후에도 설정 충돌 ${again.length}곳이 남아 있어 답변을 표시하지 않았어요.`);
         }
         if (!final || final.length > 18000) throw new Error('최종 답변의 길이를 확인할 수 없어 게시하지 않았어요.');
-        await commitReply(final, key, lastMessage);
-        status(flagged.length ? `충돌 ${flagged.length}곳을 고쳐 게시했어요.` : '설정 충돌 없이 답변을 게시했어요.');
-        reviewNotice(flagged.length ? `연속성 오류 ${flagged.length}곳을 수정하고 답변을 표시했어요.` : '검수 완료 · 답변을 표시했어요.', 'success', false);
+        const store = data(false);
+        const previousActivity = store?.lastActivity;
+        if (store) {
+            const injected = selectedContext === null ? facts.length : (selectionStats?.selected ?? 0);
+            store.lastActivity = {
+                text: `${mode === 'swipe' ? '스와이프 · ' : ''}관련 규칙 ${injected}개 주입 · 전체 규칙 ${facts.length}개 검수 · ${flagged.length ? `충돌 ${flagged.length}개 수정` : '충돌 없음'}`,
+                at: Date.now(), type: 'review',
+            };
+        }
+        try { await commitReply(final, key, lastMessage, mode); }
+        catch (error) { if (store) store.lastActivity = previousActivity; throw error; }
+        status(flagged.length ? `충돌 ${flagged.length}곳을 고쳐 ${mode === 'swipe' ? '스와이프 답변을' : '답변을'} 게시했어요.` : `설정 충돌 없이 ${mode === 'swipe' ? '스와이프 답변을' : '답변을'} 게시했어요.`);
     } catch (error) {
         console.error('[100LOG] 생성/검수 실패:', error);
         status(`답변을 표시하지 않았어요: ${error.message}`);
-        reviewNotice(`검수를 통과하지 못해 답변을 표시하지 않았어요. ${error.message}`, 'error', false);
     }
     finally {
         try { await clearLegacyPrompt(); } catch (error) { console.error('[100LOG] 이전 주입문 정리 실패:', error); }
@@ -1127,24 +1261,26 @@ globalThis.hundredlogGenerationInterceptor = async function (promptChat, _size, 
     const ctx = context();
     const config = settings();
     const selectMemory = Boolean(config.developerMemorySelection);
-    if ((!config.strictReview && !selectMemory) || ![undefined, 'normal'].includes(type) || !chatKey(ctx)) return;
+    const mode = type === 'swipe' ? 'swipe' : [undefined, 'normal'].includes(type) ? 'normal' : null;
+    const strictForThisGeneration = Boolean(config.strictReview && (mode === 'normal' || (mode === 'swipe' && config.strictReviewSwipes)));
+    if (!mode || (!strictForThisGeneration && !(selectMemory && mode === 'normal')) || !chatKey(ctx)) return;
     const confirmed = data(false)?.facts.filter((fact) => fact.active && isCurrent(fact)) ?? [];
     if (!confirmed.length) return;
-    if (!apiKey()) { abort(true); status('Jev API 키가 없어 맞춤 주입 또는 공개 전 엄격 검수를 실행하지 못했어요.'); reviewNotice('JEV API 키가 없어 100LOG 작업을 시작하지 못했어요.', 'error', false); return; }
-    if (selectMemory && !embeddingKey()) { abort(true); status(`${embeddingLabel()} 임베딩 키가 없어 맞춤 규칙 주입을 실행하지 못했어요.`); reviewNotice('임베딩 키가 없어 맞춤 규칙 주입을 시작하지 못했어요.', 'error', false); return; }
-    if (extracting || translating) { abort(true); status('연속성 규칙 갱신 또는 번역을 마친 뒤 답변을 생성해 주세요.'); reviewNotice('규칙 갱신 또는 번역이 끝난 뒤 다시 보내 주세요.', 'warning', false); return; }
-    if (busy) { abort(true); status('이미 JEV 맞춤 주입 또는 엄격 검수를 진행하고 있어요. 잠시 기다려 주세요.'); reviewNotice('이미 100LOG가 답변을 준비하고 있어요.', 'info', false); return; }
+    if (!apiKey()) { abort(true); status('Jev API 키가 없어 맞춤 주입 또는 공개 전 엄격 검수를 실행하지 못했어요.'); return; }
+    if (selectMemory && mode === 'normal' && !embeddingKey()) { abort(true); status(`${embeddingLabel()} 임베딩 키가 없어 맞춤 규칙 주입을 실행하지 못했어요.`); return; }
+    if (extracting || translating) { abort(true); status('연속성 규칙 갱신 또는 번역을 마친 뒤 답변을 생성해 주세요.'); return; }
+    if (busy) { abort(true); status('이미 JEV 맞춤 주입 또는 엄격 검수를 진행하고 있어요. 잠시 기다려 주세요.'); return; }
     const last = ctx.chat.at(-1);
-    if (config.strictReview && !last?.is_user) { abort(true); status('마지막 메시지가 사용자 메시지가 아니라 엄격 검수 생성을 멈췄어요.'); return; }
+    if (mode === 'normal' && !last?.is_user) { abort(true); status('마지막 메시지가 사용자 메시지가 아니라 엄격 검수 생성을 멈췄어요.'); return; }
+    if (mode === 'swipe' && (last?.is_user || !ctx.chat.slice(0, -1).some((message) => message?.is_user))) { abort(true); status('스와이프할 기존 AI 답변이나 이전 사용자 메시지를 찾지 못했어요.'); return; }
     const key = chatKey(ctx);
     busy = true;
     render();
     let selectedContext = null;
     let selectionStats = null;
     try {
-        if (selectMemory) {
+        if (selectMemory && mode === 'normal') {
             status(`${embeddingLabel()} 임베딩으로 현재 장면과 가까운 규칙을 찾고 있어요…`);
-            reviewNotice('현재 장면에 필요한 규칙을 찾고 있어요…', 'info', true);
             const result = await selectInjectionFactsWithJev(confirmed, ctx);
             if (chatKey(context()) !== key) throw new Error('대화가 바뀌어 맞춤 규칙 주입을 중단했어요.');
             selectionStats = { candidates: result.candidateCount, selected: result.selected.length };
@@ -1154,26 +1290,28 @@ globalThis.hundredlogGenerationInterceptor = async function (promptChat, _size, 
         abort(true);
         busy = false;
         status(`Jev 맞춤 규칙 선별을 실패해 생성을 멈췄어요: ${error.message}`);
-        reviewNotice(`맞춤 규칙 선별을 완료하지 못했어요. ${error.message}`, 'error', false);
         render();
         return;
     }
-    if (!config.strictReview) {
+    if (!strictForThisGeneration) {
         injectSelectedMemory(promptChat, selectedContext);
         busy = false;
         const message = selectedContext
             ? `임베딩 후보 ${selectionStats.candidates}개 중 Jev가 고른 ${selectionStats.selected}개 규칙을 주입했어요.`
             : '현재 장면에 따로 주입할 규칙이 없어요.';
         status(message);
-        reviewNotice(message, 'success', false);
+        const store = data(false);
+        if (store) {
+            store.lastActivity = { text: `관련 규칙 ${selectionStats?.selected ?? 0}개 주입 · 엄격 검수 꺼짐`, at: Date.now(), type: 'injection' };
+            await ctx.saveMetadata();
+        }
         render();
         return;
     }
     abort(true);
-    status(selectMemory ? '맞춤 규칙 주입을 마쳤어요. 답변을 숨은 초안으로 생성할게요…' : '답변을 화면에 표시하지 않고 숨은 초안으로 생성할게요…'); render();
-    reviewNotice('답변을 생성하고 JEV가 공개 전에 검수 중이에요…', 'info', true);
-    // Let SillyTavern finish unwinding the aborted normal generation first.
-    setTimeout(() => { void runHidden(key, last, selectedContext); }, 300);
+    status(mode === 'swipe' ? '스와이프 답변을 화면에 표시하기 전에 검수할게요…' : selectMemory ? '맞춤 규칙 주입을 마쳤어요. 답변을 숨은 초안으로 생성할게요…' : '답변을 화면에 표시하지 않고 숨은 초안으로 생성할게요…'); render();
+    // Let SillyTavern finish unwinding the aborted generation first.
+    setTimeout(() => { void runHidden(key, last, selectedContext, mode, selectionStats); }, 300);
 };
 
 function closeWand() {
@@ -1444,6 +1582,7 @@ async function main() {
         $id('server').textContent = 'API 키를 입력해 주세요';
         connectionError();
         settings().strictReview = false;
+        settings().strictReviewSwipes = false;
         settings().developerMemorySelection = false;
         settings().enabled = false;
         ctx.saveSettingsDebounced();
@@ -1457,6 +1596,14 @@ async function main() {
         ctx.saveSettingsDebounced();
         render();
         status(event.target.checked ? '답변을 공개하기 전에 JEV가 연속성 오류를 검사하고 필요할 때만 자동 재작성해요.' : '공개 전 엄격 검수를 껐어요. 규칙 자동 정리는 계속 사용할 수 있어요.');
+    });
+    $id('strict-review-swipes')?.addEventListener('change', (event) => {
+        if (event.target.checked && !settings().strictReview) { status('먼저 답변 공개 전 엄격 검수를 켜 주세요.'); render(); return; }
+        if (event.target.checked && !apiKey()) { status('Jev API 키를 먼저 입력해 주세요.'); render(); return; }
+        settings().strictReviewSwipes = event.target.checked;
+        ctx.saveSettingsDebounced();
+        render();
+        status(event.target.checked ? '스와이프 답변도 화면에 표시하기 전에 JEV 검수와 필요 시 재작성을 실행해요.' : '스와이프 답변 엄격 검수를 껐어요.');
     });
     $id('add')?.addEventListener('click', async () => {
         const value = data();
@@ -1496,6 +1643,12 @@ async function main() {
         await clearLegacyPrompt(); render();
         status(settings().autoMemory ? '최근 100개 메시지의 연속성 규칙을 자동 관리해요.' : '자동 규칙 갱신을 잠시 껐어요. 저장된 규칙은 유지돼요.');
         if (settings().autoMemory) scheduleMemory();
+    });
+    $id('auto-cleanup')?.addEventListener('change', (event) => {
+        settings().autoCleanup = event.target.checked;
+        context().saveSettingsDebounced();
+        render();
+        status(event.target.checked ? '규칙이 20개 이상이면 수집을 마친 뒤 중복·종료·충돌을 자동 청소해요.' : '수집 후 규칙 자동 청소를 껐어요.');
     });
     $id('analysis-interval')?.addEventListener('change', (event) => {
         settings().analysisInterval = positiveInteger(event.target.value, 1);

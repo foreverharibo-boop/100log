@@ -36,6 +36,7 @@
       <details class="hundredlog-fold"><summary>이전 버전의 미승인 후보 <span id="hundredlog-candidate-count"></span></summary><p class="hundredlog-help">예전 후보는 그대로 보관했어요. 새 자동 기억은 승인 없이 저장돼요.</p><div id="hundredlog-candidates" class="hundredlog-list"></div></details>
     </div>
     <div id="hundredlog-view-settings" class="hundredlog-view" role="region" aria-labelledby="hundredlog-tab-settings" hidden>
+      <div class="hundredlog-activity"><strong>최근 작업</strong><span id="hundredlog-activity">아직 기록된 작업이 없어요.</span></div>
       <div class="hundredlog-section-title"><strong>연속성 규칙을 관리할 AI</strong><button type="button" id="hundredlog-profiles-refresh" class="menu_button">목록 새로고침</button></div>
       <label for="hundredlog-extraction-profile" class="hundredlog-label">최근 100개 규칙 정리용 프로필</label><select id="hundredlog-extraction-profile" class="hundredlog-profile-select"></select>
       <div id="hundredlog-translation-profile-setting"><label for="hundredlog-translation-profile" class="hundredlog-label">AI 한국어 번역용 프로필</label><select id="hundredlog-translation-profile" class="hundredlog-profile-select"></select></div>
@@ -44,6 +45,10 @@
         <label for="hundredlog-analysis-interval"><span>자동 규칙 갱신 주기</span><span class="hundredlog-number-field"><input id="hundredlog-analysis-interval" type="number" min="1" step="1" inputmode="numeric"><span>AI 답변마다</span></span></label>
       </div>
       <p class="hundredlog-help">1 이상의 정수를 직접 입력하면 그 값 그대로 저장해요. 기본값은 AI 답변 1개마다 새 규칙을 갱신해요.</p>
+      <p id="hundredlog-interval-warning" class="hundredlog-help hundredlog-warning" hidden>갱신 주기가 50 이상이면 정리되기 전에 오래된 메시지가 최근 100개 범위에서 빠질 수 있어요.</p>
+      <label class="hundredlog-toggle hundredlog-setting-toggle"><input id="hundredlog-auto-cleanup" type="checkbox"><span>수집 후 규칙 자동 청소</span></label>
+      <p class="hundredlog-help">현재 규칙이 20개 이상이면 수집 뒤 정리용 AI가 중복 규칙 병합, 끝난 약속 보관, 옛 규칙 종료, 충돌 발견, 40개 한도 근처의 낮은 중요도 규칙 정리를 실행해요. 직접 추가하거나 자동 변경 잠금한 규칙은 건드리지 않아요.</p>
+      <p id="hundredlog-cleanup-summary" class="hundredlog-help" aria-live="polite"></p>
       <details class="hundredlog-fold"><summary>최근 100개 재수집 · 장면 한정 규칙 관리</summary>
         <p class="hundredlog-help">자동으로 만든 기존 규칙을 비우고 최근 100개를 처음부터 다시 수집해요. 직접 추가하거나 자동 변경 잠금한 규칙은 유지해요.</p>
         <div class="hundredlog-row hundredlog-controls"><button type="button" id="hundredlog-extract" class="menu_button">최근 100개 처음부터 재수집</button><button type="button" id="hundredlog-stop" class="menu_button" disabled>수집 중단</button><span id="hundredlog-progress" class="hundredlog-muted"></span></div>
@@ -52,12 +57,13 @@
       </details>
       <details class="hundredlog-fold" open><summary>JEV 공개 전 엄격 검수</summary>
         <label class="hundredlog-toggle hundredlog-setting-toggle"><input id="hundredlog-strict-review" type="checkbox"><span>답변 공개 전 엄격 검수 · 자동 재작성</span></label>
+        <label class="hundredlog-toggle hundredlog-setting-toggle"><input id="hundredlog-strict-review-swipes" type="checkbox"><span>스와이프 답변도 엄격 검수</span></label>
         <p class="hundredlog-help">메인 AI 답변을 숨은 초안으로 받은 뒤 JEV가 현재 규칙 전체와 한 번에 비교해요. 이상이 없으면 바로 표시하고, 충돌이 발견된 경우에만 메인 AI 재작성과 재검수를 한 번 더 실행해요.</p>
-        <p class="hundredlog-help">정상 답변은 ‘메인 AI 초안 1회 + JEV 검수 1회’만 사용해요.</p>
+        <p class="hundredlog-help">정상 답변은 ‘메인 AI 초안 1회 + JEV 검수 1회’만 사용해요. 스와이프 검수를 켜면 스와이프도 같은 시간이 걸려요. 진행 상황은 아래 상태 문구에만 표시하고 별도 토스트는 띄우지 않아요.</p>
         <label for="hundredlog-key" class="hundredlog-label">Jev API 키</label><input id="hundredlog-key" type="password" autocomplete="off" spellcheck="false" placeholder="TypeSafe API 키">
         <div class="hundredlog-row hundredlog-connection-actions"><button type="button" id="hundredlog-test" class="menu_button">연결 확인</button><button type="button" id="hundredlog-clearkey" class="menu_button">키 삭제</button><span id="hundredlog-server" class="hundredlog-state" aria-live="polite">API 키를 입력해 주세요</span></div>
         <p id="hundredlog-connection-error" class="hundredlog-help hundredlog-connection-error" role="alert" hidden></p>
-        <p class="hundredlog-help">JEV 키는 새 규칙을 저장할 때 인물별 ‘알고 있음/아직 모름’도 검증해요. 이름만 언급되었거나 일부 내용만 아는 인물에게 전체 사실을 넘기지 않아요.</p>
+        <p class="hundredlog-help">JEV 키는 새 규칙 자체가 원문과 맞는지 먼저 확인하고, 인물별 ‘알고 있음/아직 모름’도 함께 검증해요. 이름만 언급되었거나 일부 내용만 아는 인물에게 전체 사실을 넘기지 않아요.</p>
       </details>
       <section id="hundredlog-developer" class="hundredlog-developer" hidden>
         <details class="hundredlog-fold" open><summary>개발자 모드 · 맞춤 규칙 주입</summary>
