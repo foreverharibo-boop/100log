@@ -1,5 +1,5 @@
 import { MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow } from './memory-engine.js';
-import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, generateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, buildRelevanceChecks, selectRelevantFacts, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, isVisibleChatMessage } from './core.js';
+import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, generateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, buildRelevanceChecks, selectRelevantFacts, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js';
 
 const NAME = 'hundredlog';
 const LEGACY_NAME = 'memorybean';
@@ -811,9 +811,8 @@ function memoryProgressText(value, ctx) {
     const auto = initializeAuto(value, ctx.chat);
     const count = completedAssistantCount(ctx, auto.cursor);
     const interval = positiveInteger(settings().analysisInterval, 1);
-    const start = recentWindowStart(ctx.chat);
-    const visible = ctx.chat.slice(start).filter(isVisibleChatMessage).length;
-    return `관리 범위 최근 ${visible}/${RECENT_MESSAGE_LIMIT}개 · 다음 자동 정리 ${Math.min(count, interval)}/${interval}`;
+    const progress = recentWindowProgress(ctx.chat, auto.cursor);
+    return `최근 대화 ${progress.completed}/${progress.total} 정리됨 · 다음 자동 정리 ${Math.min(count, interval)}/${interval}`;
 }
 
 function memoryDue(value = data(false), ctx = context()) {
@@ -883,7 +882,8 @@ async function performMemorySync({ rebuildRecent = false, force = false } = {}) 
             const tracked = [];
             for (let id = start; id < Math.min(end, batch.nextCursor + (batch.nextOffset ? 1 : 0)); id++) tracked.push({ id, signature: messageSignature(ctx.chat[id]) });
             const contextRows = ctx.chat.slice(Math.max(0, start - 2), start).filter((message) => !message.is_system && !message.is_hidden && !message.hidden).map((message) => ({ name: message.name, text: String(message.mes ?? '').slice(-1800) }));
-            status(`최근 ${RECENT_MESSAGE_LIMIT}개 정리 중 · 대화 #${start}/${end} · 반영 ${changed}개`);
+            const progress = recentWindowProgress(ctx.chat.slice(0, end), start);
+            status(`최근 ${RECENT_MESSAGE_LIMIT}개 대화 수집 중 · ${progress.completed}/${progress.total} · 규칙 ${changed}개 반영`);
             let parsed = { operations: [], rejected: 0 };
             if (rows.length) {
                 const raw = await generateUtility(ctx, memoryRequest(value.facts, rows, contextRows), profileId);
@@ -916,8 +916,8 @@ async function performMemorySync({ rebuildRecent = false, force = false } = {}) 
             const knowledgeResult = knowledgeChecked
                 ? ` · Jev 지식 ${knowledgeChecked}개 검증${knowledgeCorrected ? `, ${knowledgeCorrected}개 수정` : ''}${knowledgeRemoved ? `, ${knowledgeRemoved}개 제외` : ''}`
                 : knowledgeRemoved ? ` · Jev 키가 없어 자동 지식 표시 ${knowledgeRemoved}개 제외` : '';
-            status(stopExtractionRequested ? `정리 중단 · 기억 ${changed}개 반영. 다음에 이어서 정리해요.${knowledgeResult}`
-                : `최근 ${RECENT_MESSAGE_LIMIT}개 정리 완료 · ${changed}개 반영${uncertain ? ` · 불확실하거나 중복된 제안 ${uncertain}개는 건너뛰었어요` : ''}${knowledgeResult}`);
+            status(stopExtractionRequested ? `수집 중단 · 규칙 ${changed}개 반영. 다음에 이어서 수집해요.${knowledgeResult}`
+                : `최근 ${RECENT_MESSAGE_LIMIT}개 대화 수집 완료 · 규칙 ${changed}개 반영${uncertain ? ` · 불확실하거나 중복된 제안 ${uncertain}개는 건너뛰었어요` : ''}${knowledgeResult}`);
         }
     } catch (error) { if (sameChat()) status(`기억 정리를 멈췄어요: ${error.message} ‘지금 정리’로 다시 시도할 수 있어요.`); }
     finally { extracting = false; render(); }

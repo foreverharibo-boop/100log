@@ -1,28 +1,29 @@
 #hundredlog, #hundredlog *, #hundredlog *::before, #hundredlog *::after,
 #hundredlog-wand-overlay, #hundredlog-wand-overlay *, #hundredlog-wand-button, #hundredlog-wand-button * { text-shadow: none !important; box-sizing: border-box; }
-#hundredlog .hundredlog-panel { padding: 10px 6px 8px; color: var(--SmartThemeBodyColor); font-size: 13.5px; line-height: 1.45; }
-#hundredlog .hundredlog-overview { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+#hundredlog .hundredlog-panel { padding: 10px 5px 8px; color: var(--SmartThemeBodyColor); font-size: 13px; line-height: 1.45; }
+#hundredlog .hundredlog-overview { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; padding: 0 2px 10px; border-bottom: 1px solid var(--SmartThemeBorderColor); }
 #hundredlog .hundredlog-overview strong { font-size: 1em; }
 #hundredlog .hundredlog-overview .hundredlog-help { margin-top: 3px; }
 #hundredlog .hundredlog-toggle { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; white-space: nowrap; font-size: .9em; }
 #hundredlog .hundredlog-toggle input { margin: 0; flex: 0 0 auto; }
-#hundredlog .hundredlog-tabs { display: flex; gap: 3px; padding: 3px; border: 1px solid var(--SmartThemeBorderColor); border-radius: 8px; margin-bottom: 12px; }
-#hundredlog .hundredlog-tabs .hundredlog-tab { flex: 1 1 0; width: auto !important; min-width: 0; margin: 0; padding: 6px 4px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: inherit; font: inherit; font-weight: 500; line-height: 1.25; }
-#hundredlog .hundredlog-tab[aria-pressed="true"] { border-color: var(--SmartThemeBorderColor); background: var(--SmartThemeBlurTintColor); font-weight: 700; }
+#hundredlog .hundredlog-tabs { display: flex; gap: 0; padding: 0; border: 0; border-bottom: 1px solid var(--SmartThemeBorderColor); border-radius: 0; margin-bottom: 13px; }
+#hundredlog .hundredlog-tabs .hundredlog-tab { flex: 1 1 0; width: auto !important; min-width: 0; margin: 0 0 -1px; padding: 8px 4px 7px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: inherit; font: inherit; font-weight: 500; line-height: 1.25; opacity: .72; }
+#hundredlog .hundredlog-tab[aria-pressed="true"] { border-bottom-color: var(--SmartThemeQuoteColor); background: transparent; font-weight: 700; opacity: 1; }
 #hundredlog .hundredlog-tab span { font-size: .78em; opacity: .7; margin-left: 3px; }
 #hundredlog [hidden] { display: none !important; }
 #hundredlog .hundredlog-view { min-width: 0; }
 #hundredlog .hundredlog-row, #hundredlog .hundredlog-scene { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 #hundredlog .hundredlog-state { font-size: .82em; overflow-wrap: anywhere; }
 #hundredlog .hundredlog-section { border-top: 1px solid var(--SmartThemeBorderColor); padding-top: 16px; margin-top: 18px; }
-#hundredlog .hundredlog-section-title { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; margin-bottom: 7px; }
+#hundredlog .hundredlog-section-title { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
 #hundredlog .hundredlog-title-actions { display: flex; flex-wrap: wrap; gap: 4px; }
 #hundredlog .hundredlog-setting-grid { display: grid; grid-template-columns: 1fr; gap: 8px; margin-top: 10px; }
 #hundredlog .hundredlog-setting-grid label { display: grid; gap: 4px; font-size: .86em; }
 #hundredlog .hundredlog-section-title span, #hundredlog .hundredlog-muted, #hundredlog-history-count { opacity: .72; font-size: .82em; }
 #hundredlog .hundredlog-label { display: block; margin: 9px 0 4px; font-size: .88em; }
 #hundredlog .hundredlog-help { margin: 5px 0 0; font-size: .84em; line-height: 1.5; opacity: .78; }
-#hundredlog .hundredlog-section-help { margin: -2px 0 8px; }
+#hundredlog .hundredlog-section-help { margin: 0 0 7px; }
+#hundredlog .hundredlog-quick-actions { margin: 0 0 9px; }
 #hundredlog .hundredlog-connection-actions { margin-top: 7px; }
 #hundredlog .hundredlog-connection-error { opacity: 1; padding: 6px 8px; border: 1px solid var(--SmartThemeBorderColor); border-radius: 6px; }
 #hundredlog .hundredlog-embedding-progress { margin-top: 6px; font-size: .82em; line-height: 1.4; opacity: .82; }
@@ -39,11 +40,11 @@
 #hundredlog .hundredlog-replace { display: flex; margin-top: 10px; }
 #hundredlog .hundredlog-replace select { width: 100%; }
 #hundredlog .hundredlog-knowledge { margin-top: 10px; font-size: .86em; }
-#hundredlog summary { cursor: pointer; padding: 4px 0; }
+#hundredlog summary { cursor: pointer; padding: 6px 1px; }
 #hundredlog .hundredlog-knowledge-tags, #hundredlog .hundredlog-knowledge-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; }
 #hundredlog .hundredlog-knowledge-controls input { flex: 2 1 120px; }
 #hundredlog .hundredlog-knowledge-controls select { flex: 1 1 115px; }
-#hundredlog .hundredlog-fold { border-top: 1px solid var(--SmartThemeBorderColor); margin-top: 10px; padding-top: 8px; font-size: .92em; }
+#hundredlog .hundredlog-fold { border-top: 1px solid var(--SmartThemeBorderColor); margin-top: 11px; padding-top: 6px; font-size: .92em; }
 #hundredlog .hundredlog-history .hundredlog-list { margin-top: 9px; }
 #hundredlog .hundredlog-help-fold { margin: 10px 0 16px; font-size: .88em; }
 #hundredlog .hundredlog-scene { margin-top: 10px; }
@@ -51,22 +52,22 @@
 #hundredlog :is(textarea, button, input, select, summary):focus-visible { outline: 2px solid var(--SmartThemeQuoteColor); outline-offset: 2px; }
 #hundredlog :is(textarea, input)::placeholder { color: var(--SmartThemeBodyColor); opacity: .55; }
 #hundredlog button { box-shadow: none !important; text-shadow: none !important; cursor: pointer; }
-#hundredlog button.menu_button { flex: 0 0 auto !important; width: auto !important; min-width: 0; max-width: 100%; white-space: nowrap; margin: 0; padding: 5px 8px; color: var(--SmartThemeBodyColor); background: var(--SmartThemeBlurTintColor); border: 1px solid var(--SmartThemeBorderColor); border-radius: 6px; font-size: .84em; line-height: 1.3; }
+#hundredlog button.menu_button { flex: 0 0 auto !important; width: auto !important; min-width: 0; max-width: 100%; white-space: nowrap; margin: 0; padding: 5px 8px; color: var(--SmartThemeBodyColor); background: transparent; border: 1px solid var(--SmartThemeBorderColor); border-radius: 5px; font-size: .83em; line-height: 1.3; }
 #hundredlog button:disabled { opacity: .45; cursor: default; }
 #hundredlog button:not(:disabled):hover { border-color: var(--SmartThemeQuoteColor); }
 #hundredlog .hundredlog-controls { margin-top: 8px; }
 #hundredlog .hundredlog-controls .hundredlog-muted { flex: 1 1 100%; }
-#hundredlog .hundredlog-list { display: grid; gap: 7px; }
-#hundredlog .hundredlog-item { border: 1px solid var(--SmartThemeBorderColor); border-radius: 7px; padding: 9px; }
+#hundredlog .hundredlog-list { display: grid; gap: 0; border-top: 1px solid var(--SmartThemeBorderColor); }
+#hundredlog .hundredlog-item { border: 0; border-bottom: 1px solid var(--SmartThemeBorderColor); border-radius: 0; padding: 10px 2px; }
 #hundredlog .hundredlog-text { line-height: 1.5; overflow-wrap: anywhere; white-space: pre-wrap; }
 #hundredlog .hundredlog-meta { font-size: .79em; opacity: .68; margin-top: 4px; overflow-wrap: anywhere; }
 #hundredlog .hundredlog-actions { display: flex; align-items: center; gap: 4px; margin-top: 7px; flex-wrap: wrap; }
 #hundredlog .hundredlog-actions button { font-size: .79em; padding: 4px 7px; }
 #hundredlog .hundredlog-empty { margin: 0; padding: 12px 8px; opacity: .68; font-size: .87em; text-align: center; line-height: 1.55; }
-#hundredlog .hundredlog-status { padding: 8px 0 0; margin: 12px 0 0; border-top: 1px solid var(--SmartThemeBorderColor); font-size: .82em; line-height: 1.5; opacity: .8; overflow-wrap: anywhere; }
+#hundredlog .hundredlog-status { padding: 9px 2px 0; margin: 12px 0 0; border-top: 1px solid var(--SmartThemeBorderColor); font-size: .83em; line-height: 1.5; opacity: .82; overflow-wrap: anywhere; }
 #hundredlog-wand-overlay[hidden] { display: none !important; }
 #hundredlog-wand-overlay { position: fixed !important; inset: 0 !important; width: 100% !important; height: 100% !important; z-index: 2147483000 !important; display: grid !important; place-items: center !important; overflow: hidden !important; margin: 0 !important; padding: 16px !important; transform: none !important; background: transparent !important; color: var(--SmartThemeBodyColor); }
-#hundredlog-wand-popup { position: relative !important; inset: auto !important; transform: none !important; width: min(540px, 100%) !important; max-width: 540px !important; height: auto !important; max-height: min(660px, 80vh) !important; max-height: min(660px, 80dvh) !important; min-height: 0 !important; min-width: 0 !important; margin: 0 !important; padding: 0 !important; overflow: hidden !important; display: flex !important; flex-direction: column !important; border: 1px solid var(--SmartThemeBorderColor); border-radius: 14px; background: var(--SmartThemeBlurTintColor); color: var(--SmartThemeBodyColor); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px); box-shadow: none !important; }
+#hundredlog-wand-popup { position: relative !important; inset: auto !important; transform: none !important; width: min(520px, 100%) !important; max-width: 520px !important; height: auto !important; max-height: min(660px, 80vh) !important; max-height: min(660px, 80dvh) !important; min-height: 0 !important; min-width: 0 !important; margin: 0 !important; padding: 0 !important; overflow: hidden !important; display: flex !important; flex-direction: column !important; border: 1px solid var(--SmartThemeBorderColor); border-radius: 11px; background: var(--SmartThemeBlurTintColor); color: var(--SmartThemeBodyColor); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px); box-shadow: none !important; }
 #hundredlog-wand-header { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--SmartThemeBorderColor); }
 #hundredlog-wand-header button { flex: 0 0 auto; width: auto !important; margin: 0; padding: 5px 10px; font-size: .85em; color: inherit; background: var(--SmartThemeBlurTintColor); border: 1px solid var(--SmartThemeBorderColor); border-radius: 7px; box-shadow: none !important; text-shadow: none !important; }
 #hundredlog-wand-body { flex: 1 1 auto; min-height: 0; min-width: 0; overflow-y: auto !important; overflow-x: hidden; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 0 10px 8px 18px; }
@@ -82,7 +83,7 @@
 }
 
 #hundredlog .hundredlog-profile-select { display: block; width: 100%; }
-#hundredlog .hundredlog-translation-tools { margin: 0 0 11px; padding: 8px 0 10px; border-top: 1px solid var(--SmartThemeBorderColor); border-bottom: 1px solid var(--SmartThemeBorderColor); }
+#hundredlog .hundredlog-translation-tools { margin: 0 0 11px; padding: 0 2px 10px; border: 0; border-bottom: 1px solid var(--SmartThemeBorderColor); }
 #hundredlog .hundredlog-translation-tools .hundredlog-section-title { margin-bottom: 8px; }
 #hundredlog .hundredlog-translation-controls select { flex: 1 1 145px; width: auto; }
 #hundredlog .hundredlog-original { margin-top: 9px; font-size: .83em; opacity: .8; }

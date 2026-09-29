@@ -21,6 +21,16 @@ export function recentWindowStart(chat, limit = RECENT_MESSAGE_LIMIT) {
     return 0;
 }
 
+export function recentWindowProgress(chat, cursor, limit = RECENT_MESSAGE_LIMIT) {
+    const rows = Array.isArray(chat) ? chat : [];
+    const start = recentWindowStart(rows, limit);
+    const end = rows.length;
+    const position = Math.max(start, Math.min(end, Number.isInteger(cursor) ? cursor : start));
+    const total = rows.slice(start, end).filter(isVisibleChatMessage).length;
+    const completed = rows.slice(start, position).filter(isVisibleChatMessage).length;
+    return { completed: Math.min(completed, total), total, start };
+}
+
 export function chatKey(context) {
     if (context.groupId || context.characterId === undefined || context.characterId === null || !context.chatId) return null;
     return `${context.characterId}:${context.chatId}`;
