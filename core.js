@@ -60,7 +60,7 @@ export function approveFact(value, proposed, replacesId = null) {
     const previous = replacesId ? value.facts.find((fact) => fact.id === replacesId) : null;
     if (replacesId && (!previous || !previous.active || previous.supersededBy)) throw new Error('갱신하려는 현재 사실을 찾을 수 없어요.');
     if (value.facts.length >= MAX_HISTORY) throw new Error('보관 가능한 사실 이력이 가득 찼어요.');
-    if (!previous && value.facts.filter((fact) => fact.active && !fact.supersededBy).length >= MAX_FACTS) throw new Error('현재 사실은 최대 80개예요.');
+    if (!previous && value.facts.filter((fact) => fact.active && !fact.archived && !fact.supersededBy).length >= MAX_FACTS) throw new Error('현재 사실은 최대 80개예요.');
     const record = { ...proposed, id: proposed.id ?? newId(), active: true, knowledge: normalizeKnowledge(proposed.knowledge) };
     delete record.replacesId;
     if (previous) {
@@ -83,12 +83,12 @@ export function removeFact(value, id) {
 
 export function suggestReplacement(value, candidate) {
     if (candidate.replacesId === '') return null;
-    const explicit = value.facts.find((fact) => fact.id === candidate.replacesId && fact.active && !fact.supersededBy);
+    const explicit = value.facts.find((fact) => fact.id === candidate.replacesId && fact.active && !fact.archived && !fact.supersededBy);
     if (explicit) return explicit.id;
     const entity = String(candidate.entity ?? '').trim().toLocaleLowerCase();
     const attribute = String(candidate.attribute ?? '').trim().toLocaleLowerCase();
     if (!entity || !attribute || !Number.isInteger(candidate.sourceId)) return null;
-    const matching = value.facts.filter((fact) => fact.active && !fact.supersededBy
+    const matching = value.facts.filter((fact) => fact.active && !fact.archived && !fact.supersededBy
         && String(fact.entity ?? '').trim().toLocaleLowerCase() === entity
         && String(fact.attribute ?? '').trim().toLocaleLowerCase() === attribute
         && Number.isInteger(fact.sourceId) && fact.sourceId < candidate.sourceId);
@@ -97,7 +97,7 @@ export function suggestReplacement(value, candidate) {
 
 export function buildRelevanceChecks(draft, facts, recent = '') {
     chunksOfDraft(draft);
-    const active = facts.filter((fact) => fact.active && !fact.supersededBy).slice(0, MAX_FACTS);
+    const active = facts.filter((fact) => fact.active && !fact.archived && !fact.supersededBy).slice(0, MAX_FACTS);
     const batches = [];
     for (let start = 0; start < active.length; start += 20) {
         const batchFacts = active.slice(start, start + 20);
@@ -132,7 +132,7 @@ export function selectRelevantFacts(draft, batches, answersByBatch, limit = 16) 
 export function buildChecks(draft, facts, recent = '', speaker = '') {
     const chunks = chunksOfDraft(draft);
     if (chunks.length > 32) throw new Error('초안 문단이 너무 많아 검수를 중단했어요.');
-    const confirmed = facts.filter((fact) => fact?.active && !fact.supersededBy && fact?.text).slice(0, 16);
+    const confirmed = facts.filter((fact) => fact?.active && !fact.archived && !fact.supersededBy && fact?.text).slice(0, 16);
     const tasks = [];
     chunks.forEach((part, segmentIndex) => {
         for (const fact of confirmed) {
@@ -193,7 +193,7 @@ export function parseFactCandidates(raw, sourceMessages, existingFacts = []) {
         const source = byId.get(Number(fact.sourceId));
         const value = typeof fact.text === 'string' ? fact.text.trim().slice(0, 300) : '';
         if (!source || value.length < 4) return [];
-        const previous = existingFacts.find((item) => item.id === fact.replacesId && item.active && !item.supersededBy && (!Number.isInteger(item.sourceId) || item.sourceId < source.id));
+        const previous = existingFacts.find((item) => item.id === fact.replacesId && item.active && !item.archived && !item.supersededBy && (!Number.isInteger(item.sourceId) || item.sourceId < source.id));
         return [{ id: newId(), text: value, sourceId: source.id, sourceText: source.text.slice(0, 350), scope: fact.scope === 'scene' ? 'scene' : 'always', knowledge: normalizeKnowledge(fact.knowledge), entity: String(fact.entity ?? '').trim().slice(0, 60), attribute: String(fact.attribute ?? '').trim().slice(0, 60), replacesId: previous?.id ?? null, active: false }];
     });
 }

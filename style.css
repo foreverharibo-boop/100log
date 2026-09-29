@@ -81,3 +81,9 @@
 #memorybean .memorybean-original { margin-top: 9px; font-size: .83em; opacity: .8; }
 #memorybean .memorybean-original .memorybean-text { margin-top: 7px; }
 #memorybean .memorybean-empty { white-space: pre-line; }
+#memorybean .memorybean-setting-toggle { margin-top: 14px; }
+#memorybean .memorybean-edit textarea { display: block; width: 100%; }
+#memorybean .memorybean-history .memorybean-list, #memorybean-history { margin-top: 12px; }
+#memorybean .memorybean-translation-tools { border-bottom: 0; margin-top: 16px; margin-bottom: 0; padding-bottom: 0; }
+#memorybean .memorybean-translation-tools > .memorybean-row { margin-top: 10px; }
+#memorybean .memorybean-section-title { flex-wrap: wrap; }

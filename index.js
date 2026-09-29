@@ -1,3 +1,4 @@
+import { MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, memoryInjection } from './memory-engine.js';
 import { availableProfiles, generateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, buildRelevanceChecks, selectRelevantFacts, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId } from './core.js';
 
 const NAME = 'memorybean';
@@ -16,6 +17,12 @@ let wandMenuObserver = null;
 let lastJevTransport = '실리태번 API';
 let selectedView = 'memory';
 let previousFocus = null;
+let memoryRun = null;
+let memoryTimer = null;
+let memoryPending = false;
+let memoryEpoch = 0;
+let normalGenerating = false;
+let memoryHooksInstalled = false;
 
 const context = () => SillyTavern.getContext();
 const $id = (id) => document.getElementById(`memorybean-${id}`);
@@ -116,6 +123,8 @@ async function requestJev(state, questions) {
 function settings() {
     const ctx = context();
     ctx.extensionSettings[NAME] ??= { enabled: false };
+    ctx.extensionSettings[NAME].autoMemory ??= true;
+    ctx.extensionSettings[NAME].injectMemory ??= true;
     ctx.extensionSettings[NAME].extractionProfileId ??= '';
     ctx.extensionSettings[NAME].translationProfileId ??= '@extraction';
     return ctx.extensionSettings[NAME];
@@ -135,7 +144,7 @@ function data(create = true) {
     return value;
 }
 
-async function save() { await context().saveMetadata(); }
+async function save() { await context().saveMetadata(); await refreshMemoryPrompt(); }
 function status(value) {
     statusText = value;
     if ($id('status')) $id('status').textContent = value;
@@ -230,7 +239,7 @@ export async function translateRecords(mode = 'missing') {
         }
         status(stopTranslationRequested ? `${done}/${targets.length}개 번역 후 중단했어요. 완료한 번역은 저장됐어요.` : `${done}개를 한국어로 번역했어요. 원문 보기에서 원래 내용을 확인할 수 있어요.`);
     } catch (error) { status(`번역 중단 · ${done}개 저장됨: ${error.message}`); }
-    finally { translating = false; render(); }
+    finally { translating = false; render(); if (memoryPending) scheduleMemory(); }
 }
 
 function replacementSelect(value, selectedId, onChange) {
@@ -242,13 +251,13 @@ function replacementSelect(value, selectedId, onChange) {
     none.value = '';
     none.textContent = '새 사실로 추가';
     select.append(none);
-    for (const fact of value.facts.filter((item) => item.active && !item.supersededBy)) {
+    for (const fact of value.facts.filter((item) => item.active && isCurrent(item))) {
         const option = document.createElement('option');
         option.value = fact.id;
         option.textContent = `갱신: ${displayText(fact).slice(0, 50)}`;
         select.append(option);
     }
-    select.value = selectedId && value.facts.some((item) => item.id === selectedId && item.active && !item.supersededBy) ? selectedId : '';
+    select.value = selectedId && value.facts.some((item) => item.id === selectedId && item.active && isCurrent(item)) ? selectedId : '';
     if (onChange) select.addEventListener('change', () => { void onChange(select.value); });
     return select;
 }
@@ -290,6 +299,10 @@ function render() {
     if (!$id('facts')) return;
     const value = data();
     const working = busy || extracting || translating;
+    $id('auto-memory').checked = settings().autoMemory;
+    $id('auto-memory').disabled = busy || translating;
+    $id('inject-memory').checked = settings().injectMemory;
+    $id('sync-now').disabled = working || !value || !settings().autoMemory;
     refreshProfiles();
     const allRecords = value ? [...value.facts, ...value.candidates] : [];
     const missing = allRecords.filter((record) => !hasTranslation(record)).length;
@@ -313,9 +326,9 @@ function render() {
     $id('facts').replaceChildren();
     $id('candidates').replaceChildren();
     $id('history').replaceChildren();
-    const currentFacts = value?.facts.filter((item) => !item.supersededBy) ?? [];
-    const history = value?.facts.filter((item) => item.supersededBy) ?? [];
-    $id('count').textContent = value ? `${currentFacts.filter((item) => item.active).length}개 활성` : '채팅을 선택해 주세요';
+    const currentFacts = value?.facts.filter(isCurrent) ?? [];
+    const history = value?.facts.filter((item) => !isCurrent(item)) ?? [];
+    $id('count').textContent = value ? `${currentFacts.filter((item) => item.active).length}개 기억 중` : '채팅을 선택해 주세요';
     $id('history-count').textContent = `${history.length}개`;
     $id('candidate-count').textContent = value ? `${value.candidates.length}개` : '';
     $id('progress').textContent = value ? `읽은 대화 ${value.extractionCursor}/${context().chat.length}` : '';
@@ -324,13 +337,26 @@ function render() {
     if (value) $id('replaces').value = currentFacts.some((item) => item.id === manualChoice && item.active) ? manualChoice : '';
     if (!value) { status('캐릭터 채팅을 선택하면 사용할 수 있어요.'); return; }
     if (!currentFacts.length) {
-        const empty = document.createElement('p'); empty.className = 'memorybean-empty'; empty.textContent = '아직 기억할 사실이 없어요.\n후보 메뉴에서 대화를 수집하거나 아래에서 직접 추가해 주세요.'; $id('facts').append(empty);
+        const empty = document.createElement('p'); empty.className = 'memorybean-empty'; empty.textContent = 'RP를 이어가면 핵심 기억을 자동으로 모아요.\n이전 이야기까지 기억하려면 설정에서 이전 대화를 가져오세요.'; $id('facts').append(empty);
     }
     for (const fact of currentFacts) {
         const item = document.createElement('div'); item.className = 'memorybean-item';
         const title = document.createElement('div'); title.className = 'memorybean-text'; title.textContent = displayText(fact); item.append(title);
-        const meta = document.createElement('div'); meta.className = 'memorybean-meta'; meta.textContent = `${fact.active ? '검수에 사용 중' : '사용 안 함'} · ${fact.scope === 'scene' ? '현재 장면' : '지속 설정'}${Number.isInteger(fact.sourceId) ? ` · 대화 #${fact.sourceId}` : ''}`; item.append(meta);
+        const meta = document.createElement('div'); meta.className = 'memorybean-meta'; meta.textContent = `${MEMORY_KINDS[fact.kind] || '중요한 사실'} · ${fact.pinned ? '보호됨' : fact.origin === 'auto' ? '자동 관리' : '직접 저장'}${fact.active ? '' : ' · 잠시 꺼짐'}${Number.isInteger(fact.sourceId) ? ` · 대화 #${fact.sourceId}` : ''}`; item.append(meta);
         const actions = document.createElement('div'); actions.className = 'memorybean-actions';
+        actions.append(makeButton('수정', () => {
+            if (data(false) !== value) return;
+            const editor = document.createElement('div'); editor.className = 'memorybean-edit';
+            const input = document.createElement('textarea'); input.rows = 3; input.value = fact.text; input.maxLength = 300;
+            const controls = document.createElement('div'); controls.className = 'memorybean-actions';
+            controls.append(makeButton('수정 저장', async () => {
+                if (data(false) !== value || !input.value.trim()) return;
+                fact.text = input.value.trim(); fact.pinned = true; delete fact.translatedKo;
+                await save(); render(); status('수정한 기억을 보호했어요. AI가 자동으로 바꾸지 않아요.');
+            }), makeButton('취소', () => render()));
+            editor.append(input, controls); item.replaceChildren(editor);
+        }));
+        actions.append(makeButton(fact.pinned ? '보호 해제' : '보호', async () => { if (data(false) !== value) return; fact.pinned = !fact.pinned; await save(); render(); }));
         actions.append(makeButton(fact.active ? '잠시 끄기' : '다시 켜기', async () => { fact.active = !fact.active; await save(); render(); }));
         actions.append(makeButton(fact.scope === 'scene' ? '지속 설정으로' : '현재 장면만', async () => { fact.scope = fact.scope === 'scene' ? 'always' : 'scene'; await save(); render(); }));
         actions.append(makeButton('삭제', async () => { if (data(false) !== value) return; removeFact(value, fact.id); await save(); render(); }));
@@ -343,9 +369,24 @@ function render() {
         const title = document.createElement('div'); title.className = 'memorybean-text'; title.textContent = displayText(fact);
         const next = value.facts.find((entry) => entry.id === fact.supersededBy);
         const meta = document.createElement('div'); meta.className = 'memorybean-meta';
-        meta.textContent = `지난 상태${Number.isInteger(fact.sourceId) ? ` · 대화 #${fact.sourceId}` : ''}${next ? ` → ${displayText(next)}` : ''}`;
-        item.append(title, meta); appendOriginal(item, fact); $id('history').append(item);
+        const reason = { completed: '완료됨', cancelled: '취소됨', past_scene: '지난 상황', updated: '새 상태로 갱신', restored: '이전 기억 복원' }[fact.archived] || '지난 상태';
+        meta.textContent = `${reason}${fact.archiveReason ? ` · ${fact.archiveReason}` : ''}${next ? ` → ${displayText(next)}` : ''}`;
+        item.append(title, meta); appendOriginal(item, fact);
+        if (fact.closedEvidence) { const evidence = document.createElement('div'); evidence.className = 'memorybean-meta'; evidence.textContent = `변경 근거: ${fact.closedEvidence}`; item.append(evidence); }
+        item.append(makeButton('현재 기억으로 복원', async () => {
+            if (data(false) !== value) return;
+            const restored = { ...fact, id: newId(), active: true, pinned: true, origin: 'manual', restoredFrom: fact.id };
+            for (const name of ['archived', 'supersededBy', 'previousId', 'endedAtSourceId', 'closedEvidence', 'archiveReason']) delete restored[name];
+            let current = next;
+            for (let i = 0; current?.supersededBy && i < value.facts.length; i++) current = value.facts.find((entry) => entry.id === current.supersededBy);
+            try {
+                approveFact(value, restored, current?.active && isCurrent(current) ? current.id : null);
+                await save(); render(); status('현재 기억으로 복원하고 보호했어요.');
+            } catch (error) { status(error.message); }
+        }));
+        $id('history').append(item);
     }
+    if (!history.length) { const empty = document.createElement('p'); empty.className = 'memorybean-empty'; empty.textContent = '완료된 약속이나 바뀌기 전의 상태가 여기에 남아요.'; $id('history').append(empty); }
     if (!value.candidates.length) {
         const empty = document.createElement('p'); empty.className = 'memorybean-empty'; empty.textContent = '검토할 후보가 없어요.'; $id('candidates').append(empty);
     }
@@ -384,7 +425,7 @@ function sourceRows(ctx, start, offset = 0, total = ctx.chat.length) {
     let remaining = 18000;
     for (; i < Math.min(total, start + 40) && remaining > 0;) {
         const msg = ctx.chat[i];
-        if (!msg || msg.is_system || typeof msg.mes !== 'string' || !msg.mes.trim()) { i++; offset = 0; continue; }
+        if (!msg || msg.is_system || msg.is_hidden || msg.hidden || typeof msg.mes !== 'string' || !msg.mes.trim()) { i++; offset = 0; continue; }
         const text = msg.mes.trim();
         const piece = text.slice(offset, offset + remaining);
         rows.push({ id: i, name: msg.name ?? (msg.is_user ? ctx.name1 : ctx.name2), text: piece, partStart: offset });
@@ -403,54 +444,125 @@ function parseJson(raw) {
 }
 
 export async function collectHistory() {
+    return syncMemories({ fromStart: true });
+}
+
+async function refreshMemoryPrompt() {
+    const ctx = context();
+    const value = data(false);
+    const enabled = settings().autoMemory && settings().injectMemory;
+    const text = enabled && value ? memoryInjection(value.facts, recentChat(ctx)) : '';
+    if (typeof ctx.setExtensionPrompt === 'function') await ctx.setExtensionPrompt('memorybean-memory', text, 1, 1, false, 0);
+}
+
+function scheduleMemory() {
+    if (!settings().autoMemory || !chatKey(context())) return;
+    memoryPending = true;
+    if (memoryTimer !== null) clearTimeout(memoryTimer);
+    memoryTimer = setTimeout(() => {
+        memoryTimer = null;
+        if (!memoryPending || normalGenerating || busy || extracting || translating) return;
+        void syncMemories();
+    }, 450);
+}
+
+export function syncMemories(options = {}) {
+    if (memoryRun) return memoryRun;
+    if (busy || extracting || translating || !chatKey(context())) return Promise.resolve();
+    const task = performMemorySync(options);
+    memoryRun = task;
+    void task.finally(() => {
+        memoryRun = null;
+        if (memoryPending) scheduleMemory();
+    });
+    return task;
+}
+
+async function performMemorySync({ fromStart = false } = {}) {
     const ctx = context();
     const key = chatKey(ctx);
     const value = data();
-    if (!key || !value || extracting || translating || busy) return;
-    const profileId = settings().extractionProfileId || '';
-    const total = ctx.chat.length;
-    if (value.extractionCursor >= total) { status('현재 대화를 끝까지 읽었어요. 이후 메시지가 생기면 다시 수집할 수 있어요.'); return; }
-    extracting = true;
-    stopExtractionRequested = false;
+    if (!value || (!settings().autoMemory && !fromStart)) return;
+    const epoch = memoryEpoch;
+    const sameChat = () => chatKey(context()) === key && data(false) === value && epoch === memoryEpoch;
+    const auto = initializeAuto(value, ctx.chat);
+    memoryPending = false;
+    extracting = true; stopExtractionRequested = false;
     render();
-    let collected = 0;
+    let changed = 0, uncertain = 0;
     try {
-        while (value.extractionCursor < total && !stopExtractionRequested) {
-            const start = value.extractionCursor;
-            const { rows, nextCursor, nextOffset } = sourceRows(ctx, start, value.extractionOffset, total);
-            status(`이전 대화 수집 중: ${start}/${total}개 읽음 · 후보 ${collected}개`);
-            let candidates = [];
+        if (reconcileMemory(value, ctx.chat)) await save();
+        if (fromStart) { auto.cursor = 0; auto.offset = 0; }
+        // A user message alone is not a completed RP exchange.
+        let end = ctx.chat.length;
+        while (end > 0 && (ctx.chat[end - 1]?.is_user || ctx.chat[end - 1]?.is_system || ctx.chat[end - 1]?.is_hidden || ctx.chat[end - 1]?.hidden || !String(ctx.chat[end - 1]?.mes ?? '').trim())) end--;
+        const profileId = settings().extractionProfileId || '';
+        while (auto.cursor < end && !stopExtractionRequested) {
+            if (!sameChat()) return;
+            const start = auto.cursor, offset = auto.offset;
+            const batch = sourceRows(ctx, start, offset, end);
+            const rows = batch.rows.filter((row) => !/^\s*(?:\(OOC\s*:[^()]*\)|\[OOC\s*:[^\[\]]*\])\s*$/i.test(row.text))
+                .map((row) => ({ ...row, role: ctx.chat[row.id].is_user ? 'user' : 'character', signature: messageSignature(ctx.chat[row.id]) }));
+            // Track skipped sources too, so edits to OOC/system messages invalidate their checkpoint.
+            const tracked = [];
+            for (let id = start; id < Math.min(end, batch.nextCursor + (batch.nextOffset ? 1 : 0)); id++) tracked.push({ id, signature: messageSignature(ctx.chat[id]) });
+            const contextRows = ctx.chat.slice(Math.max(0, start - 2), start).filter((message) => !message.is_system && !message.is_hidden && !message.hidden).map((message) => ({ name: message.name, text: String(message.mes ?? '').slice(-1800) }));
+            status(`기억 자동 정리 중 · 대화 ${start}/${end} · 반영 ${changed}개`);
+            let parsed = { operations: [], rejected: 0 };
             if (rows.length) {
-                const current = value.facts.filter((fact) => fact.active && !fact.supersededBy)
-                    .map((fact) => ({ id: fact.id, text: fact.text, sourceId: fact.sourceId ?? null }));
-                const prompt = [
-                    'Extract up to 12 concrete RP continuity facts supported by the numbered messages. Return JSON only: {"facts":[{"text":"...","sourceId":0,"scope":"always","entity":"person or object","attribute":"specific changing property","replacesId":null,"knowledge":{"Name":"known"}}]}. Use the SAME short entity and attribute for states that can change over time (e.g. injury status, location, possession). Use scope "scene" for temporary details. If an event explicitly changes one CURRENT FACT, set replacesId to its exact id; otherwise null. For knowledge use only explicit evidence: "known" means a named person definitely learned it; "unknown" means it is explicitly confirmed they have not learned it. Do not infer ignorance just because a person is absent. Omit uncertain knowledge. Dialogue claims may be false, so everything remains a candidate for human approval. Keep the language of the chat. Cite the actual sourceId. No commentary.',
-                    `CURRENT FACTS: ${JSON.stringify(current)}`,
-                    JSON.stringify(rows)
-                ].join('\n\n');
-                const raw = await generateUtility(ctx, prompt, profileId);
-                candidates = parseFactCandidates(raw, rows, value.facts);
+                const raw = await generateUtility(ctx, memoryRequest(value.facts, rows, contextRows), profileId);
+                if (!sameChat()) return;
+                if (tracked.some(({ id, signature }) => messageSignature(context().chat[id]) !== signature)) {
+                    memoryPending = true;
+                    status('대화가 수정되어 바뀐 내용으로 다시 정리할게요.');
+                    return;
+                }
+                parsed = parseMemoryOperations(raw, rows, value.facts);
             }
-            if (chatKey(context()) !== key || data(false) !== value) { status('채팅이 바뀌어 수집을 멈췄어요.'); return; }
-            const existing = new Set([...value.facts, ...value.candidates].map((entry) => entry.text.trim().toLocaleLowerCase()));
-            const fresh = candidates.filter((entry) => {
-                const text = entry.text.trim().toLocaleLowerCase();
-                if (existing.has(text)) return false;
-                existing.add(text);
-                return true;
-            });
-            value.candidates.push(...fresh);
-            collected += fresh.length;
-            value.extractionCursor = nextCursor;
-            value.extractionOffset = nextOffset;
-            await save();
-            render();
+            if (!sameChat()) return;
+            const result = applyMemoryOperations(value, parsed.operations);
+            recordMemoryBatch(value, { rows: tracked, start, offset, nextCursor: batch.nextCursor, nextOffset: batch.nextOffset, changes: result.changes });
+            changed += result.added + result.updated + result.archived;
+            uncertain += parsed.rejected + result.skipped;
+            value.extractionCursor = auto.cursor; value.extractionOffset = auto.offset;
+            await save(); render();
         }
-        status(stopExtractionRequested
-            ? `${value.extractionCursor}/${total}개까지 읽고 멈췄어요. 후보 ${collected}개를 추가했어요.`
-            : `현재 채팅의 이전 대화 ${total}개를 끝까지 읽었어요. 새 후보 ${collected}개를 확인하고 승인해 주세요.`);
-    } catch (error) { console.error('[메모리콩] 후보 추출 실패', error); status(`수집을 멈췄어요 (${value.extractionCursor}/${total}개까지 저장됨): ${error.message}`); }
+        if (sameChat()) status(stopExtractionRequested ? `정리 중단 · 기억 ${changed}개 반영. 다음에 이어서 정리해요.`
+            : `기억 정리 완료 · ${changed}개 반영${uncertain ? ` · 불확실하거나 중복된 제안 ${uncertain}개는 건너뛰었어요` : ''}`);
+    } catch (error) { if (sameChat()) status(`기억 정리를 멈췄어요: ${error.message} ‘지금 정리’로 다시 시도할 수 있어요.`); }
     finally { extracting = false; render(); }
+}
+
+export function installMemoryHooks(ctx = context()) {
+    if (memoryHooksInstalled) return;
+    memoryHooksInstalled = true;
+    const types = ctx.eventTypes ?? ctx.event_types ?? {};
+    const on = (name, callback) => { if (types[name]) ctx.eventSource.on(types[name], callback); };
+    on('GENERATION_AFTER_COMMANDS', async (type, eventData, dryRun) => {
+        if (dryRun || ['quiet', 'impersonate'].includes(type) || eventData?.quiet_prompt) return;
+        normalGenerating = true;
+        if (memoryRun) await memoryRun;
+        if (memoryPending && !busy && !extracting && !translating) await syncMemories();
+        const value = data(false);
+        if (value && reconcileMemory(value, context().chat)) await save();
+        await refreshMemoryPrompt();
+    });
+    on('CHARACTER_MESSAGE_RENDERED', () => scheduleMemory());
+    on('GENERATION_ENDED', (type) => {
+        if (['quiet', 'impersonate'].includes(type)) return;
+        normalGenerating = false;
+        if (memoryPending) scheduleMemory();
+    });
+    on('GENERATION_STOPPED', () => { normalGenerating = false; });
+    for (const event of ['MESSAGE_SWIPED', 'MESSAGE_EDITED', 'MESSAGE_DELETED']) on(event, () => {
+        memoryEpoch++;
+        const value = data(false);
+        if (value) {
+            reconcileMemory(value, context().chat);
+            void save().catch((error) => status(error.message));
+        }
+        scheduleMemory();
+    });
 }
 
 function recentChat(ctx) {
@@ -517,7 +629,7 @@ async function runHidden(key, lastMessage) {
     try {
         const ctx = context();
         if (!stillSameChat(key, lastMessage)) throw new Error('대화가 바뀌어 생성을 중단했어요.');
-        const facts = data(false)?.facts.filter((item) => item.active && !item.supersededBy).map((item) => ({ ...item })) ?? [];
+        const facts = data(false)?.facts.filter((item) => item.active && isCurrent(item)).map((item) => ({ ...item })) ?? [];
         if (!apiKey()) throw new Error('확장 설정에 Jev API 키를 먼저 입력해 주세요.');
         const recent = recentChat(ctx);
         status('메인 AI가 숨은 초안을 작성 중이에요…');
@@ -538,13 +650,13 @@ async function runHidden(key, lastMessage) {
         await commitReply(final, key, lastMessage);
         status(flagged.length ? `충돌 ${flagged.length}곳을 고쳐 게시했어요.` : '설정 충돌 없이 답변을 게시했어요.');
     } catch (error) { console.error('[메모리콩] 생성/검수 실패:', error); status(`답변을 표시하지 않았어요: ${error.message}`); }
-    finally { busy = false; render(); }
+    finally { busy = false; normalGenerating = false; render(); if (memoryPending) scheduleMemory(); }
 }
 
 globalThis.memorybeanGenerationInterceptor = async function (_promptChat, _size, abort, type) {
     const ctx = context();
     if (!settings().enabled || ![undefined, 'normal'].includes(type) || !chatKey(ctx)) return;
-    const confirmed = data(false)?.facts.filter((fact) => fact.active && !fact.supersededBy) ?? [];
+    const confirmed = data(false)?.facts.filter((fact) => fact.active && isCurrent(fact)) ?? [];
     if (!confirmed.length) return;
     abort(true);
     if (extracting || translating) { status('수집 또는 번역을 마친 뒤 답변을 생성해 주세요.'); return; }
@@ -651,6 +763,7 @@ function addWandButton() {
 
 async function main() {
     const ctx = context();
+    installMemoryHooks(ctx);
     if ($id('enabled')) { addWandButton(); return; }
     const response = await fetch(new URL('./settings.html', import.meta.url), { credentials: 'same-origin' });
     if (!response.ok) throw new Error(`설정 화면 파일을 읽지 못했어요 (${response.status}).`);
@@ -730,7 +843,7 @@ async function main() {
         const text = $id('newfact').value.trim();
         if (!value || !text) return;
         try {
-            approveFact(value, { id: newId(), text: text.slice(0, 300), scope: 'always', knowledge: {} }, $id('replaces').value || null);
+            approveFact(value, { id: newId(), text: text.slice(0, 300), scope: 'always', kind: 'fact', pinned: true, origin: 'manual', knowledge: {} }, $id('replaces').value || null);
             $id('newfact').value = '';
             $id('replaces').value = '';
             await save(); render();
@@ -739,14 +852,37 @@ async function main() {
     $id('endscene')?.addEventListener('click', async () => {
         const value = data();
         if (!value) return;
-        const temporary = value.facts.filter((fact) => fact.active && !fact.supersededBy && fact.scope === 'scene');
+        const temporary = value.facts.filter((fact) => fact.active && isCurrent(fact) && fact.scope === 'scene');
         for (const fact of temporary) fact.active = false;
         await save(); render();
         status(temporary.length ? `임시 사실 ${temporary.length}개를 껐어요. 다시 켜면 복구할 수 있어요.` : '현재 켜진 임시 사실이 없어요.');
     });
     $id('extract')?.addEventListener('click', () => { void collectHistory(); });
+    $id('sync-now')?.addEventListener('click', () => { void syncMemories(); });
+    $id('auto-memory')?.addEventListener('change', async (event) => {
+        settings().autoMemory = event.target.checked;
+        memoryEpoch++; memoryPending = false;
+        if (!settings().autoMemory) stopExtractionRequested = true;
+        context().saveSettingsDebounced();
+        await refreshMemoryPrompt(); render();
+        status(settings().autoMemory ? '앞으로 오가는 RP의 핵심 기억을 자동 관리해요.' : '자동 기억을 잠시 껐어요. 저장된 기억은 유지돼요.');
+        if (settings().autoMemory) scheduleMemory();
+    });
+    $id('inject-memory')?.addEventListener('change', async (event) => {
+        settings().injectMemory = event.target.checked; context().saveSettingsDebounced(); await refreshMemoryPrompt();
+    });
     $id('stop')?.addEventListener('click', () => { stopExtractionRequested = true; status('진행 중인 묶음을 마치고 수집을 멈출게요.'); });
-    ctx.eventSource.on((ctx.eventTypes ?? ctx.event_types).CHAT_CHANGED, () => { status('준비됐어요.'); render(); });
+    ctx.eventSource.on((ctx.eventTypes ?? ctx.event_types).CHAT_CHANGED, () => {
+        memoryEpoch++; normalGenerating = false; memoryPending = false;
+        const value = data();
+        if (value) initializeAuto(value, context().chat);
+        status('준비됐어요.'); render();
+        void refreshMemoryPrompt();
+        if (value && value.autoMemory.cursor < context().chat.length) scheduleMemory();
+    });
+    const initial = data();
+    if (initial) initializeAuto(initial, ctx.chat);
+    await refreshMemoryPrompt();
     render();
     addWandButton();
 }
