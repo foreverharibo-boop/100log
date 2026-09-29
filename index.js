@@ -56,42 +56,25 @@ function embeddingText(fact) {
 
 async function requestGoogleJson(url, key, payload, label) {
     const vertex = label === 'Vertex AI Express';
-    const target = vertex ? `${url}?key=${encodeURIComponent(key)}` : `${url}?via=`;
+    const target = vertex ? `${url}?key=${encodeURIComponent(key)}` : url;
     const authHeaders = vertex ? {} : { 'x-goog-api-key': key };
-    let response = null;
+    let response;
     try {
-        const headers = context().getRequestHeaders?.();
-        if (!headers) throw new Error('실리태번 요청 헤더를 사용할 수 없어요.');
-        response = await fetch(ST_JEV_ROUTE, {
-            method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, credentials: 'same-origin',
-            body: JSON.stringify({
-                chat_completion_source: 'custom', custom_url: target, model: 'embedding', messages: [{ role: 'user', content: '.' }], stream: false,
-                custom_include_body: JSON.stringify(payload), custom_exclude_body: JSON.stringify(ST_STRIP), custom_include_headers: JSON.stringify(authHeaders)
-            }),
-            signal: AbortSignal.timeout(45000)
+        response = await fetch(target, {
+            method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders }, body: JSON.stringify(payload),
+            credentials: 'omit', referrerPolicy: 'no-referrer', signal: AbortSignal.timeout(45000)
         });
     } catch (error) {
         if (error?.name === 'TimeoutError') throw new Error(`${label} 임베딩 연결 시간이 초과됐어요.`);
-        response = null;
-    }
-    const directUrl = vertex ? target : url;
-    if (!response || [404, 405].includes(response.status)) {
+        const headers = context().getRequestHeaders?.();
+        if (!headers) throw new Error(`${label} 직접 연결이 차단됐고 실리태번 프록시를 사용할 수 없어요.`);
         try {
-            response = await fetch(directUrl, {
-                method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders }, body: JSON.stringify(payload),
-                credentials: 'omit', referrerPolicy: 'no-referrer', signal: AbortSignal.timeout(45000)
+            response = await fetch(`/proxy/${encodeURIComponent(target)}`, {
+                method: 'POST', headers: { ...headers, 'Content-Type': 'application/json', ...authHeaders }, body: JSON.stringify(payload),
+                credentials: 'same-origin', signal: AbortSignal.timeout(45000)
             });
-        } catch (error) {
-            if (error?.name === 'TimeoutError') throw new Error(`${label} 임베딩 응답 시간이 초과됐어요.`);
-            const headers = context().getRequestHeaders?.();
-            if (!headers) throw new Error(`${label} 직접 연결이 차단됐고 실리태번 프록시를 사용할 수 없어요.`);
-            try {
-                response = await fetch(`/proxy/${encodeURIComponent(directUrl)}`, {
-                    method: 'POST', headers: { ...headers, 'Content-Type': 'application/json', ...authHeaders }, body: JSON.stringify(payload),
-                    credentials: 'same-origin', signal: AbortSignal.timeout(45000)
-                });
-            } catch { throw new Error(`${label}에 연결하지 못했어요. 실리태번 서버의 인터넷 연결을 확인해 주세요.`); }
-        }
+        } catch { throw new Error(`${label}에 연결하지 못했어요. 실리태번 서버의 인터넷 연결을 확인해 주세요.`); }
+        if (response.status === 404) throw new Error('실리태번 내장 프록시가 꺼져 있어요. config.yaml에서 enableCorsProxy: true로 바꾸고 서버를 다시 시작해 주세요.');
     }
     let result;
     try { result = await response.json(); } catch { throw new Error(`${label} 임베딩 응답을 읽지 못했어요.`); }
