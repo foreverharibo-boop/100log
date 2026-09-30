@@ -55,7 +55,8 @@
 #hundredlog .hundredlog-knowledge-tag .hundredlog-knowledge-toggle:hover { color: var(--SmartThemeQuoteColor); opacity: 1; }
 #hundredlog .hundredlog-knowledge-tag .hundredlog-knowledge-remove { padding: 2px 4px; opacity: .48; }
 #hundredlog .hundredlog-knowledge-tag .hundredlog-knowledge-remove:hover { color: var(--SmartThemeQuoteColor); opacity: 1; }
-#hundredlog .hundredlog-knowledge-controls input, #hundredlog .hundredlog-knowledge-controls select { width: 100%; min-width: 0; }
+#hundredlog .hundredlog-knowledge-controls > input, #hundredlog .hundredlog-knowledge-controls > select { align-self: center !important; width: 100% !important; min-width: 0 !important; height: 38px !important; min-height: 38px !important; margin: 0 !important; padding-top: 5px !important; padding-bottom: 5px !important; line-height: 1.2 !important; }
+#hundredlog .hundredlog-knowledge-controls > button.menu_button { align-self: center !important; height: 38px !important; min-height: 38px !important; margin: 0 !important; display: inline-flex; align-items: center; justify-content: center; }
 #hundredlog .hundredlog-fold { border-top: 1px solid var(--SmartThemeBorderColor); margin-top: 14px; padding-top: 8px; font-size: .92em; }
 #hundredlog .hundredlog-settings-block { border-top: 1px solid var(--SmartThemeBorderColor); margin-top: 14px; padding-top: 13px; }
 #hundredlog .hundredlog-settings-block:first-of-type { margin-top: 9px; }
@@ -111,7 +112,7 @@
 #hundredlog .hundredlog-translation-tools { margin: 0; padding: 11px 2px 12px; border: 0; border-bottom: 1px solid var(--SmartThemeBorderColor); }
 #hundredlog .hundredlog-translation-tools .hundredlog-section-title { margin-bottom: 7px; }
 #hundredlog .hundredlog-translation-controls { flex-wrap: nowrap; gap: 5px; }
-#hundredlog .hundredlog-translation-controls select { flex: 0 0 130px !important; width: 130px !important; min-height: 32px !important; height: 32px !important; padding: 3px 24px 3px 8px !important; line-height: 1.2 !important; }
+#hundredlog .hundredlog-translation-controls select { flex: 1 1 auto !important; width: auto !important; min-width: 112px !important; min-height: 32px !important; height: 32px !important; padding: 3px 24px 3px 8px !important; line-height: 1.2 !important; }
 #hundredlog .hundredlog-translation-controls button.menu_button { padding-left: 7px; padding-right: 7px; }
 #hundredlog #hundredlog-translation-count { flex: 0 0 auto; margin-left: auto; white-space: nowrap; }
 #hundredlog .hundredlog-original { margin-top: 9px; font-size: .83em; opacity: .8; }
@@ -122,7 +123,7 @@
 #hundredlog .hundredlog-history .hundredlog-list, #hundredlog-history { margin-top: 12px; }
 #hundredlog .hundredlog-section-title { flex-wrap: wrap; }
 @media (max-width: 420px) {
-  #hundredlog .hundredlog-translation-controls select { flex-basis: 108px !important; width: 108px !important; }
+  #hundredlog .hundredlog-translation-controls select { min-width: 96px !important; }
   #hundredlog .hundredlog-translation-controls button.menu_button { padding-left: 5px; padding-right: 5px; font-size: .78em; }
   #hundredlog #hundredlog-translation-count { font-size: .74em; }
 }
