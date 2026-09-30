@@ -1,4 +1,4 @@
-import { MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions } from './memory-engine.js';
+import { MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js';
 import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, generateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, buildRelevanceChecks, selectRelevantFacts, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js';
 
 const NAME = 'hundredlog';
@@ -29,6 +29,7 @@ let selectedView = 'memory';
 let previousFocus = null;
 let memoryRun = null;
 let memoryTimer = null;
+let sourceMutationTimer = null;
 let memoryPending = false;
 let memoryForcePending = false;
 let memoryEpoch = 0;
@@ -400,7 +401,7 @@ function compoundSplitRequest(operations, facts, rows, contextRows = []) {
         pinned: Boolean(pinned), paused: !active,
     }));
     return [
-        'Split ONLY the rejected compound continuity memories below into atomic Korean memory operations. Return JSON only in exactly this shape: {"operations":[{"action":"add|update|complete|cancel|archive","id":"existing id or null","kind":"fact|relationship|commitment|knowledge|temporary","text":"one atomic Korean memory","sourceId":0,"evidence":"exact quote from NEW_MESSAGES","evidenceType":"occurred|explicit_statement|promise|intention|explicit_cancellation","confidence":0.0,"importance":3,"knowledge":{"Name":"known|unknown"},"reason":"short Korean reason"}]}.',
+        'Split ONLY the rejected compound continuity memories below into atomic Korean memory operations. Return JSON only in exactly this shape: {"operations":[{"action":"add|update|complete|cancel|archive","id":"existing id or null","kind":"fact|relationship|commitment|knowledge|temporary","text":"one atomic Korean memory","sourceId":0,"evidence":"exact quote from NEW_MESSAGES","evidenceType":"occurred|explicit_statement|promise|intention|explicit_cancellation","confidence":0.0,"importance":3,"retention":"summary|recent","knowledge":{"Name":"known|unknown"},"reason":"short Korean reason"}]}.',
         'Each output operation must contain exactly ONE independently verifiable event, statement, promise, intention, or knowledge change. If two clauses were witnessed or learned by different people, they MUST be separate operations. Never combine an event with a later private conversation, reaction, message, advice request, secret, or plan. A character may be marked known only when they know every clause of that one atomic memory. Omit a character when their knowledge is not established.',
         'Preserve only claims directly supported by NEW_MESSAGES. Evidence must be an exact excerpt from the matching numbered source. CONTEXT is interpretation only. Do not invent off-screen events or knowledge transfer. Do not repeat an already-current memory. For an update, use the existing id only when the atomic output genuinely replaces that same memory; otherwise use add. Protected or paused memories must not be changed.',
         `REJECTED_COMPOUND_OPERATIONS: ${JSON.stringify(operations)}`,
@@ -887,7 +888,7 @@ function render() {
         const kind = document.createElement('span'); kind.className = 'hundredlog-kind'; kind.textContent = MEMORY_KINDS[fact.kind] || '중요한 사실';
         itemHead.append(kind);
         const title = document.createElement('div'); title.className = 'hundredlog-text'; title.textContent = displayText(fact);
-        const meta = document.createElement('div'); meta.className = 'hundredlog-meta'; meta.textContent = `${fact.scope === 'scene' ? '장면 한정 규칙' : '지속 규칙'} · ${fact.pinned ? '자동 변경 잠금' : fact.origin === 'auto' ? '자동 관리' : '직접 저장'}${fact.active ? '' : ' · 잠시 꺼짐'}${conflictIds.has(fact.id) ? ' · 충돌 의심' : warningIds.has(fact.id) ? ' · 청소 확인 필요' : ''}${Number.isInteger(fact.sourceId) ? ` · 대화 #${fact.sourceId}` : ''}`;
+        const meta = document.createElement('div'); meta.className = 'hundredlog-meta'; meta.textContent = `${fact.scope === 'scene' ? '장면 한정 규칙' : '지속 규칙'} · ${fact.pinned ? '자동 변경 잠금' : fact.origin === 'auto' ? '자동 관리' : '직접 저장'}${fact.summaryCarryover ? ' · 요약 이월' : ''}${fact.active ? '' : ' · 잠시 꺼짐'}${conflictIds.has(fact.id) ? ' · 충돌 의심' : warningIds.has(fact.id) ? ' · 청소 확인 필요' : ''}${Number.isInteger(fact.sourceId) ? ` · 대화 #${fact.sourceId}` : ''}`;
         const actions = document.createElement('div'); actions.className = 'hundredlog-actions';
         actions.append(makeButton('수정', () => {
             if (data(false) !== value) return;
@@ -1178,6 +1179,48 @@ export function syncMemories(options = {}) {
     return task;
 }
 
+function applyDetectedSummaryCompaction(value, state, ctx) {
+    const result = compactBulkHiddenMessages(value, state, ctx.chat, sourceChatId(ctx));
+    if (!result.applied) return result;
+    value.lastActivity = {
+        text: `요약 압축 감지 · ${result.hidden}개 메시지 하이드 · 중요 규칙 ${result.carried}개 이월 · 최근 장면 규칙 ${result.removed}개 정리`,
+        at: Date.now(),
+        type: 'summary-compaction',
+    };
+    return result;
+}
+
+async function processSourceMutation({ queueCollection = true } = {}) {
+    const ctx = context();
+    const value = data(false);
+    const state = chatState(value, ctx, false);
+    if (!value || !state) return { changed: false, compacted: false };
+    const compacted = applyDetectedSummaryCompaction(value, state, ctx);
+    if (compacted.applied) {
+        await save();
+        render();
+        return { changed: true, compacted: true, ...compacted };
+    }
+    const changed = reconcileMemory(value, state, ctx.chat);
+    if (changed) {
+        await save();
+        render();
+        if (queueCollection) scheduleMemory({ force: true });
+    }
+    return { changed, compacted: false };
+}
+
+function queueSourceMutation() {
+    memoryEpoch++;
+    if (sourceMutationTimer !== null) clearTimeout(sourceMutationTimer);
+    // Summary extensions often hide dozens of messages in a rapid burst. Wait for
+    // that burst to finish so it is handled once instead of as dozens of edits.
+    sourceMutationTimer = setTimeout(() => {
+        sourceMutationTimer = null;
+        void processSourceMutation().catch((error) => status(error.message));
+    }, 900);
+}
+
 async function performMemorySync({ rebuildRecent = false, force = false } = {}) {
     const ctx = context();
     const key = chatKey(ctx);
@@ -1200,7 +1243,9 @@ async function performMemorySync({ rebuildRecent = false, force = false } = {}) 
         if (rebuildRecent) resetRecentWindow(value, state, ctx.chat, currentSourceChatId);
         else pruneToRecentWindow(value, state, ctx.chat, currentSourceChatId);
         auto = initializeAuto(state, ctx.chat);
-        if (reconcileMemory(value, state, ctx.chat)) await save();
+        const compacted = rebuildRecent ? { applied: false } : applyDetectedSummaryCompaction(value, state, ctx);
+        if (compacted.applied || reconcileMemory(value, state, ctx.chat)) await save();
+        auto = initializeAuto(state, ctx.chat);
         // A user message alone is not a completed RP exchange.
         let end = ctx.chat.length;
         while (end > 0 && (ctx.chat[end - 1]?.is_user || ctx.chat[end - 1]?.is_system || ctx.chat[end - 1]?.is_hidden || ctx.chat[end - 1]?.hidden || !String(ctx.chat[end - 1]?.mes ?? '').trim())) end--;
@@ -1307,10 +1352,10 @@ export function installMemoryHooks(ctx = context()) {
         if (dryRun || ['quiet', 'impersonate'].includes(type) || eventData?.quiet_prompt) return;
         normalGenerating = true;
         if (memoryRun) await memoryRun;
+        if (sourceMutationTimer !== null) { clearTimeout(sourceMutationTimer); sourceMutationTimer = null; }
+        const mutation = await processSourceMutation({ queueCollection: false });
+        if (mutation.changed && !mutation.compacted) { memoryPending = true; memoryForcePending = true; }
         if (memoryPending && !busy && !extracting && !translating) await syncMemories({ force: memoryForcePending });
-        const value = data(false);
-        const state = chatState(value, context(), false);
-        if (value && state && reconcileMemory(value, state, context().chat)) await save();
         await clearLegacyPrompt();
     });
     on('CHARACTER_MESSAGE_RENDERED', () => scheduleMemory());
@@ -1320,16 +1365,7 @@ export function installMemoryHooks(ctx = context()) {
         if (memoryPending) scheduleMemory();
     });
     on('GENERATION_STOPPED', () => { normalGenerating = false; });
-    for (const event of ['MESSAGE_SWIPED', 'MESSAGE_EDITED', 'MESSAGE_DELETED']) on(event, () => {
-        memoryEpoch++;
-        const value = data(false);
-        if (value) {
-            const state = chatState(value, context(), false);
-            if (state) reconcileMemory(value, state, context().chat);
-            void save().catch((error) => status(error.message));
-        }
-        scheduleMemory({ force: true });
-    });
+    for (const event of ['MESSAGE_SWIPED', 'MESSAGE_EDITED', 'MESSAGE_DELETED']) on(event, queueSourceMutation);
 }
 
 function recentChat(ctx, excludeLast = false) {
