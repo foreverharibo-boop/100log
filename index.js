@@ -538,6 +538,14 @@ function makeButton(text, action) {
 
 function displayText(record) { return hasTranslation(record) ? record.translatedKo.text : record.text; }
 
+function hasUsableKoreanText(record) {
+    if (hasTranslation(record)) return true;
+    const text = String(record?.text ?? '');
+    const hangul = (text.match(/[가-힣ㄱ-ㅎㅏ-ㅣ]/g) ?? []).length;
+    const latin = (text.match(/[A-Za-z]/g) ?? []).length;
+    return hangul >= 2 && hangul >= latin * 0.35;
+}
+
 function appendOriginal(parent, record) {
     if (!hasTranslation(record)) return;
     const details = document.createElement('details');
@@ -575,7 +583,7 @@ export async function translateRecords(mode = 'missing') {
     const key = chatKey(ctx);
     const value = data();
     if (!key || !value) { status('번역할 채팅을 먼저 선택해 주세요.'); return; }
-    const targets = [...value.facts, ...value.candidates].filter((record) => mode === 'all' || !hasTranslation(record));
+    const targets = [...value.facts, ...value.candidates].filter((record) => mode === 'all' || !hasUsableKoreanText(record));
     if (!targets.length) { status('번역할 항목이 없어요.'); return; }
     const provider = translationProvider();
     const profileId = settings().translationProfileId === '@extraction' ? settings().extractionProfileId : settings().translationProfileId;
@@ -695,7 +703,7 @@ function render() {
     $id('undo-last').disabled = working || !value || !value.autoMemory?.journal?.some((entry) => entry.changes?.length && !entry.undoneAt);
     refreshProfiles();
     const allRecords = value ? [...value.facts, ...value.candidates] : [];
-    const missing = allRecords.filter((record) => !hasTranslation(record)).length;
+    const missing = allRecords.filter((record) => !hasUsableKoreanText(record)).length;
     $id('translation-count').textContent = `미번역 ${missing} / 전체 ${allRecords.length}개`;
     $id('translation-provider').value = translationProvider();
     $id('translation-provider').disabled = working;
