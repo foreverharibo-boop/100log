@@ -848,7 +848,7 @@ function render() {
         item.append(knowledgeEditor(candidate, async () => { if (data(false) !== value) return; await save(); render(); }));
         $id('candidates').append(item);
     }
-    $id('status').textContent = statusText;
+    if ($id('status')) $id('status').textContent = statusText;
 }
 
 function sourceRows(ctx, start, offset = 0, total = ctx.chat.length) {

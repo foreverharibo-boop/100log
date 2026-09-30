@@ -85,7 +85,6 @@
 #hundredlog .hundredlog-action-menu .hundredlog-actions { justify-content: flex-end; padding: 7px 0 1px; }
 #hundredlog .hundredlog-actions button { font-size: .79em; padding: 4px 7px; }
 #hundredlog .hundredlog-empty { margin: 0; padding: 12px 8px; opacity: .68; font-size: .87em; text-align: center; line-height: 1.55; }
-#hundredlog .hundredlog-status { padding: 10px 2px 0; margin: 14px 0 0; border-top: 1px solid var(--SmartThemeBorderColor); font-size: .83em; line-height: 1.5; opacity: .78; overflow-wrap: anywhere; }
 #hundredlog-wand-overlay[hidden] { display: none !important; }
 #hundredlog-wand-overlay { position: fixed !important; inset: auto !important; top: var(--hundredlog-viewport-top, 0px) !important; left: var(--hundredlog-viewport-left, 0px) !important; width: var(--hundredlog-viewport-width, 100vw) !important; height: var(--hundredlog-viewport-height, 100dvh) !important; min-width: 0 !important; min-height: 0 !important; z-index: 2147483000 !important; display: flex !important; align-items: center !important; justify-content: center !important; overflow: hidden !important; margin: 0 !important; padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)) !important; transform: none !important; background: transparent !important; color: var(--SmartThemeBodyColor); }
 #hundredlog-wand-popup { position: relative !important; inset: auto !important; transform: none !important; width: min(520px, 100%) !important; max-width: 520px !important; height: auto !important; max-height: min(660px, calc(var(--hundredlog-viewport-height, 100dvh) - 24px - env(safe-area-inset-top) - env(safe-area-inset-bottom))) !important; min-height: 0 !important; min-width: 0 !important; margin: 0 !important; padding: 0 !important; overflow: hidden !important; display: flex !important; flex-direction: column !important; border: 1px solid var(--SmartThemeBorderColor); border-radius: 11px; background: var(--SmartThemeBlurTintColor); color: var(--SmartThemeBodyColor); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px); box-shadow: none !important; }
@@ -105,10 +104,13 @@
   #hundredlog .hundredlog-setting-grid { grid-template-columns: 1fr; }
 }
 
-#hundredlog .hundredlog-profile-select { display: block; width: 100%; }
+#hundredlog .hundredlog-profile-label { margin-bottom: 8px; }
+#hundredlog .hundredlog-profile-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+#hundredlog .hundredlog-profile-row .hundredlog-profile-select { flex: 1 1 auto; width: auto; }
+#hundredlog .hundredlog-profile-select { display: block; width: 100%; min-height: 32px !important; height: 32px !important; padding: 3px 28px 3px 8px !important; line-height: 1.2 !important; }
 #hundredlog .hundredlog-translation-tools { margin: 0; padding: 11px 2px 12px; border: 0; border-bottom: 1px solid var(--SmartThemeBorderColor); }
 #hundredlog .hundredlog-translation-tools .hundredlog-section-title { margin-bottom: 7px; }
-#hundredlog .hundredlog-translation-controls select { flex: 1 1 145px; width: auto; }
+#hundredlog .hundredlog-translation-controls select { flex: 0 1 180px; width: min(180px, 100%); min-height: 32px !important; height: 32px !important; padding: 3px 28px 3px 8px !important; line-height: 1.2 !important; }
 #hundredlog .hundredlog-original { margin-top: 9px; font-size: .83em; opacity: .8; }
 #hundredlog .hundredlog-original .hundredlog-text { margin-top: 7px; }
 #hundredlog .hundredlog-empty { white-space: pre-line; }

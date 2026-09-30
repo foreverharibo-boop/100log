@@ -38,8 +38,9 @@
     <div id="hundredlog-view-settings" class="hundredlog-view" role="region" aria-labelledby="hundredlog-tab-settings" hidden>
       <div class="hundredlog-activity"><strong>최근 작업</strong><span id="hundredlog-activity">아직 기록된 작업이 없어요.</span></div>
       <section class="hundredlog-settings-block">
-        <div class="hundredlog-section-title"><strong>규칙 관리</strong><button type="button" id="hundredlog-profiles-refresh" class="menu_button">목록 새로고침</button></div>
-        <label for="hundredlog-extraction-profile" class="hundredlog-label">최근 100개 규칙 정리용 프로필</label><select id="hundredlog-extraction-profile" class="hundredlog-profile-select"></select>
+        <div class="hundredlog-section-title"><strong>규칙 관리</strong></div>
+        <label for="hundredlog-extraction-profile" class="hundredlog-label hundredlog-profile-label">최근 100개 규칙 정리용 프로필</label>
+        <div class="hundredlog-profile-row"><select id="hundredlog-extraction-profile" class="hundredlog-profile-select"></select><button type="button" id="hundredlog-profiles-refresh" class="menu_button">목록 새로고침</button></div>
         <div id="hundredlog-translation-profile-setting"><label for="hundredlog-translation-profile" class="hundredlog-label">AI 한국어 번역용 프로필</label><select id="hundredlog-translation-profile" class="hundredlog-profile-select"></select></div>
         <p class="hundredlog-help">실리태번에 저장한 연결 프로필을 선택해요. 별도 프로필을 고르면 RP용 메인 API를 바꾸지 않고 그 AI가 규칙을 정리해요.</p>
         <div class="hundredlog-setting-grid">
@@ -85,6 +86,5 @@
         </section>
       </section>
     </div>
-    <p id="hundredlog-status" class="hundredlog-status" role="status" aria-live="polite">준비 중이에요.</p>
   </div>
 </section>
