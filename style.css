@@ -55,8 +55,8 @@
 #hundredlog .hundredlog-knowledge-tag .hundredlog-knowledge-toggle:hover { color: var(--SmartThemeQuoteColor); opacity: 1; }
 #hundredlog .hundredlog-knowledge-tag .hundredlog-knowledge-remove { padding: 2px 4px; opacity: .48; }
 #hundredlog .hundredlog-knowledge-tag .hundredlog-knowledge-remove:hover { color: var(--SmartThemeQuoteColor); opacity: 1; }
-#hundredlog .hundredlog-knowledge-controls > input, #hundredlog .hundredlog-knowledge-controls > select { align-self: center !important; width: 100% !important; min-width: 0 !important; height: 38px !important; min-height: 38px !important; margin: 0 !important; padding-top: 5px !important; padding-bottom: 5px !important; line-height: 1.2 !important; }
-#hundredlog .hundredlog-knowledge-controls > button.menu_button { align-self: center !important; height: 38px !important; min-height: 38px !important; margin: 0 !important; display: inline-flex; align-items: center; justify-content: center; }
+#hundredlog .hundredlog-knowledge-controls > input, #hundredlog .hundredlog-knowledge-controls > select { align-self: center !important; width: 100% !important; min-width: 0 !important; height: 32px !important; min-height: 32px !important; margin: 0 !important; padding-top: 3px !important; padding-bottom: 3px !important; line-height: 1.2 !important; }
+#hundredlog .hundredlog-knowledge-controls > button.menu_button { align-self: center !important; height: 32px !important; min-height: 32px !important; margin: 0 !important; padding-top: 3px; padding-bottom: 3px; display: inline-flex; align-items: center; justify-content: center; }
 #hundredlog .hundredlog-fold { border-top: 1px solid var(--SmartThemeBorderColor); margin-top: 14px; padding-top: 8px; font-size: .92em; }
 #hundredlog .hundredlog-settings-block { border-top: 1px solid var(--SmartThemeBorderColor); margin-top: 14px; padding-top: 13px; }
 #hundredlog .hundredlog-settings-block:first-of-type { margin-top: 9px; }
