@@ -58,11 +58,9 @@
         <div class="hundredlog-scene"><button type="button" id="hundredlog-endscene" class="menu_button">장면 한정 규칙 모두 끄기</button></div>
         <p class="hundredlog-help">장면 한정 규칙은 현재 장면이나 가까운 몇 턴에만 필요한 사실이에요. 모두 끄기는 삭제하지 않고 검사에서 제외하며, 각 규칙의 ‘다시 켜기’로 복구할 수 있어요.</p>
       </section>
-      <section class="hundredlog-settings-block"><div class="hundredlog-fold-title"><strong>JEV 공개 전 엄격 검수</strong></div>
-        <label class="hundredlog-toggle hundredlog-setting-toggle"><input id="hundredlog-strict-review" type="checkbox"><span>답변 공개 전 엄격 검수 · 자동 재작성</span></label>
-        <label class="hundredlog-toggle hundredlog-setting-toggle"><input id="hundredlog-strict-review-swipes" type="checkbox"><span>스와이프 답변도 엄격 검수</span></label>
-        <p class="hundredlog-help">일반 답변과 재생성 답변을 숨은 초안으로 받은 뒤 JEV가 현재 규칙 전체와 비교해요. 이상이 없으면 표시하고, 충돌이 발견된 경우에만 메인 AI 재작성과 재검수를 한 번 더 실행해요. 스와이프는 위 옵션을 켰을 때 같은 검수를 해요.</p>
-        <p class="hundredlog-help">정상 답변은 ‘메인 AI 초안 1회 + JEV 검수 1회’만 사용해요. 진행 상황은 아래 상태 문구에 표시하며, 재검수 후에도 충돌이 남아 답변을 숨긴 경우에만 오류 토스트를 띄워요.</p>
+      <section class="hundredlog-settings-block"><div class="hundredlog-fold-title"><strong>JEV 연결</strong></div>
+        <p class="hundredlog-help">100LOG 사용 중에는 일반 답변·재생성·스와이프를 모두 숨은 초안으로 받은 뒤 JEV가 현재 규칙 전체와 비교해요. 이상이 없으면 표시하고, 충돌이 있을 때만 메인 AI 재작성과 재검수를 한 번 더 실행해요.</p>
+        <p class="hundredlog-help">정상 답변은 ‘메인 AI 초안 1회 + JEV 검수 1회’만 사용해요. 재검수 후에도 충돌이 남은 경우에는 답변을 표시하지 않고 오류 토스트로 알려요.</p>
         <label for="hundredlog-key" class="hundredlog-label">Jev API 키</label><input id="hundredlog-key" type="password" autocomplete="off" spellcheck="false" placeholder="TypeSafe API 키">
         <div class="hundredlog-row hundredlog-connection-actions"><button type="button" id="hundredlog-test" class="menu_button">연결 확인</button><button type="button" id="hundredlog-clearkey" class="menu_button">키 삭제</button><span id="hundredlog-server" class="hundredlog-state" aria-live="polite">API 키를 입력해 주세요</span></div>
         <p id="hundredlog-connection-error" class="hundredlog-help hundredlog-connection-error" role="alert" hidden></p>
@@ -71,7 +69,7 @@
       <section id="hundredlog-developer" class="hundredlog-developer" hidden>
         <section class="hundredlog-settings-block"><div class="hundredlog-fold-title"><strong>개발자 모드 · 맞춤 규칙 주입</strong></div>
           <label class="hundredlog-toggle hundredlog-setting-toggle"><input id="hundredlog-developer-memory" type="checkbox"><span>임베딩 + JEV 맞춤 규칙 주입</span></label>
-          <p class="hundredlog-help">현재 장면과 가까운 규칙을 임베딩으로 먼저 찾고, JEV가 실제로 필요한 규칙만 골라 메인 AI에게 전달해요. 엄격 검수와 함께 켜면 맞춤 주입 후 전체 규칙으로 공개 전 검수해요.</p>
+          <p class="hundredlog-help">현재 장면과 가까운 규칙을 임베딩으로 먼저 찾고, JEV가 실제로 필요한 규칙만 골라 메인 AI에게 전달해요. 맞춤 주입 뒤에는 기본 기능인 전체 규칙 공개 전 검수를 실행해요.</p>
           <div class="hundredlog-setting-grid">
             <label for="hundredlog-injection-limit"><span>한 번에 주입할 규칙 수</span><span class="hundredlog-number-field"><input id="hundredlog-injection-limit" type="number" min="1" step="1" inputmode="numeric"><span>개</span></span></label>
           </div>

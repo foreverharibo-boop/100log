@@ -422,15 +422,9 @@ function settings() {
     ctx.extensionSettings[NAME] ??= { enabled: false };
     const config = ctx.extensionSettings[NAME];
     const legacyJevEnabled = Boolean(config.enabled);
-    if (!config.reviewOnlyMigrated) {
-        config.strictReview = Boolean(config.strictReview || config.jevMemorySelection || legacyJevEnabled);
-        config.reviewOnlyMigrated = true;
-    }
-    config.strictReview ??= legacyJevEnabled;
-    config.enabled = Boolean(config.strictReview);
-    config.autoMemory ??= true;
+    config.autoMemory ??= legacyJevEnabled;
+    config.enabled = Boolean(config.autoMemory);
     config.autoCleanup ??= true;
-    config.strictReviewSwipes ??= false;
     config.extractionProfileId ??= '';
     config.translationProfileId ??= '@extraction';
     config.translationProvider = config.translationProvider === 'google' ? 'google' : 'profile';
@@ -440,6 +434,9 @@ function settings() {
     config.embeddingProvider = config.embeddingProvider === 'vertex-express' ? 'vertex-express' : 'google-ai-studio';
     delete config.jevMemorySelection;
     delete config.injectMemory;
+    delete config.strictReview;
+    delete config.strictReviewSwipes;
+    delete config.reviewOnlyMigrated;
     return config;
 }
 
@@ -716,10 +713,6 @@ function render() {
     $id('translate-stop').disabled = !translating;
     $id('translate-stop').hidden = !translating;
     for (const id of ['extraction-profile', 'translation-profile', 'profiles-refresh', 'analysis-interval']) $id(id).disabled = working;
-    $id('strict-review').checked = Boolean(settings().strictReview);
-    $id('strict-review').disabled = working;
-    $id('strict-review-swipes').checked = Boolean(settings().strictReviewSwipes);
-    $id('strict-review-swipes').disabled = working || !settings().strictReview;
     $id('key').disabled = working;
     $id('test').disabled = working;
     $id('clearkey').disabled = working;
@@ -1413,35 +1406,20 @@ async function runHidden(key, lastMessage, selectedContext = null, mode = 'norma
     }
 }
 
-function injectSelectedMemory(promptChat, selectedContext) {
-    if (!selectedContext || !Array.isArray(promptChat)) return false;
-    const note = {
-        is_user: false,
-        is_system: true,
-        name: '100LOG',
-        send_date: Date.now(),
-        mes: selectedContext,
-        extra: { hundredlog_injection: true },
-    };
-    promptChat.splice(Math.max(0, promptChat.length - 1), 0, note);
-    return true;
-}
-
 globalThis.hundredlogGenerationInterceptor = async function (promptChat, _size, abort, type) {
     const ctx = context();
     const config = settings();
     const selectMemory = Boolean(config.developerMemorySelection);
     const mode = type === 'swipe' ? 'swipe' : ['regenerate', 'regen', 'retry'].includes(type) ? 'regenerate' : [undefined, 'normal'].includes(type) ? 'normal' : null;
-    const strictForThisGeneration = Boolean(config.strictReview && (mode === 'normal' || mode === 'regenerate' || (mode === 'swipe' && config.strictReviewSwipes)));
-    if (!mode || (!strictForThisGeneration && !(selectMemory && mode === 'normal')) || !chatKey(ctx)) return;
+    if (!mode || !config.autoMemory || !chatKey(ctx)) return;
     const confirmed = data(false)?.facts.filter((fact) => fact.active && isCurrent(fact)) ?? [];
     if (!confirmed.length) return;
-    if (!apiKey()) { abort(true); status('Jev API 키가 없어 맞춤 주입 또는 공개 전 엄격 검수를 실행하지 못했어요.'); return; }
+    if (!apiKey()) { abort(true); status('Jev API 키가 없어 공개 전 검수를 실행하지 못했어요.'); return; }
     if (selectMemory && mode === 'normal' && !embeddingKey()) { abort(true); status(`${embeddingLabel()} 임베딩 키가 없어 맞춤 규칙 주입을 실행하지 못했어요.`); return; }
     if (extracting || translating) { abort(true); status('연속성 규칙 갱신 또는 번역을 마친 뒤 답변을 생성해 주세요.'); return; }
-    if (busy) { abort(true); status('이미 JEV 맞춤 주입 또는 엄격 검수를 진행하고 있어요. 잠시 기다려 주세요.'); return; }
+    if (busy) { abort(true); status('이미 JEV 규칙 선별 또는 공개 전 검수를 진행하고 있어요. 잠시 기다려 주세요.'); return; }
     const last = ctx.chat.at(-1);
-    if (mode === 'normal' && !last?.is_user) { abort(true); status('마지막 메시지가 사용자 메시지가 아니라 엄격 검수 생성을 멈췄어요.'); return; }
+    if (mode === 'normal' && !last?.is_user) { abort(true); status('마지막 메시지가 사용자 메시지가 아니라 공개 전 검수 생성을 멈췄어요.'); return; }
     if (mode !== 'normal' && (last?.is_user || !ctx.chat.slice(0, -1).some((message) => message?.is_user))) { abort(true); status(`${mode === 'swipe' ? '스와이프' : '재생성'}할 기존 AI 답변이나 이전 사용자 메시지를 찾지 못했어요.`); return; }
     const key = chatKey(ctx);
     busy = true;
@@ -1460,21 +1438,6 @@ globalThis.hundredlogGenerationInterceptor = async function (promptChat, _size, 
         abort(true);
         busy = false;
         status(`Jev 맞춤 규칙 선별을 실패해 생성을 멈췄어요: ${error.message}`);
-        render();
-        return;
-    }
-    if (!strictForThisGeneration) {
-        injectSelectedMemory(promptChat, selectedContext);
-        busy = false;
-        const message = selectedContext
-            ? `임베딩 후보 ${selectionStats.candidates}개 중 Jev가 고른 ${selectionStats.selected}개 규칙을 주입했어요.`
-            : '현재 장면에 따로 주입할 규칙이 없어요.';
-        status(message);
-        const store = data(false);
-        if (store) {
-            store.lastActivity = { text: `관련 규칙 ${selectionStats?.selected ?? 0}개 주입 · 엄격 검수 꺼짐`, at: Date.now(), type: 'injection' };
-            await ctx.saveMetadata();
-        }
         render();
         return;
     }
@@ -1613,7 +1576,7 @@ function addWandButton() {
 async function main() {
     const ctx = context();
     installMemoryHooks(ctx);
-    if ($id('strict-review')) { registerDeveloperTitle($id('title')); addWandButton(); return; }
+    if ($id('key')) { registerDeveloperTitle($id('title')); addWandButton(); return; }
     const response = await fetch(new URL('./settings.html', import.meta.url), { credentials: 'same-origin' });
     if (!response.ok) throw new Error(`설정 화면 파일을 읽지 못했어요 (${response.status}).`);
     const html = await response.text();
@@ -1784,29 +1747,12 @@ async function main() {
         $id('key').value = '';
         $id('server').textContent = 'API 키를 입력해 주세요';
         connectionError();
-        settings().strictReview = false;
-        settings().strictReviewSwipes = false;
         settings().developerMemorySelection = false;
+        settings().autoMemory = false;
         settings().enabled = false;
         ctx.saveSettingsDebounced();
-        status('브라우저에 저장된 키를 삭제했어요.');
+        status('Jev 키를 삭제하고 100LOG 사용을 껐어요.');
         render();
-    });
-    $id('strict-review')?.addEventListener('change', (event) => {
-        if (event.target.checked && !apiKey()) { status('Jev API 키를 먼저 입력해 주세요.'); showView('settings'); render(); return; }
-        settings().strictReview = event.target.checked;
-        settings().enabled = event.target.checked;
-        ctx.saveSettingsDebounced();
-        render();
-        status(event.target.checked ? '답변을 공개하기 전에 JEV가 연속성 오류를 검사하고 필요할 때만 자동 재작성해요.' : '공개 전 엄격 검수를 껐어요. 규칙 자동 정리는 계속 사용할 수 있어요.');
-    });
-    $id('strict-review-swipes')?.addEventListener('change', (event) => {
-        if (event.target.checked && !settings().strictReview) { status('먼저 답변 공개 전 엄격 검수를 켜 주세요.'); render(); return; }
-        if (event.target.checked && !apiKey()) { status('Jev API 키를 먼저 입력해 주세요.'); render(); return; }
-        settings().strictReviewSwipes = event.target.checked;
-        ctx.saveSettingsDebounced();
-        render();
-        status(event.target.checked ? '스와이프 답변도 화면에 표시하기 전에 JEV 검수와 필요 시 재작성을 실행해요.' : '스와이프 답변 엄격 검수를 껐어요.');
     });
     $id('add')?.addEventListener('click', async () => {
         const value = data();
@@ -1839,12 +1785,23 @@ async function main() {
         status(`최근 자동 정리에서 바뀐 기억 ${count}개를 되돌렸어요.`);
     });
     $id('auto-memory')?.addEventListener('change', async (event) => {
+        if (event.target.checked && !apiKey()) {
+            event.target.checked = false;
+            settings().autoMemory = false;
+            settings().enabled = false;
+            showView('settings');
+            context().saveSettingsDebounced();
+            render();
+            status('100LOG를 사용하려면 Jev API 키를 먼저 입력해 주세요.');
+            return;
+        }
         settings().autoMemory = event.target.checked;
+        settings().enabled = event.target.checked;
         memoryEpoch++; memoryPending = false;
         if (!settings().autoMemory) stopExtractionRequested = true;
         context().saveSettingsDebounced();
         await clearLegacyPrompt(); render();
-        status(settings().autoMemory ? '최근 100개 메시지의 연속성 규칙을 자동 관리해요.' : '자동 규칙 갱신을 잠시 껐어요. 저장된 규칙은 유지돼요.');
+        status(settings().autoMemory ? '최근 규칙 관리와 일반·재생성·스와이프 공개 전 검수를 모두 시작해요.' : '100LOG를 껐어요. 저장된 규칙은 유지돼요.');
         if (settings().autoMemory) scheduleMemory();
     });
     $id('auto-cleanup')?.addEventListener('change', (event) => {
