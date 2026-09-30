@@ -415,6 +415,10 @@ function positiveInteger(value, fallback) {
     return Number.isFinite(number) && number >= 1 ? number : fallback;
 }
 
+function cleanupThreshold(value, fallback = 20) {
+    return Math.max(5, Math.min(MAX_FACTS, positiveInteger(value, fallback)));
+}
+
 function settings() {
     const ctx = context();
     if (!ctx.extensionSettings[NAME] && ctx.extensionSettings[LEGACY_NAME]) {
@@ -426,6 +430,8 @@ function settings() {
     config.autoMemory ??= legacyJevEnabled;
     config.enabled = Boolean(config.autoMemory);
     config.autoCleanup ??= true;
+    config.collectionIntensity = ['detailed', 'balanced', 'meaningful'].includes(config.collectionIntensity) ? config.collectionIntensity : 'balanced';
+    config.cleanupThreshold = cleanupThreshold(config.cleanupThreshold, 20);
     config.extractionProfileId ??= '';
     config.translationProfileId ??= '@extraction';
     config.translationProvider = config.translationProvider === 'google' ? 'google' : 'profile';
@@ -798,6 +804,8 @@ function render() {
     $id('auto-memory').checked = settings().autoMemory;
     $id('auto-memory').disabled = busy || translating;
     $id('analysis-interval').value = String(settings().analysisInterval);
+    $id('collection-intensity').value = settings().collectionIntensity;
+    $id('cleanup-threshold').value = String(settings().cleanupThreshold);
     $id('auto-cleanup').checked = Boolean(settings().autoCleanup);
     $id('auto-cleanup').disabled = working;
     const intervalWarning = $id('interval-warning');
@@ -820,7 +828,7 @@ function render() {
     $id('translate-missing').disabled = working || !missing;
     $id('translate-stop').disabled = !translating;
     $id('translate-stop').hidden = !translating;
-    for (const id of ['extraction-profile', 'translation-profile', 'profiles-refresh', 'analysis-interval']) $id(id).disabled = working;
+    for (const id of ['extraction-profile', 'translation-profile', 'profiles-refresh', 'analysis-interval', 'collection-intensity', 'cleanup-threshold']) $id(id).disabled = working;
     $id('key').disabled = working;
     $id('test').disabled = working;
     $id('clearkey').disabled = working;
@@ -862,7 +870,7 @@ function render() {
         cleanupSummary.textContent = conflicts ? `JEV 검증 뒤에도 판단할 수 없는 충돌 ${conflicts}쌍을 ‘확인 필요’로 남겼어요.`
             : warnings ? `JEV가 확신하지 못한 청소 제안 ${warnings}개는 적용하지 않고 ‘확인 필요’로 남겼어요.`
             : review ? `마지막 자동 청소: JEV가 ${review.checked}개 제안을 검증했고${review.resolved ? ` 충돌 ${review.resolved}쌍을 해결했으며` : ''} 확인이 필요한 충돌은 없어요.`
-            : '규칙이 20개 이상 쌓이면 정리 AI의 제안을 JEV가 재검증한 뒤 안전한 작업만 적용해요.';
+            : `규칙이 ${settings().cleanupThreshold}개 이상 쌓이면 정리 AI의 제안을 JEV가 재검증한 뒤 안전한 작업만 적용해요.`;
     }
     const manualChoice = $id('replaces').value;
     $id('replaces').replaceChildren(...(value ? [...replacementSelect(value, manualChoice).children] : []));
@@ -1079,7 +1087,7 @@ export async function reviewCleanupActions(actions, value, rows) {
 
 async function runAutomaticCleanup(value, ctx, profileId, sameChat) {
     const active = value.facts.filter((fact) => fact.active && isCurrent(fact));
-    if (!settings().autoCleanup || active.length < 20) return { merged: 0, archived: 0, conflicts: 0, changes: [], skipped: true };
+    if (!settings().autoCleanup || active.length < settings().cleanupThreshold) return { merged: 0, archived: 0, conflicts: 0, changes: [], skipped: true };
     const signature = cleanupSignature(active);
     if (value.lastCleanupSignature === signature) return { merged: 0, archived: 0, conflicts: value.cleanupConflicts?.length ?? 0, changes: [], skipped: true };
     const rows = recentCleanupRows(ctx);
@@ -1212,7 +1220,7 @@ async function performMemorySync({ rebuildRecent = false, force = false } = {}) 
             status(`최근 ${RECENT_MESSAGE_LIMIT}개 대화 수집 중 · ${progress.completed}/${progress.total} · 규칙 ${changed}개 반영`);
             let parsed = { operations: [], rejected: 0 };
             if (rows.length) {
-                const raw = await generateUtility(ctx, memoryRequest(value.facts, rows, contextRows), profileId);
+                const raw = await generateUtility(ctx, memoryRequest(value.facts, rows, contextRows, settings().collectionIntensity), profileId);
                 if (!sameChat()) return;
                 if (tracked.some(({ id, signature }) => messageSignature(context().chat[id]) !== signature)) {
                     memoryPending = true;
@@ -1921,7 +1929,21 @@ async function main() {
         settings().autoCleanup = event.target.checked;
         context().saveSettingsDebounced();
         render();
-        status(event.target.checked ? '규칙이 20개 이상이면 수집을 마친 뒤 중복·종료·충돌을 자동 청소해요.' : '수집 후 규칙 자동 청소를 껐어요.');
+        status(event.target.checked ? `규칙이 ${settings().cleanupThreshold}개 이상이면 수집을 마친 뒤 중복·종료·충돌을 자동 청소해요.` : '수집 후 규칙 자동 청소를 껐어요.');
+    });
+    $id('collection-intensity')?.addEventListener('change', (event) => {
+        settings().collectionIntensity = ['detailed', 'balanced', 'meaningful'].includes(event.target.value) ? event.target.value : 'balanced';
+        context().saveSettingsDebounced();
+        render();
+        const label = { detailed: '세세하게', balanced: '균형', meaningful: '의미 중심' }[settings().collectionIntensity];
+        status(`규칙 수집 강도를 ‘${label}’로 바꿨어요. 명시적인 일정·약속은 모든 강도에서 반드시 수집해요.`);
+    });
+    $id('cleanup-threshold')?.addEventListener('change', (event) => {
+        settings().cleanupThreshold = cleanupThreshold(event.target.value, 20);
+        event.target.value = String(settings().cleanupThreshold);
+        context().saveSettingsDebounced();
+        render();
+        status(`현재 규칙이 ${settings().cleanupThreshold}개 이상 쌓이면 자동 청소를 시작해요.`);
     });
     $id('analysis-interval')?.addEventListener('change', (event) => {
         settings().analysisInterval = positiveInteger(event.target.value, 1);

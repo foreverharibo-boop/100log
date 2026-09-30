@@ -44,12 +44,15 @@
         <div id="hundredlog-translation-profile-setting"><label for="hundredlog-translation-profile" class="hundredlog-label">AI 한국어 번역용 프로필</label><select id="hundredlog-translation-profile" class="hundredlog-profile-select"></select></div>
         <p class="hundredlog-help">실리태번에 저장한 연결 프로필을 선택해요. 별도 프로필을 고르면 RP용 메인 API를 바꾸지 않고 그 AI가 규칙을 정리해요.</p>
         <div class="hundredlog-setting-grid">
+          <label for="hundredlog-collection-intensity"><span>규칙 수집 강도</span><select id="hundredlog-collection-intensity" class="hundredlog-profile-select"><option value="detailed">세세하게</option><option value="balanced">균형</option><option value="meaningful">의미 중심</option></select></label>
           <label for="hundredlog-analysis-interval"><span>자동 규칙 갱신 주기</span><span class="hundredlog-number-field"><input id="hundredlog-analysis-interval" type="number" min="1" step="1" inputmode="numeric"><span>AI 답변마다</span></span></label>
+          <label for="hundredlog-cleanup-threshold"><span>자동 청소 시작 개수</span><span class="hundredlog-number-field"><input id="hundredlog-cleanup-threshold" type="number" min="5" max="40" step="1" inputmode="numeric"><span>개 이상</span></span></label>
         </div>
+        <p class="hundredlog-help">세세하게는 작은 결정과 변화까지, 균형은 다음 전개에 필요한 내용을, 의미 중심은 큰 사건 위주로 모아요. 날짜·시간·장소가 정해진 일정과 명시적인 약속·거절·취소·정정·비밀은 모든 강도에서 반드시 수집해요.</p>
         <p class="hundredlog-help">1 이상의 정수를 직접 입력하면 그 값 그대로 저장해요. 기본값은 AI 답변 1개마다 새 규칙을 갱신해요.</p>
         <p id="hundredlog-interval-warning" class="hundredlog-help hundredlog-warning" hidden>갱신 주기가 50 이상이면 정리되기 전에 오래된 메시지가 최근 100개 범위에서 빠질 수 있어요.</p>
         <label class="hundredlog-toggle hundredlog-setting-toggle"><input id="hundredlog-auto-cleanup" type="checkbox"><span>수집 후 규칙 자동 청소</span></label>
-        <p class="hundredlog-help">현재 규칙이 20개 이상이면 정리용 AI가 청소안을 만들고, JEV가 원문과 기존 규칙으로 다시 승인한 병합·종료만 적용해요. 충돌은 JEV가 대체·양립·확인 필요로 나눠 처리하며, 직접 추가하거나 자동 변경 잠금한 규칙은 건드리지 않아요.</p>
+        <p class="hundredlog-help">자동 청소 시작 개수는 5~40개로 정할 수 있어요. 활성 규칙은 최대 40개이며, 정리용 AI가 만든 청소안을 JEV가 원문과 기존 규칙으로 다시 승인한 뒤 안전한 병합·종료만 적용해요. 직접 추가하거나 자동 변경 잠금한 규칙은 건드리지 않아요.</p>
         <p id="hundredlog-cleanup-summary" class="hundredlog-help" aria-live="polite"></p>
       </section>
       <section class="hundredlog-settings-block"><div class="hundredlog-fold-title"><strong>최근 100개 재수집 · 장면 한정 규칙 관리</strong></div>
