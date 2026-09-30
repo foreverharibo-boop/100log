@@ -178,6 +178,14 @@ export function applyCleanupActions(value, actions) {
             if (action.supersededBy) fact.supersededBy = action.supersededBy;
             if (Number.isInteger(action.sourceId)) fact.endedAtSourceId = action.sourceId;
             if (action.evidence) fact.closedEvidence = action.evidence;
+            if (fact.summaryCarryover && Number.isInteger(action.sourceId)) {
+                fact.originalSourceText ??= fact.sourceText;
+                fact.sourceId = action.sourceId;
+                fact.sourceText = action.evidence || fact.sourceText;
+                fact.summaryCarryover = false;
+                delete fact.carryoverStartId;
+                delete fact.carriedAt;
+            }
             archived++;
         }
     }
@@ -193,8 +201,15 @@ export function applyCleanupActions(value, actions) {
 export function pruneToRecentWindow(value, chatState, chat, sourceChatId, limit = RECENT_MESSAGE_LIMIT) {
     if (!value) return { removedFacts: 0, removedCandidates: 0, cutoff: 0, changed: false };
     const cutoff = recentWindowStart(chat, limit);
+    for (const fact of value.facts ?? []) {
+        if (!fact?.summaryCarryover || fact?.sourceChatId !== sourceChatId || Number.isInteger(fact.carryoverStartId)) continue;
+        // Existing carryovers from v1.8.2 begin their 100-message lifetime on upgrade.
+        fact.carryoverStartId = chat.length;
+    }
     const keep = (record) => record?.pinned || record?.origin === 'manual'
-        || record?.sourceChatId !== sourceChatId || !Number.isInteger(record?.sourceId) || record.sourceId >= cutoff;
+        || record?.sourceChatId !== sourceChatId
+        || (record?.summaryCarryover && Number.isInteger(record.carryoverStartId) && chat.length - record.carryoverStartId < limit)
+        || (!record?.summaryCarryover && (!Number.isInteger(record?.sourceId) || record.sourceId >= cutoff));
     const factsBefore = value.facts?.length ?? 0;
     const candidatesBefore = value.candidates?.length ?? 0;
     value.facts = (value.facts ?? []).filter(keep);
@@ -257,6 +272,7 @@ export function compactBulkHiddenMessages(value, chatState, chat, sourceChatId, 
             fact.retention = 'summary';
             fact.summaryCarryover = true;
             fact.carriedAt = Date.now();
+            fact.carryoverStartId ??= chat.length;
             carried++;
             return true;
         }
@@ -342,6 +358,13 @@ export function applyMemoryOperations(value, operations, sourceChatId = '') {
                 next.previousId = prior.id;
                 prior.active = false; prior.archived = 'updated'; prior.supersededBy = next.id;
                 prior.endedAtSourceChatId = sourceChatId; prior.endedAtSourceId = op.sourceId; prior.closedEvidence = op.sourceText;
+                if (prior.summaryCarryover) {
+                    prior.originalSourceText ??= prior.sourceText;
+                    prior.sourceId = op.sourceId; prior.sourceText = op.sourceText; prior.sourceSignature = op.sourceSignature;
+                    prior.summaryCarryover = false;
+                    delete prior.carryoverStartId;
+                    delete prior.carriedAt;
+                }
                 updated++;
             } else added++;
             value.facts.push(next);
@@ -349,6 +372,13 @@ export function applyMemoryOperations(value, operations, sourceChatId = '') {
             prior.active = false;
             prior.archived = op.action === 'complete' ? 'completed' : op.action === 'cancel' ? 'cancelled' : 'past_scene';
             prior.endedAtSourceChatId = sourceChatId; prior.endedAtSourceId = op.sourceId; prior.closedEvidence = op.sourceText; prior.archiveReason = op.reason;
+            if (prior.summaryCarryover) {
+                prior.originalSourceText ??= prior.sourceText;
+                prior.sourceId = op.sourceId; prior.sourceText = op.sourceText; prior.sourceSignature = op.sourceSignature;
+                prior.summaryCarryover = false;
+                delete prior.carryoverStartId;
+                delete prior.carriedAt;
+            }
             archived++;
         }
     }

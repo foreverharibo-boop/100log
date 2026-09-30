@@ -568,7 +568,10 @@ function data(create = true) {
     value.embeddingIndex ??= { provider: '', model: '', entries: {} };
     value.embeddingIndex.entries ??= {};
     for (const fact of value.facts) fact.knowledge ??= {};
-    if (state) pruneToRecentWindow(value, state, ctx.chat, sourceChatId(ctx));
+    if (state) {
+        const pruned = pruneToRecentWindow(value, state, ctx.chat, sourceChatId(ctx));
+        if (pruned.changed) ctx.saveSettingsDebounced?.();
+    }
     const currentIds = new Set(value.facts.filter((fact) => fact.active && isCurrent(fact)).map((fact) => fact.id));
     value.cleanupConflicts = (value.cleanupConflicts ?? []).filter((entry) => Array.isArray(entry.ids) && entry.ids.length === 2 && entry.ids.every((id) => currentIds.has(id)));
     value.cleanupWarnings = (value.cleanupWarnings ?? []).filter((entry) => Array.isArray(entry.ids) && entry.ids.some((id) => currentIds.has(id)));
@@ -888,7 +891,10 @@ function render() {
         const kind = document.createElement('span'); kind.className = 'hundredlog-kind'; kind.textContent = MEMORY_KINDS[fact.kind] || '중요한 사실';
         itemHead.append(kind);
         const title = document.createElement('div'); title.className = 'hundredlog-text'; title.textContent = displayText(fact);
-        const meta = document.createElement('div'); meta.className = 'hundredlog-meta'; meta.textContent = `${fact.scope === 'scene' ? '장면 한정 규칙' : '지속 규칙'} · ${fact.pinned ? '자동 변경 잠금' : fact.origin === 'auto' ? '자동 관리' : '직접 저장'}${fact.summaryCarryover ? ' · 요약 이월' : ''}${fact.active ? '' : ' · 잠시 꺼짐'}${conflictIds.has(fact.id) ? ' · 충돌 의심' : warningIds.has(fact.id) ? ' · 청소 확인 필요' : ''}${Number.isInteger(fact.sourceId) ? ` · 대화 #${fact.sourceId}` : ''}`;
+        const carryoverAge = fact.summaryCarryover && fact.sourceChatId === sourceChatId() && Number.isInteger(fact.carryoverStartId)
+            ? Math.max(0, Math.min(RECENT_MESSAGE_LIMIT, context().chat.length - fact.carryoverStartId)) : null;
+        const carryoverText = fact.summaryCarryover ? ` · 요약 이월${carryoverAge === null ? '' : ` ${carryoverAge}/${RECENT_MESSAGE_LIMIT}`}` : '';
+        const meta = document.createElement('div'); meta.className = 'hundredlog-meta'; meta.textContent = `${fact.scope === 'scene' ? '장면 한정 규칙' : '지속 규칙'} · ${fact.pinned ? '자동 변경 잠금' : fact.origin === 'auto' ? '자동 관리' : '직접 저장'}${carryoverText}${fact.active ? '' : ' · 잠시 꺼짐'}${conflictIds.has(fact.id) ? ' · 충돌 의심' : warningIds.has(fact.id) ? ' · 청소 확인 필요' : ''}${Number.isInteger(fact.sourceId) ? ` · 대화 #${fact.sourceId}` : ''}`;
         const actions = document.createElement('div'); actions.className = 'hundredlog-actions';
         actions.append(makeButton('수정', () => {
             if (data(false) !== value) return;
