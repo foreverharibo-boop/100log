@@ -766,8 +766,11 @@ function render() {
     const warningIds = new Set((value.cleanupWarnings ?? []).flatMap((entry) => entry.ids ?? []));
     for (const fact of currentFacts) {
         const item = document.createElement('div'); item.className = 'hundredlog-item';
-        const title = document.createElement('div'); title.className = 'hundredlog-text'; title.textContent = displayText(fact); item.append(title);
-        const meta = document.createElement('div'); meta.className = 'hundredlog-meta'; meta.textContent = `${MEMORY_KINDS[fact.kind] || '중요한 사실'} · ${fact.scope === 'scene' ? '장면 한정 규칙' : '지속 규칙'} · ${fact.pinned ? '자동 변경 잠금' : fact.origin === 'auto' ? '자동 관리' : '직접 저장'}${fact.active ? '' : ' · 잠시 꺼짐'}${conflictIds.has(fact.id) ? ' · 충돌 의심' : warningIds.has(fact.id) ? ' · 청소 확인 필요' : ''}${Number.isInteger(fact.sourceId) ? ` · 대화 #${fact.sourceId}` : ''}`; item.append(meta);
+        const itemHead = document.createElement('div'); itemHead.className = 'hundredlog-item-head';
+        const kind = document.createElement('span'); kind.className = 'hundredlog-kind'; kind.textContent = MEMORY_KINDS[fact.kind] || '중요한 사실';
+        itemHead.append(kind);
+        const title = document.createElement('div'); title.className = 'hundredlog-text'; title.textContent = displayText(fact);
+        const meta = document.createElement('div'); meta.className = 'hundredlog-meta'; meta.textContent = `${fact.scope === 'scene' ? '장면 한정 규칙' : '지속 규칙'} · ${fact.pinned ? '자동 변경 잠금' : fact.origin === 'auto' ? '자동 관리' : '직접 저장'}${fact.active ? '' : ' · 잠시 꺼짐'}${conflictIds.has(fact.id) ? ' · 충돌 의심' : warningIds.has(fact.id) ? ' · 청소 확인 필요' : ''}${Number.isInteger(fact.sourceId) ? ` · 대화 #${fact.sourceId}` : ''}`;
         const actions = document.createElement('div'); actions.className = 'hundredlog-actions';
         actions.append(makeButton('수정', () => {
             if (data(false) !== value) return;
@@ -785,7 +788,11 @@ function render() {
         actions.append(makeButton(fact.active ? '잠시 끄기' : '다시 켜기', async () => { fact.active = !fact.active; await save(); render(); }));
         actions.append(makeButton(fact.scope === 'scene' ? '지속 기억으로' : '임시 기억으로', async () => { fact.scope = fact.scope === 'scene' ? 'always' : 'scene'; await save(); render(); }));
         actions.append(makeButton('삭제', async () => { if (data(false) !== value) return; removeFact(value, fact.id); await save(); render(); }));
-        item.append(actions); $id('facts').append(item);
+        const actionMenu = document.createElement('details'); actionMenu.className = 'hundredlog-action-menu';
+        const actionSummary = document.createElement('summary'); actionSummary.textContent = '관리';
+        actionMenu.append(actionSummary, actions);
+        itemHead.append(actionMenu);
+        item.append(itemHead, title, meta); $id('facts').append(item);
         appendOriginal(item, fact);
         item.append(knowledgeEditor(fact, async () => { if (data(false) !== value) return; await save(); render(); }));
     }
