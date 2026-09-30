@@ -47,12 +47,14 @@
 #hundredlog .hundredlog-knowledge-title, #hundredlog .hundredlog-fold-title { padding: 6px 1px; font-weight: 600; }
 #hundredlog summary { cursor: pointer; padding: 6px 1px; }
 #hundredlog .hundredlog-knowledge-tags, #hundredlog .hundredlog-knowledge-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; }
-#hundredlog .hundredlog-knowledge-tag { display: inline-flex; align-items: stretch; max-width: 100%; border: 1px solid var(--SmartThemeBorderColor); border-radius: 5px; overflow: hidden; }
-#hundredlog .hundredlog-knowledge-tag button.menu_button { border: 0; border-radius: 0; }
-#hundredlog .hundredlog-knowledge-tag .hundredlog-knowledge-toggle { min-width: 0; overflow-wrap: anywhere; white-space: normal; text-align: left; }
-#hundredlog .hundredlog-knowledge-tag .hundredlog-knowledge-remove { border-left: 1px solid var(--SmartThemeBorderColor); padding-left: 7px; padding-right: 7px; }
+#hundredlog .hundredlog-knowledge-tag { display: inline-flex; align-items: center; gap: 2px; max-width: 100%; border: 0; border-radius: 0; background: transparent; }
+#hundredlog .hundredlog-knowledge-tag button.menu_button { border: 0 !important; border-radius: 0; background: transparent; box-shadow: none !important; }
+#hundredlog .hundredlog-knowledge-tag .hundredlog-knowledge-toggle { min-width: 0; padding: 2px 1px; overflow-wrap: anywhere; white-space: normal; text-align: left; opacity: .82; }
+#hundredlog .hundredlog-knowledge-tag .hundredlog-knowledge-toggle:hover { color: var(--SmartThemeQuoteColor); opacity: 1; }
+#hundredlog .hundredlog-knowledge-tag .hundredlog-knowledge-remove { padding: 2px 4px; opacity: .48; }
+#hundredlog .hundredlog-knowledge-tag .hundredlog-knowledge-remove:hover { color: var(--SmartThemeQuoteColor); opacity: 1; }
 #hundredlog .hundredlog-knowledge-controls input { flex: 2 1 120px; }
-#hundredlog .hundredlog-knowledge-controls select { flex: 1 1 115px; }
+#hundredlog .hundredlog-knowledge-controls select { flex: 1 1 100px; }
 #hundredlog .hundredlog-fold { border-top: 1px solid var(--SmartThemeBorderColor); margin-top: 11px; padding-top: 6px; font-size: .92em; }
 #hundredlog .hundredlog-history .hundredlog-list { margin-top: 9px; }
 #hundredlog .hundredlog-help-fold { margin: 10px 0 16px; font-size: .88em; }

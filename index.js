@@ -643,7 +643,7 @@ function knowledgeEditor(record, persist) {
     for (const [name, state] of Object.entries(normalizeKnowledge(record.knowledge))) {
         const tag = document.createElement('span');
         tag.className = 'hundredlog-knowledge-tag';
-        const toggle = makeButton(`${name}: ${state === 'known' ? '알고 있음' : '아직 모름'}`, async () => {
+        const toggle = makeButton(`${name} · ${state === 'known' ? '알고 있음' : '아직 모름'}`, async () => {
             setKnowledge(record, name, state === 'known' ? 'unknown' : 'known');
             await persist();
         });
