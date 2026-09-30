@@ -22,6 +22,7 @@ let stopExtractionRequested = false;
 let statusText = '준비됐어요.';
 let settingsHome = null;
 let wandMenuObserver = null;
+let wandViewportHandler = null;
 let lastJevTransport = '실리태번 API';
 let selectedView = 'memory';
 let previousFocus = null;
@@ -1477,6 +1478,36 @@ function closeWand() {
     previousFocus = null;
 }
 
+function syncWandViewport() {
+    const overlay = document.getElementById('hundredlog-wand-overlay');
+    if (!overlay || overlay.hidden) return;
+    const viewport = window.visualViewport;
+    const width = Math.max(240, Number(viewport?.width) || window.innerWidth || document.documentElement.clientWidth || 0);
+    const height = Math.max(240, Number(viewport?.height) || window.innerHeight || document.documentElement.clientHeight || 0);
+    const left = Math.max(0, Number(viewport?.offsetLeft) || 0);
+    const top = Math.max(0, Number(viewport?.offsetTop) || 0);
+    overlay.style.setProperty('--hundredlog-viewport-left', `${left}px`);
+    overlay.style.setProperty('--hundredlog-viewport-top', `${top}px`);
+    overlay.style.setProperty('--hundredlog-viewport-width', `${width}px`);
+    overlay.style.setProperty('--hundredlog-viewport-height', `${height}px`);
+}
+
+function installWandViewportTracking() {
+    if (wandViewportHandler) return;
+    let frame = 0;
+    wandViewportHandler = () => {
+        if (frame) cancelAnimationFrame(frame);
+        frame = requestAnimationFrame(() => {
+            frame = 0;
+            syncWandViewport();
+        });
+    };
+    window.addEventListener('resize', wandViewportHandler, { passive: true });
+    window.addEventListener('orientationchange', wandViewportHandler, { passive: true });
+    window.visualViewport?.addEventListener('resize', wandViewportHandler, { passive: true });
+    window.visualViewport?.addEventListener('scroll', wandViewportHandler, { passive: true });
+}
+
 function openWand() {
     const panel = document.getElementById('hundredlog');
     if (!panel) return;
@@ -1526,6 +1557,9 @@ function openWand() {
     if (!settingsHome) settingsHome = panel.parentElement;
     document.getElementById('hundredlog-wand-body').append(panel);
     overlay.hidden = false;
+    installWandViewportTracking();
+    syncWandViewport();
+    requestAnimationFrame(syncWandViewport);
     const menu = document.getElementById('extensionsMenu');
     if (menu) menu.style.display = 'none';
     render();
