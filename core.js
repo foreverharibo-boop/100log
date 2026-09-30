@@ -31,9 +31,21 @@ export function recentWindowProgress(chat, cursor, limit = RECENT_MESSAGE_LIMIT)
     return { completed: Math.min(completed, total), total, start };
 }
 
+export function characterKey(context) {
+    if (context?.groupId || context?.characterId === undefined || context?.characterId === null) return null;
+    const character = context.characters?.[Number(context.characterId)];
+    const uuid = String(character?.data?.extensions?.hundredlog_identity?.uuid
+        || character?.data?.extensions?.hundredlog_identity || '').trim();
+    if (uuid) return `uuid:${uuid}`;
+    const avatar = String(character?.avatar || '').trim();
+    if (avatar) return `avatar:${avatar}`;
+    return `index:${context.characterId}`;
+}
+
 export function chatKey(context) {
-    if (context.groupId || context.characterId === undefined || context.characterId === null || !context.chatId) return null;
-    return `${context.characterId}:${context.chatId}`;
+    const owner = characterKey(context);
+    if (!owner || !context?.chatId) return null;
+    return `${owner}:${context.chatId}`;
 }
 
 export function chunksOfDraft(text) {
@@ -167,6 +179,7 @@ export function suggestReplacement(value, candidate) {
     const matching = value.facts.filter((fact) => fact.active && !fact.archived && !fact.supersededBy
         && String(fact.entity ?? '').trim().toLocaleLowerCase() === entity
         && String(fact.attribute ?? '').trim().toLocaleLowerCase() === attribute
+        && (!candidate.sourceChatId || !fact.sourceChatId || fact.sourceChatId === candidate.sourceChatId)
         && Number.isInteger(fact.sourceId) && fact.sourceId < candidate.sourceId);
     return matching.sort((a, b) => b.sourceId - a.sourceId)[0]?.id ?? null;
 }

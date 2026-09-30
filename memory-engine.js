@@ -20,13 +20,13 @@ export function messageSignature(message) {
     return `${text.length}:${hash >>> 0}`;
 }
 
-export function initializeAuto(value, chat) {
-    if (!value.autoMemory) {
-        value.autoMemory = { cursor: recentWindowStart(chat), offset: 0, journal: [] };
+export function initializeAuto(chatState, chat) {
+    if (!chatState.autoMemory) {
+        chatState.autoMemory = { cursor: recentWindowStart(chat), offset: 0, journal: [] };
     }
-    value.autoMemory.journal ??= [];
-    value.autoMemory.offset ??= 0;
-    return value.autoMemory;
+    chatState.autoMemory.journal ??= [];
+    chatState.autoMemory.offset ??= 0;
+    return chatState.autoMemory;
 }
 
 export function memoryRequest(facts, rows, contextRows = []) {
@@ -166,11 +166,11 @@ export function applyCleanupActions(value, actions) {
     return { merged, archived, conflicts: conflicts.length, changes };
 }
 
-export function pruneToRecentWindow(value, chat, limit = RECENT_MESSAGE_LIMIT) {
+export function pruneToRecentWindow(value, chatState, chat, sourceChatId, limit = RECENT_MESSAGE_LIMIT) {
     if (!value) return { removedFacts: 0, removedCandidates: 0, cutoff: 0, changed: false };
     const cutoff = recentWindowStart(chat, limit);
     const keep = (record) => record?.pinned || record?.origin === 'manual'
-        || !Number.isInteger(record?.sourceId) || record.sourceId >= cutoff;
+        || record?.sourceChatId !== sourceChatId || !Number.isInteger(record?.sourceId) || record.sourceId >= cutoff;
     const factsBefore = value.facts?.length ?? 0;
     const candidatesBefore = value.candidates?.length ?? 0;
     value.facts = (value.facts ?? []).filter(keep);
@@ -180,28 +180,28 @@ export function pruneToRecentWindow(value, chat, limit = RECENT_MESSAGE_LIMIT) {
         if (fact.previousId && !ids.has(fact.previousId)) delete fact.previousId;
         if (fact.supersededBy && !ids.has(fact.supersededBy)) delete fact.supersededBy;
     }
-    const auto = initializeAuto(value, chat);
+    const auto = initializeAuto(chatState, chat);
     if (auto.cursor < cutoff) { auto.cursor = cutoff; auto.offset = 0; }
     auto.cursor = Math.min(auto.cursor, chat.length);
     auto.journal = auto.journal.filter((entry) => !entry.sources?.length || entry.sources.every(({ id }) => id >= cutoff));
-    value.extractionCursor = auto.cursor;
-    value.extractionOffset = auto.offset;
+    chatState.extractionCursor = auto.cursor;
+    chatState.extractionOffset = auto.offset;
     const removedFacts = factsBefore - value.facts.length;
     const removedCandidates = candidatesBefore - value.candidates.length;
     return { removedFacts, removedCandidates, cutoff, changed: removedFacts > 0 || removedCandidates > 0 };
 }
 
-export function resetRecentWindow(value, chat, limit = RECENT_MESSAGE_LIMIT) {
+export function resetRecentWindow(value, chatState, chat, sourceChatId, limit = RECENT_MESSAGE_LIMIT) {
     const cutoff = recentWindowStart(chat, limit);
-    value.facts = (value.facts ?? []).filter((fact) => fact.pinned || fact.origin !== 'auto');
-    value.candidates = [];
-    value.autoMemory = { cursor: cutoff, offset: 0, journal: [] };
-    value.extractionCursor = cutoff;
-    value.extractionOffset = 0;
+    value.facts = (value.facts ?? []).filter((fact) => fact.pinned || fact.origin !== 'auto' || fact.sourceChatId !== sourceChatId);
+    value.candidates = (value.candidates ?? []).filter((candidate) => candidate.sourceChatId !== sourceChatId);
+    chatState.autoMemory = { cursor: cutoff, offset: 0, journal: [] };
+    chatState.extractionCursor = cutoff;
+    chatState.extractionOffset = 0;
     return cutoff;
 }
 
-export function parseMemoryOperations(raw, rows, facts) {
+export function parseMemoryOperations(raw, rows, facts, sourceChatId = '') {
     let result;
     try { result = JSON.parse(String(raw).replace(/^\s*```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim()); }
     catch { throw new Error('기억 정리 응답을 읽지 못했어요. 기존 기억은 그대로 두었어요.'); }
@@ -225,7 +225,7 @@ export function parseMemoryOperations(raw, rows, facts) {
             && ['occurred', 'explicit_statement', 'promise', 'intention', 'explicit_cancellation'].includes(type);
         if (action === 'add') allowed &&= Boolean(text && MEMORY_KINDS[kind] && (!['promise', 'intention'].includes(type) || kind === 'commitment'));
         else allowed &&= Boolean(prior && isCurrent(prior) && prior.active && !prior.pinned && !used.has(prior.id)
-            && (!Number.isInteger(prior.sourceId) || source?.id >= prior.sourceId));
+            && (prior.sourceChatId !== sourceChatId || !Number.isInteger(prior.sourceId) || source?.id >= prior.sourceId));
         if (action === 'update') allowed &&= Boolean(text && (!['promise', 'intention'].includes(type) || kind === 'commitment'));
         if (action === 'complete') allowed &&= kind === 'commitment' && type === 'occurred';
         if (action === 'cancel') allowed &&= kind === 'commitment' && type === 'explicit_cancellation';
@@ -238,7 +238,7 @@ export function parseMemoryOperations(raw, rows, facts) {
     return { operations: valid, rejected: rejected + Math.max(0, result.operations.length - 16) };
 }
 
-export function applyMemoryOperations(value, operations) {
+export function applyMemoryOperations(value, operations, sourceChatId = '') {
     const before = new Map(value.facts.map((fact) => [fact.id, copy(fact)]));
     let added = 0, updated = 0, archived = 0, skipped = 0;
     for (const op of operations) {
@@ -249,19 +249,19 @@ export function applyMemoryOperations(value, operations) {
                 || value.facts.filter((fact) => isCurrent(fact) && fact.active).length >= MAX_FACTS)) { skipped++; continue; }
             if (prior && prior.text === op.text && JSON.stringify(prior.knowledge ?? {}) === JSON.stringify(op.knowledge)) { skipped++; continue; }
             const next = { id: newId(), text: op.text, kind: op.kind, scope: ['state', 'temporary'].includes(op.kind) ? 'scene' : 'always', active: true, origin: 'auto',
-                sourceId: op.sourceId, sourceText: op.sourceText, sourceSignature: op.sourceSignature, importance: op.importance,
+                sourceChatId, sourceId: op.sourceId, sourceText: op.sourceText, sourceSignature: op.sourceSignature, importance: op.importance,
                 knowledge: { ...normalizeKnowledge(prior?.knowledge), ...op.knowledge }, reason: op.reason, createdAt: Date.now() };
             if (prior) {
                 next.previousId = prior.id;
                 prior.active = false; prior.archived = 'updated'; prior.supersededBy = next.id;
-                prior.endedAtSourceId = op.sourceId; prior.closedEvidence = op.sourceText;
+                prior.endedAtSourceChatId = sourceChatId; prior.endedAtSourceId = op.sourceId; prior.closedEvidence = op.sourceText;
                 updated++;
             } else added++;
             value.facts.push(next);
         } else {
             prior.active = false;
             prior.archived = op.action === 'complete' ? 'completed' : op.action === 'cancel' ? 'cancelled' : 'past_scene';
-            prior.endedAtSourceId = op.sourceId; prior.closedEvidence = op.sourceText; prior.archiveReason = op.reason;
+            prior.endedAtSourceChatId = sourceChatId; prior.endedAtSourceId = op.sourceId; prior.closedEvidence = op.sourceText; prior.archiveReason = op.reason;
             archived++;
         }
     }
@@ -273,16 +273,16 @@ export function applyMemoryOperations(value, operations) {
     return { added, updated, archived, skipped, changes };
 }
 
-export function recordMemoryBatch(value, { rows, start, offset, nextCursor, nextOffset, changes }) {
-    const auto = value.autoMemory;
+export function recordMemoryBatch(chatState, { rows, start, offset, nextCursor, nextOffset, changes }) {
+    const auto = chatState.autoMemory;
     auto.journal.push({ sources: rows.map(({ id, signature }) => ({ id, signature })), start, offset, changes });
     auto.cursor = nextCursor; auto.offset = nextOffset;
 }
 
 // 가장 최근 자동 반영만 되돌린다. 처리 위치는 유지해서 같은 내용이 즉시 다시 추가되지 않는다.
 // 이후 해당 원문이 편집·리롤되면 reconcileMemory가 빈 변경 기록을 기준으로 다시 읽는다.
-export function undoLatestMemoryBatch(value) {
-    const journal = value?.autoMemory?.journal;
+export function undoLatestMemoryBatch(value, chatState) {
+    const journal = chatState?.autoMemory?.journal;
     if (!Array.isArray(journal)) return 0;
     const entry = [...journal].reverse().find((item) => Array.isArray(item.changes) && item.changes.length && !item.undoneAt);
     if (!entry) return 0;
@@ -304,8 +304,8 @@ export function undoLatestMemoryBatch(value) {
 }
 
 // Reverse only this extension's unchanged records. Manual edits survive rollbacks.
-export function reconcileMemory(value, chat) {
-    const auto = initializeAuto(value, chat);
+export function reconcileMemory(value, chatState, chat) {
+    const auto = initializeAuto(chatState, chat);
     const first = auto.journal.findIndex((entry) => entry.sources.some(({ id, signature }) => messageSignature(chat[id]) !== signature));
     if (first < 0) { auto.cursor = Math.min(auto.cursor, chat.length); return false; }
     for (const entry of auto.journal.slice(first).reverse()) {

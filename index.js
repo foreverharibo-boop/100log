@@ -8,6 +8,7 @@ const LEGACY_KEY_STORAGE = 'memorybean.typesafeKey';
 const EMBEDDING_KEY_PREFIX = 'hundredlog.embeddingKey.';
 const DEVELOPER_UNLOCK_STORAGE = 'hundredlog.developerUnlocked';
 const DEVELOPER_PASSWORD = '130918';
+const IDENTITY_FIELD = 'hundredlog_identity';
 const JEV_URL = 'https://api.typesafe.ai/v1/systemone';
 const GOOGLE_TRANSLATE_URL = 'https://translate.googleapis.com/translate_a/single';
 const EMBEDDING_DIMENSIONS = 768;
@@ -432,6 +433,10 @@ function settings() {
     config.developerMemorySelection ??= false;
     config.maxInjectedMemories = positiveInteger(config.maxInjectedMemories, 12);
     config.embeddingProvider = config.embeddingProvider === 'vertex-express' ? 'vertex-express' : 'google-ai-studio';
+    config.characterStores ??= {};
+    config.characterIdentityRegistry ??= { byAvatar: {}, records: {} };
+    config.characterIdentityRegistry.byAvatar ??= {};
+    config.characterIdentityRegistry.records ??= {};
     delete config.jevMemorySelection;
     delete config.injectMemory;
     delete config.strictReview;
@@ -440,24 +445,123 @@ function settings() {
     return config;
 }
 
-function data(create = true) {
-    const ctx = context();
-    if (!chatKey(ctx)) return null;
-    if (!ctx.chatMetadata[NAME] && ctx.chatMetadata[LEGACY_NAME]) {
-        ctx.chatMetadata[NAME] = JSON.parse(JSON.stringify(ctx.chatMetadata[LEGACY_NAME]));
-        ctx.chatMetadata[NAME].migratedFromMemorybean = true;
+function cleanUuid(value) {
+    const normalized = String(value ?? '').trim();
+    return /^[a-zA-Z0-9][a-zA-Z0-9_-]{7,127}$/.test(normalized) ? normalized : '';
+}
+
+function createUuid() {
+    return globalThis.crypto?.randomUUID?.() || `log100-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+}
+
+function ensureCharacterUuid(ctx = context()) {
+    if (ctx.groupId || ctx.characterId === undefined || ctx.characterId === null) return '';
+    const characterId = Number(ctx.characterId);
+    const character = ctx.characters?.[characterId];
+    const config = settings();
+    const registry = config.characterIdentityRegistry;
+    const avatar = String(character?.avatar || '').trim();
+    const registryKey = avatar || `index:${characterId}`;
+    const embedded = cleanUuid(character?.data?.extensions?.[IDENTITY_FIELD]?.uuid
+        || character?.data?.extensions?.[IDENTITY_FIELD]);
+    let uuid = embedded || cleanUuid(registry.byAvatar[registryKey]);
+    const activeAvatars = new Set((ctx.characters ?? []).map((entry) => String(entry?.avatar || '').trim()).filter(Boolean));
+    const registeredOwner = String(registry.records?.[uuid]?.avatar || '').trim();
+    if (!uuid || (registeredOwner && registeredOwner !== avatar && activeAvatars.has(registeredOwner))) uuid = createUuid();
+    const name = String(character?.name || ctx.name2 || '');
+    const previous = registry.records[uuid] ?? {};
+    const registryChanged = registry.byAvatar[registryKey] !== uuid || previous.avatar !== avatar || previous.name !== name;
+    registry.byAvatar[registryKey] = uuid;
+    if (registryChanged) registry.records[uuid] = { ...previous, uuid, avatar, name, updatedAt: Date.now() };
+    if (character) {
+        character.data ??= {};
+        character.data.extensions ??= {};
+        const existing = character.data.extensions[IDENTITY_FIELD];
+        const createdAt = Number(existing?.createdAt) || Date.now();
+        const payload = { version: 1, uuid, createdAt };
+        character.data.extensions[IDENTITY_FIELD] = payload;
+        if (!embedded || embedded !== uuid) {
+            Promise.resolve(ctx.writeExtensionField?.(characterId, IDENTITY_FIELD, payload))
+                .catch((error) => console.warn('[100LOG] 캐릭터 UUID 카드 저장 실패:', error));
+        }
     }
-    if (create) ctx.chatMetadata[NAME] ??= { facts: [], candidates: [], extractionCursor: 0 };
-    const value = ctx.chatMetadata[NAME];
-    if (!value) return null;
+    if (registryChanged) ctx.saveSettingsDebounced?.();
+    return uuid;
+}
+
+function sourceChatId(ctx = context()) {
+    return String(ctx.chatId ?? '');
+}
+
+function chatState(value, ctx = context(), create = true) {
+    if (!value || !ctx.chatId) return null;
+    value.chats ??= {};
+    const key = sourceChatId(ctx);
+    if (create) value.chats[key] ??= { extractionCursor: 0, extractionOffset: 0 };
+    return value.chats[key] ?? null;
+}
+
+function mergeLegacyChatData(value, legacy, chatId) {
+    if (!legacy || typeof legacy !== 'object') return false;
     value.facts ??= [];
     value.candidates ??= [];
-    value.extractionCursor ??= 0;
-    value.extractionOffset ??= 0;
+    const used = new Set(value.facts.map((fact) => fact.id));
+    const idMap = new Map();
+    for (const original of legacy.facts ?? []) {
+        const fact = JSON.parse(JSON.stringify(original));
+        const oldId = fact.id || newId();
+        fact.id = used.has(oldId) ? newId() : oldId;
+        used.add(fact.id);
+        idMap.set(oldId, fact.id);
+        if (!fact.sourceChatId && Number.isInteger(fact.sourceId)) fact.sourceChatId = chatId;
+        value.facts.push(fact);
+    }
+    for (const fact of value.facts) {
+        if (idMap.has(fact.previousId)) fact.previousId = idMap.get(fact.previousId);
+        if (idMap.has(fact.supersededBy)) fact.supersededBy = idMap.get(fact.supersededBy);
+    }
+    for (const original of legacy.candidates ?? []) {
+        const candidate = JSON.parse(JSON.stringify(original));
+        if (!candidate.sourceChatId && Number.isInteger(candidate.sourceId)) candidate.sourceChatId = chatId;
+        value.candidates.push(candidate);
+    }
+    const state = chatState(value, { chatId }, true);
+    if (legacy.autoMemory) state.autoMemory = JSON.parse(JSON.stringify(legacy.autoMemory));
+    state.extractionCursor = Number.isInteger(legacy.extractionCursor) ? legacy.extractionCursor : state.autoMemory?.cursor ?? 0;
+    state.extractionOffset = Number.isInteger(legacy.extractionOffset) ? legacy.extractionOffset : state.autoMemory?.offset ?? 0;
+    if (legacy.lastActivity && !value.lastActivity) value.lastActivity = JSON.parse(JSON.stringify(legacy.lastActivity));
+    return Boolean((legacy.facts?.length ?? 0) || (legacy.candidates?.length ?? 0) || legacy.autoMemory);
+}
+
+function data(create = true) {
+    const ctx = context();
+    if (ctx.groupId || !ctx.chatId || ctx.characterId === undefined || ctx.characterId === null) return null;
+    const uuid = ensureCharacterUuid(ctx);
+    if (!uuid) return null;
+    const config = settings();
+    const ownerKey = `uuid:${uuid}`;
+    ctx.chatMetadata ??= {};
+    const legacy = ctx.chatMetadata[NAME] ?? ctx.chatMetadata[LEGACY_NAME];
+    const marker = ctx.chatMetadata.hundredlogCharacterStoreMigration;
+    if (create || (legacy && marker !== ownerKey)) config.characterStores[ownerKey] ??= { version: 2, uuid, facts: [], candidates: [], chats: {} };
+    const value = config.characterStores[ownerKey];
+    if (!value) return null;
+    value.version = 2;
+    value.uuid = uuid;
+    value.facts ??= [];
+    value.candidates ??= [];
+    value.chats ??= {};
+    const state = chatState(value, ctx, create);
+    if (legacy && marker !== ownerKey) {
+        mergeLegacyChatData(value, legacy, sourceChatId(ctx));
+        ctx.chatMetadata.hundredlogCharacterStoreMigration = ownerKey;
+        ctx.saveSettingsDebounced?.();
+        void Promise.resolve(ctx.saveMetadata?.()).catch((error) => console.warn('[100LOG] 기존 규칙 이전 표시 저장 실패:', error));
+    }
     value.embeddingIndex ??= { provider: '', model: '', entries: {} };
     value.embeddingIndex.entries ??= {};
     for (const fact of value.facts) fact.knowledge ??= {};
-    pruneToRecentWindow(value, ctx.chat);
+    if (state) pruneToRecentWindow(value, state, ctx.chat, sourceChatId(ctx));
     const currentIds = new Set(value.facts.filter((fact) => fact.active && isCurrent(fact)).map((fact) => fact.id));
     value.cleanupConflicts = (value.cleanupConflicts ?? []).filter((entry) => Array.isArray(entry.ids) && entry.ids.length === 2 && entry.ids.every((id) => currentIds.has(id)));
     value.cleanupWarnings = (value.cleanupWarnings ?? []).filter((entry) => Array.isArray(entry.ids) && entry.ids.some((id) => currentIds.has(id)));
@@ -465,9 +569,12 @@ function data(create = true) {
 }
 
 async function save() {
+    const ctx = context();
     const value = data(false);
-    if (value) pruneToRecentWindow(value, context().chat);
-    await context().saveMetadata();
+    const state = chatState(value, ctx, false);
+    if (value && state) pruneToRecentWindow(value, state, ctx.chat, sourceChatId(ctx));
+    ctx.saveSettingsDebounced?.();
+    await ctx.saveMetadata();
     await clearLegacyPrompt();
 }
 function status(value) {
@@ -697,7 +804,8 @@ function render() {
     if (intervalWarning) intervalWarning.hidden = settings().analysisInterval < 50;
     if ($id('activity')) $id('activity').textContent = value?.lastActivity?.text || '아직 기록된 작업이 없어요.';
     $id('sync-now').disabled = working || !value || !settings().autoMemory;
-    $id('undo-last').disabled = working || !value || !value.autoMemory?.journal?.some((entry) => entry.changes?.length && !entry.undoneAt);
+    const state = chatState(value, context(), false);
+    $id('undo-last').disabled = working || !value || !state?.autoMemory?.journal?.some((entry) => entry.changes?.length && !entry.undoneAt);
     refreshProfiles();
     const allRecords = value ? [...value.facts, ...value.candidates] : [];
     const missing = allRecords.filter((record) => !hasUsableKoreanText(record)).length;
@@ -995,7 +1103,7 @@ async function runAutomaticCleanup(value, ctx, profileId, sameChat) {
     value.lastCleanupAt = Date.now();
     value.lastCleanupReview = { checked: review.checked, rejected: review.rejected, resolved: review.conflictsResolved, pending: review.conflictsPending, at: value.lastCleanupAt };
     value.lastCleanupSignature = cleanupSignature(value.facts);
-    const journal = value.autoMemory?.journal;
+    const journal = chatState(value, ctx, false)?.autoMemory?.journal;
     if (result.changes.length && Array.isArray(journal) && journal.length) journal.at(-1).changes.push(...result.changes);
     return result;
 }
@@ -1020,7 +1128,7 @@ function completedAssistantCount(ctx, start = 0) {
 }
 
 function memoryProgressText(value, ctx) {
-    const auto = initializeAuto(value, ctx.chat);
+    const auto = initializeAuto(chatState(value, ctx), ctx.chat);
     const count = completedAssistantCount(ctx, auto.cursor);
     const interval = positiveInteger(settings().analysisInterval, 1);
     const progress = recentWindowProgress(ctx.chat, auto.cursor);
@@ -1029,7 +1137,7 @@ function memoryProgressText(value, ctx) {
 
 function memoryDue(value = data(false), ctx = context()) {
     if (!value) return false;
-    const auto = initializeAuto(value, ctx.chat);
+    const auto = initializeAuto(chatState(value, ctx), ctx.chat);
     if (auto.offset > 0) return true;
     return completedAssistantCount(ctx, auto.cursor) >= positiveInteger(settings().analysisInterval, 1);
 }
@@ -1067,9 +1175,11 @@ async function performMemorySync({ rebuildRecent = false, force = false } = {}) 
     const key = chatKey(ctx);
     const value = data();
     if (!value || (!settings().autoMemory && !rebuildRecent)) return;
+    const state = chatState(value, ctx);
+    const currentSourceChatId = sourceChatId(ctx);
     const epoch = memoryEpoch;
     const sameChat = () => chatKey(context()) === key && data(false) === value && epoch === memoryEpoch;
-    let auto = initializeAuto(value, ctx.chat);
+    let auto = initializeAuto(state, ctx.chat);
     if (!rebuildRecent && !force && !memoryDue(value, ctx)) return;
     memoryPending = false;
     extracting = true; stopExtractionRequested = false;
@@ -1079,10 +1189,10 @@ async function performMemorySync({ rebuildRecent = false, force = false } = {}) 
     let knowledgeChecked = 0, knowledgeCorrected = 0, knowledgeRemoved = 0, jevValidationSkipped = false;
     let cleanupResult = { merged: 0, archived: 0, conflicts: 0, changes: [], skipped: true };
     try {
-        if (rebuildRecent) resetRecentWindow(value, ctx.chat);
-        else pruneToRecentWindow(value, ctx.chat);
-        auto = initializeAuto(value, ctx.chat);
-        if (reconcileMemory(value, ctx.chat)) await save();
+        if (rebuildRecent) resetRecentWindow(value, state, ctx.chat, currentSourceChatId);
+        else pruneToRecentWindow(value, state, ctx.chat, currentSourceChatId);
+        auto = initializeAuto(state, ctx.chat);
+        if (reconcileMemory(value, state, ctx.chat)) await save();
         // A user message alone is not a completed RP exchange.
         let end = ctx.chat.length;
         while (end > 0 && (ctx.chat[end - 1]?.is_user || ctx.chat[end - 1]?.is_system || ctx.chat[end - 1]?.is_hidden || ctx.chat[end - 1]?.hidden || !String(ctx.chat[end - 1]?.mes ?? '').trim())) end--;
@@ -1109,7 +1219,7 @@ async function performMemorySync({ rebuildRecent = false, force = false } = {}) 
                     status('대화가 수정되어 바뀐 내용으로 다시 정리할게요.');
                     return;
                 }
-                parsed = parseMemoryOperations(raw, rows, value.facts);
+                parsed = parseMemoryOperations(raw, rows, value.facts, currentSourceChatId);
                 if (parsed.operations.length) {
                     status(`Jev가 새 규칙 ${parsed.operations.length}개와 인물별 지식을 검증 중이에요…`);
                     const review = await reviewExtractedKnowledge(parsed.operations, rows, contextRows, value.facts);
@@ -1126,7 +1236,7 @@ async function performMemorySync({ rebuildRecent = false, force = false } = {}) 
                         status(`Jev가 복합 규칙 ${review.compoundOperations.length}개를 발견해 인물별 지식 경계에 맞게 다시 나누고 있어요…`);
                         const splitRaw = await generateUtility(ctx, compoundSplitRequest(review.compoundOperations, value.facts, rows, contextRows), profileId);
                         if (!sameChat()) return;
-                        const splitParsed = parseMemoryOperations(splitRaw, rows, value.facts);
+                        const splitParsed = parseMemoryOperations(splitRaw, rows, value.facts, currentSourceChatId);
                         const splitReview = await reviewExtractedKnowledge(splitParsed.operations, rows, contextRows, value.facts);
                         if (!sameChat()) return;
                         parsed.operations.push(...splitReview.operations);
@@ -1142,12 +1252,12 @@ async function performMemorySync({ rebuildRecent = false, force = false } = {}) 
                 }
             }
             if (!sameChat()) return;
-            const result = applyMemoryOperations(value, parsed.operations);
-            recordMemoryBatch(value, { rows: tracked, start, offset, nextCursor: batch.nextCursor, nextOffset: batch.nextOffset, changes: result.changes });
+            const result = applyMemoryOperations(value, parsed.operations, currentSourceChatId);
+            recordMemoryBatch(state, { rows: tracked, start, offset, nextCursor: batch.nextCursor, nextOffset: batch.nextOffset, changes: result.changes });
             changed += result.added + result.updated + result.archived;
             added += result.added; updated += result.updated; archived += result.archived;
             uncertain += parsed.rejected + result.skipped;
-            value.extractionCursor = auto.cursor; value.extractionOffset = auto.offset;
+            state.extractionCursor = auto.cursor; state.extractionOffset = auto.offset;
             await save(); render();
         }
         if (sameChat() && !stopExtractionRequested) {
@@ -1190,7 +1300,8 @@ export function installMemoryHooks(ctx = context()) {
         if (memoryRun) await memoryRun;
         if (memoryPending && !busy && !extracting && !translating) await syncMemories({ force: memoryForcePending });
         const value = data(false);
-        if (value && reconcileMemory(value, context().chat)) await save();
+        const state = chatState(value, context(), false);
+        if (value && state && reconcileMemory(value, state, context().chat)) await save();
         await clearLegacyPrompt();
     });
     on('CHARACTER_MESSAGE_RENDERED', () => scheduleMemory());
@@ -1204,7 +1315,8 @@ export function installMemoryHooks(ctx = context()) {
         memoryEpoch++;
         const value = data(false);
         if (value) {
-            reconcileMemory(value, context().chat);
+            const state = chatState(value, context(), false);
+            if (state) reconcileMemory(value, state, context().chat);
             void save().catch((error) => status(error.message));
         }
         scheduleMemory({ force: true });
@@ -1264,7 +1376,7 @@ async function ensureFactEmbeddings(facts, { announce = true } = {}) {
             if (announce && missing.length > batchSize) status(`${embeddingLabel(provider)} 규칙 임베딩 ${Math.min(start + batch.length, missing.length)}/${missing.length}`);
         }
     }
-    if (changed) await context().saveMetadata();
+    if (changed) context().saveSettingsDebounced?.();
     return index;
 }
 
@@ -1390,6 +1502,7 @@ async function runHidden(key, lastMessage, selectedContext = null, mode = 'norma
                 text: `${mode === 'swipe' ? '스와이프 · ' : mode === 'regenerate' ? '재생성 · ' : ''}관련 규칙 ${injected}개 주입 · 전체 규칙 ${facts.length}개 검수 · ${flagged.length ? `충돌 ${flagged.length}개 수정` : '충돌 없음'}`,
                 at: Date.now(), type: 'review',
             };
+            context().saveSettingsDebounced?.();
         }
         try { await commitReply(final, key, lastMessage, mode); }
         catch (error) { if (store) store.lastActivity = previousActivity; throw error; }
@@ -1778,7 +1891,7 @@ async function main() {
     $id('undo-last')?.addEventListener('click', async () => {
         const value = data(false);
         if (!value) return;
-        const count = undoLatestMemoryBatch(value);
+        const count = undoLatestMemoryBatch(value, chatState(value, context(), false));
         if (!count) { status('되돌릴 자동 변경이 없거나, 이후 직접 수정·자동 변경 잠금한 기억이라 건드리지 않았어요.'); render(); return; }
         await save();
         render();
@@ -1822,17 +1935,19 @@ async function main() {
     ctx.eventSource.on((ctx.eventTypes ?? ctx.event_types).CHAT_CHANGED, () => {
         memoryEpoch++; normalGenerating = false; memoryPending = false;
         const value = data();
-        if (value) initializeAuto(value, context().chat);
+        const state = chatState(value, context(), false);
+        if (state) initializeAuto(state, context().chat);
         status('준비됐어요.'); render();
         void clearLegacyPrompt();
-        if (value && value.autoMemory.cursor < context().chat.length) scheduleMemory();
+        if (state?.autoMemory?.cursor < context().chat.length) scheduleMemory();
     });
     const initial = data();
-    if (initial) initializeAuto(initial, ctx.chat);
+    const initialState = chatState(initial, ctx, false);
+    if (initialState) initializeAuto(initialState, ctx.chat);
     await clearLegacyPrompt();
     render();
     addWandButton();
-    if (initial && initializeAuto(initial, ctx.chat).cursor < ctx.chat.length) scheduleMemory();
+    if (initialState && initializeAuto(initialState, ctx.chat).cursor < ctx.chat.length) scheduleMemory();
 }
 
 const initialContext = context();
