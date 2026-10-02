@@ -326,6 +326,7 @@ export async function reviewExtractedKnowledge(operations, rows, contextRows = [
                 proposed_status: check.proposedStatus,
                 proposed_memory: operation.text,
                 exact_new_evidence: operation.sourceText ?? '',
+                source_message: source ? { id: source.id, role: source.role, name: source.name, text: source.text } : null,
                 previous_memory: prior ? { text: prior.text, knowledge: normalizeKnowledge(prior.knowledge) } : null,
             };
         });
@@ -343,11 +344,11 @@ export async function reviewExtractedKnowledge(operations, rows, contextRows = [
                 },
             } : {
                 type: 'choice',
-                instructions: `Decide whether the character in review_checks[${index}] knows EVERY clause of proposed_memory at this exact point in the story. Evaluate only recent_context, new_messages, exact_new_evidence, and previous_memory. A name appearing in the memory or knowing only one clause is not enough. For a private exchange, an absent third party does not know what was said unless sharing is shown. If the compound memory contains any clause the character does not know, choose unknown. Do not invent off-screen information transfer.`,
+                instructions: `Decide whether the character in review_checks[${index}] knows EVERY clause of proposed_memory at this exact point in the story. Evaluate only source_message, recent_context, new_messages, exact_new_evidence, and previous_memory. Follow demonstrated INFORMATION FLOW rather than physical scene presence. A character knows information when they directly experienced or witnessed every clause, disclosed it themselves, or received/accessed it through any shown conversation, communication channel, record, observation, monitoring, interception, or other exposure. Successful transmission or shown access counts even when the character is absent from the current scene; do not require a reply or later on-screen reaction unless the story explicitly says the information was unread or inaccessible. Choose unknown only when the story positively supports non-receipt or ignorance, such as a private or concealed exchange with no exposure, an unsent or failed transmission, inaccessible information, or explicit unawareness. Absence, silence, lack of reply, or not participating in the current scene never proves unknown. A name appearing in the memory or knowing only one clause is not enough. If neither complete knowledge nor supported ignorance is established, choose unverified. Do not invent off-screen information transfer.`,
                 criteria: {
-                    known: 'The character directly participated, witnessed the entire event, was told every clause, disclosed it themselves, or previous_memory explicitly proves complete knowledge.',
-                    unknown: 'The context supports that the character did not witness or receive at least one clause, was outside the private exchange, or is explicitly unaware.',
-                    unverified: 'The supplied context cannot establish either complete knowledge or supported lack of knowledge.',
+                    known: 'Demonstrated information flow proves the character received, accessed, observed, monitored, intercepted, disclosed, experienced, or witnessed every clause, regardless of current scene presence.',
+                    unknown: 'Positive evidence proves the character did not receive or access at least one clause, the information remained private or concealed from them, transmission failed or was not sent, or they are explicitly unaware.',
+                    unverified: 'The supplied context establishes neither complete knowledge nor supported ignorance; scene absence, silence, and lack of reply belong here.',
                 },
             };
         });
@@ -370,8 +371,9 @@ export async function reviewExtractedKnowledge(operations, rows, contextRows = [
                 }
                 return;
             }
+            const requiredConfidence = answer?.choice === 'unknown' ? .8 : .65;
             if (answer?.type !== 'choice' || !['known', 'unknown', 'unverified'].includes(answer.choice)
-                || !Number.isFinite(confidence) || confidence < .65) {
+                || !Number.isFinite(confidence) || confidence < requiredConfidence) {
                 delete operation.knowledge[check.character];
                 removed++;
                 return;
@@ -402,7 +404,7 @@ function compoundSplitRequest(operations, facts, rows, contextRows = []) {
     }));
     return [
         'Split ONLY the rejected compound continuity memories below into atomic Korean memory operations. Return JSON only in exactly this shape: {"operations":[{"action":"add|update|complete|cancel|archive","id":"existing id or null","kind":"fact|relationship|commitment|knowledge|temporary","text":"one atomic Korean memory","sourceId":0,"evidence":"exact quote from NEW_MESSAGES","evidenceType":"occurred|explicit_statement|promise|intention|explicit_cancellation","confidence":0.0,"importance":3,"retention":"summary|recent","knowledge":{"Name":"known|unknown"},"reason":"short Korean reason"}]}.',
-        'Each output operation must contain exactly ONE independently verifiable event, statement, promise, intention, or knowledge change. If two clauses were witnessed or learned by different people, they MUST be separate operations. Never combine an event with a later private conversation, reaction, message, advice request, secret, or plan. A character may be marked known only when they know every clause of that one atomic memory. Omit a character when their knowledge is not established.',
+        'Each output operation must contain exactly ONE independently verifiable event, statement, promise, intention, or knowledge change. If two clauses were witnessed or learned by different people, they MUST be separate operations. Never combine an event with a later private conversation, reaction, message, advice request, secret, or plan. Determine knowledge from demonstrated information flow rather than scene presence. A character may be marked known only when they know every clause through direct experience, communication, records, observation, monitoring, interception, or another shown exposure. Mark unknown only when non-receipt or ignorance is positively supported; absence, silence, or lack of reply is not proof. Omit a character when neither state is established.',
         'Preserve only claims directly supported by NEW_MESSAGES. Evidence must be an exact excerpt from the matching numbered source. CONTEXT is interpretation only. Do not invent off-screen events or knowledge transfer. Do not repeat an already-current memory. For an update, use the existing id only when the atomic output genuinely replaces that same memory; otherwise use add. Protected or paused memories must not be changed.',
         `REJECTED_COMPOUND_OPERATIONS: ${JSON.stringify(operations)}`,
         `CURRENT_MEMORIES: ${JSON.stringify(current)}`,
