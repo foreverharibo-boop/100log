@@ -804,13 +804,17 @@ async function save() {
 function status(value) {
     statusText = value;
     if ($id('status')) $id('status').textContent = value;
+    if (extracting) {
+        const node = $id('collection-status');
+        if (node) { node.textContent = value; node.hidden = false; }
+    }
 }
 
 function setDeveloperUnlocked(unlocked) {
     try {
         if (unlocked) localStorage.setItem(DEVELOPER_UNLOCK_STORAGE, 'true');
         else localStorage.removeItem(DEVELOPER_UNLOCK_STORAGE);
-    } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 813 }); /* local storage can be unavailable in restricted browser contexts */ }
+    } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 817 }); /* local storage can be unavailable in restricted browser contexts */ }
     render();
 }
 
@@ -891,7 +895,7 @@ function appendOriginal(parent, record) {
 function refreshProfiles() {
     if (!$id('extraction-profile')) return;
     let profiles = [];
-    try { profiles = availableProfiles(context()); } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 894 }); /* Keep saved choices visible for correction. */ }
+    try { profiles = availableProfiles(context()); } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 898 }); /* Keep saved choices visible for correction. */ }
     for (const [id, key] of [['extraction-profile', 'extractionProfileId'], ['translation-profile', 'translationProfileId']]) {
         const select = $id(id);
         const choices = id === 'translation-profile' ? [['@extraction', '사실 추출용 프로필과 동일']] : [];
@@ -944,7 +948,7 @@ export async function translateRecords(mode = 'missing') {
             render();
         }
         status(stopTranslationRequested ? `${done}/${targets.length}개 번역 후 중단했어요. 완료한 번역은 저장됐어요.` : `${done}개를 한국어로 번역했어요. 원문 보기에서 원래 내용을 확인할 수 있어요.`);
-    } catch (error) { diagnosticError('번역', error, { site: 947 }); status(`번역 중단 · ${done}개 저장됨: ${error.message}`); }
+    } catch (error) { diagnosticError('번역', error, { site: 951 }); status(`번역 중단 · ${done}개 저장됨: ${error.message}`); }
     finally { translating = false; render(); if (memoryPending) scheduleMemory(); }
 }
 
@@ -1251,7 +1255,7 @@ function render() {
             try {
                 approveFact(value, restored, current?.active && isCurrent(current) ? current.id : null);
                 await save(); render(); status('현재 기억으로 복원하고 자동 변경 잠금했어요.');
-            } catch (error) { diagnosticError('기타', error, { site: 1254 }); status(error.message); }
+            } catch (error) { diagnosticError('기타', error, { site: 1258 }); status(error.message); }
         }));
         $id('history').append(item);
     }
@@ -1277,7 +1281,7 @@ function render() {
                 approveFact(value, candidate, replacement.value || null);
                 value.candidates = value.candidates.filter((entry) => entry.id !== candidate.id);
                 await save(); render();
-            } catch (error) { diagnosticError('기타', error, { site: 1280 }); status(error.message); }
+            } catch (error) { diagnosticError('기타', error, { site: 1284 }); status(error.message); }
         }));
         actions.append(makeButton('제외', async () => { value.candidates = value.candidates.filter((entry) => entry.id !== candidate.id); await save(); render(); }));
         item.append(actions);
@@ -1474,13 +1478,18 @@ function memoryDue(value = data(false), ctx = context()) {
 
 function scheduleMemory({ force = false } = {}) {
     if (!settings().autoMemory || !chatKey(context())) return;
+    force ||= memoryForcePending;
     if (!force && !memoryDue()) { memoryPending = false; render(); return; }
     memoryPending = true;
     memoryForcePending ||= force;
     if (memoryTimer !== null) clearTimeout(memoryTimer);
     memoryTimer = setTimeout(() => {
         memoryTimer = null;
-        if (!memoryPending || normalGenerating || busy || extracting || translating) return;
+        if (!memoryPending) return;
+        if (normalGenerating || busy || extracting || translating) {
+            scheduleMemory({ force: memoryForcePending });
+            return;
+        }
         const runForced = memoryForcePending;
         memoryForcePending = false;
         void syncMemories({ force: runForced });
@@ -1538,7 +1547,7 @@ function queueSourceMutation() {
     // that burst to finish so it is handled once instead of as dozens of edits.
     sourceMutationTimer = setTimeout(() => {
         sourceMutationTimer = null;
-        void processSourceMutation().catch((error) => { diagnosticError('규칙 저장', error, { site: 1541 }); status(error.message); });
+        void processSourceMutation().catch((error) => { diagnosticError('규칙 저장', error, { site: 1550 }); status(error.message); });
     }, 900);
 }
 
@@ -1556,6 +1565,7 @@ async function performMemorySync({ rebuildRecent = false, force = false } = {}) 
     memoryPending = false;
     extracting = true; stopExtractionRequested = false;
     render();
+    status('최근 대화 수집을 시작하고 있어요…');
     let changed = 0, added = 0, updated = 0, archived = 0, uncertain = 0, factChecked = 0, factRejected = 0, factApproved = 0;
     const analyzedAssistantIds = new Set();
     let proposedCount = 0, structuralRejected = 0, storeSkipped = 0, splitProposed = 0;
@@ -1669,8 +1679,15 @@ async function performMemorySync({ rebuildRecent = false, force = false } = {}) 
             status(stopExtractionRequested ? `수집 중단 · 규칙 ${changed}개 반영. 다음에 이어서 수집해요.${factResult}${knowledgeResult}`
                 : `최근 ${RECENT_MESSAGE_LIMIT}개 대화 수집 완료 · 규칙 ${changed}개 반영${uncertain ? ` · 불확실하거나 중복된 제안 ${uncertain}개는 건너뛰었어요` : ''}${factResult}${knowledgeResult}${cleanupText}`);
         }
-    } catch (error) { diagnosticError('규칙 수집', error, { site: 1672 }); if (sameChat()) status(`기억 정리를 멈췄어요: ${error.message} ‘지금 정리’로 다시 시도할 수 있어요.`); }
-    finally { extracting = false; render(); }
+    } catch (error) { diagnosticError('규칙 수집', error, { site: 1682 }); if (sameChat()) status(`기억 정리를 멈췄어요: ${error.message} ‘지금 정리’로 다시 시도할 수 있어요.`); }
+    finally {
+        extracting = false;
+        if (chatKey(context()) === key && data(false) === value && epoch !== memoryEpoch
+            && settings().autoMemory && !stopExtractionRequested) {
+            memoryPending = true; memoryForcePending = true;
+        }
+        render();
+    }
 }
 
 export function installMemoryHooks(ctx = context()) {
@@ -1684,7 +1701,7 @@ export function installMemoryHooks(ctx = context()) {
                 const result = callback(...args);
                 if (result?.then) return result.catch((error) => { diagnosticError('미처리', error); throw error; });
                 return result;
-            } catch (error) { diagnosticError('기타', error, { site: 1687 }); diagnosticError('미처리', error); throw error; }
+            } catch (error) { diagnosticError('기타', error, { site: 1704 }); diagnosticError('미처리', error); throw error; }
         });
     };
     on('GENERATION_AFTER_COMMANDS', async (type, eventData, dryRun) => {
@@ -1699,13 +1716,13 @@ export function installMemoryHooks(ctx = context()) {
     });
     on('CHARACTER_MESSAGE_RENDERED', () => scheduleMemory());
     on('GENERATION_STARTED', (type, _options, dryRun) => diagnostic('generation', { mode: type, dryRun: Boolean(dryRun), busy }));
-    on('MESSAGE_RECEIVED', () => {});
+    on('MESSAGE_RECEIVED', () => scheduleMemory());
     on('GENERATION_ENDED', (type) => {
         if (['quiet', 'impersonate'].includes(type)) return;
         normalGenerating = false;
         if (memoryPending) scheduleMemory();
     });
-    on('GENERATION_STOPPED', () => { normalGenerating = false; stopReviewJob(); });
+    on('GENERATION_STOPPED', () => { normalGenerating = false; stopReviewJob(); if (memoryPending) scheduleMemory(); });
     for (const event of ['MESSAGE_SWIPED', 'MESSAGE_EDITED', 'MESSAGE_DELETED']) on(event, queueSourceMutation);
 }
 
@@ -1839,7 +1856,7 @@ async function commitReply(text, key, lastMessage, mode = 'normal') {
             await ctx.eventSource.emit((ctx.eventTypes ?? ctx.event_types).CHARACTER_MESSAGE_RENDERED, index);
             await ctx.saveChat();
             return;
-        } catch (error) { diagnosticError('기타', error, { site: 1842 });
+        } catch (error) { diagnosticError('기타', error, { site: 1859 });
             console.error('[100LOG] 오류·진단 기록을 확인해 주세요.');
             throw new Error('스와이프 표시 또는 저장 중 오류가 났어요. 채팅에 답변이 보이는지 확인해 주세요.');
         }
@@ -1855,7 +1872,7 @@ async function commitReply(text, key, lastMessage, mode = 'normal') {
         ctx.addOneMessage(message);
         await ctx.eventSource.emit((ctx.eventTypes ?? ctx.event_types).CHARACTER_MESSAGE_RENDERED, index);
         await ctx.saveChat();
-    } catch (error) { diagnosticError('기타', error, { site: 1858 });
+    } catch (error) { diagnosticError('기타', error, { site: 1875 });
         // Never remove a message after rendering or after another extension has observed it.
         console.error('[100LOG] 오류·진단 기록을 확인해 주세요.');
         throw new Error('답변 표시 또는 저장 중 오류가 났어요. 채팅에 답변이 보이는지 확인해 주세요.');
@@ -1938,7 +1955,7 @@ async function runHidden(key, lastMessage, selectedContext = null, mode = 'norma
             context().saveSettingsDebounced?.();
         }
         try { await traceDiagnostic('답변 표시·저장', () => commitReply(final, key, lastMessage, mode), { mode, chars: final.length }); }
-        catch (error) { diagnosticError('기타', error, { site: 1941 }); if (store) store.lastActivity = previousActivity; throw error; }
+        catch (error) { diagnosticError('기타', error, { site: 1958 }); if (store) store.lastActivity = previousActivity; throw error; }
         updateReport({ status: flagged.length ? 'corrected' : 'passed', stage: '완료', published: true });
         const replyLabel = mode === 'swipe' ? '스와이프 답변을' : mode === 'regenerate' ? '재생성 답변을' : '답변을';
         status(flagged.length ? `충돌 ${flagged.length}곳을 고쳐 ${replyLabel} 게시했어요.` : `설정 충돌 없이 ${replyLabel} 게시했어요.`);
@@ -1947,7 +1964,7 @@ async function runHidden(key, lastMessage, selectedContext = null, mode = 'norma
             updateReport({ stage, status: 'cancelled' });
             status('답변 생성을 중단했어요.');
         } else {
-            diagnosticError(stage, error, { site: 1950 });
+            diagnosticError(stage, error, { site: 1967 });
             const blocked = report.status === 'blocked';
             const upstream = ['메인 AI 초안 생성', '메인 AI 재작성', 'JEV 초안 검수', 'JEV 재검수'].includes(stage) && !blocked;
             updateReport({ stage, status: blocked ? 'blocked' : upstream ? 'external_error' : stage === '답변 표시·저장' ? 'publish_error' : 'failed' });
@@ -1959,7 +1976,7 @@ async function runHidden(key, lastMessage, selectedContext = null, mode = 'norma
         }
     }
     finally {
-        try { await clearLegacyPrompt(); } catch (error) { diagnosticError('기타', error, { site: 1962 }); console.error('[100LOG] 오류·진단 기록을 확인해 주세요.'); }
+        try { await clearLegacyPrompt(); } catch (error) { diagnosticError('기타', error, { site: 1979 }); console.error('[100LOG] 오류·진단 기록을 확인해 주세요.'); }
         if (activeReviewJob === job) activeReviewJob = null;
         busy = false; normalGenerating = false; render(); if (memoryPending) scheduleMemory();
     }
@@ -2004,7 +2021,7 @@ globalThis.hundredlogGenerationInterceptor = async function (promptChat, _size, 
             selectionStats = { candidates: result.candidateCount, selected: result.selected.length };
             selectedContext = memoryInjection(result.selected, recentChat(ctx), config.maxInjectedMemories, true);
         }
-    } catch (error) { diagnosticError('기타', error, { site: 2007 });
+    } catch (error) { diagnosticError('기타', error, { site: 2024 });
         if (activeReviewJob === job) activeReviewJob = null;
         abort(true);
         busy = false;
@@ -2027,7 +2044,7 @@ function closeWand() {
     const overlay = document.getElementById('hundredlog-wand-overlay');
     const panel = document.getElementById('hundredlog');
     if (panel && settingsHome && panel.parentElement !== settingsHome) settingsHome.append(panel);
-    if (overlay) overlay.hidden = true;
+    if (overlay) { if (overlay.open && typeof overlay.close === 'function') overlay.close(); overlay.hidden = true; }
     previousFocus?.focus?.({ preventScroll: true });
     previousFocus = null;
 }
@@ -2067,7 +2084,7 @@ function openWand() {
     if (!panel) return;
     let overlay = document.getElementById('hundredlog-wand-overlay');
     if (!overlay) {
-        overlay = document.createElement('div');
+        overlay = document.createElement('dialog');
         overlay.id = 'hundredlog-wand-overlay';
         overlay.hidden = true;
         const popup = document.createElement('div');
@@ -2094,6 +2111,7 @@ function openWand() {
         overlay.append(popup);
         overlay.addEventListener('click', (event) => { if (event.target === overlay) closeWand(); });
         document.documentElement.append(overlay);
+        overlay.addEventListener('cancel', (event) => { event.preventDefault(); closeWand(); });
         overlay.addEventListener('keydown', (event) => {
             if (event.key !== 'Tab') return;
             const focusable = [...popup.querySelectorAll('button, input, textarea, select, summary, [tabindex="0"]')]
@@ -2113,6 +2131,8 @@ function openWand() {
     overlay.style.fontFamily = getComputedStyle(panel).fontFamily;
     document.getElementById('hundredlog-wand-body').append(panel);
     overlay.hidden = false;
+    // Native top layer is independent of theme transforms and parent layouts.
+    if (typeof overlay.showModal === 'function' && !overlay.open) overlay.showModal();
     installWandViewportTracking();
     syncWandViewport();
     requestAnimationFrame(syncWandViewport);
@@ -2215,7 +2235,7 @@ async function main() {
             const storage = `${EMBEDDING_KEY_PREFIX}${embeddingProvider()}`;
             if (value) localStorage.setItem(storage, value); else localStorage.removeItem(storage);
             $id('embedding-state').textContent = value ? '키 저장됨 · 연결 확인 필요' : 'API 키를 입력해 주세요';
-        } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 2218 }); status('이 브라우저에 임베딩 키를 저장하지 못했어요.'); }
+        } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 2238 }); status('이 브라우저에 임베딩 키를 저장하지 못했어요.'); }
     });
     $id('embedding-test')?.addEventListener('click', async () => {
         try {
@@ -2231,7 +2251,7 @@ async function main() {
             $id('embedding-state').textContent = `${embeddingLabel()} 연결됨`;
             embeddingError();
             status(facts.length ? `임베딩 연결 완료 · 현재 규칙 ${facts.length}개를 준비했어요.` : '임베딩 연결을 확인했어요. 저장된 현재 규칙은 아직 없어요.');
-        } catch (error) { diagnosticError('기타', error, { site: 2234 });
+        } catch (error) { diagnosticError('기타', error, { site: 2254 });
             $id('embedding-state').textContent = '연결 실패';
             embeddingError(error.message);
             status(error.message);
@@ -2251,7 +2271,7 @@ async function main() {
             $id('embedding-state').textContent = `${embeddingLabel()} 연결됨`;
             embeddingError();
             status(`누락 임베딩 재시도 완료 · ${after.completed}/${after.total}개 성공${after.missing ? ` · ${after.missing}개 미완료` : ''}`);
-        } catch (error) { diagnosticError('기타', error, { site: 2254 });
+        } catch (error) { diagnosticError('기타', error, { site: 2274 });
             $id('embedding-state').textContent = '재시도 실패';
             embeddingError(error.message);
             status(error.message);
@@ -2304,7 +2324,7 @@ async function main() {
             if (value) localStorage.setItem(KEY_STORAGE, value);
             else localStorage.removeItem(KEY_STORAGE);
             $id('server').textContent = value ? '키 저장됨 · 연결 확인 필요' : 'API 키를 입력해 주세요';
-        } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 2307 }); status('이 브라우저에 키를 저장하지 못했어요.'); }
+        } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 2327 }); status('이 브라우저에 키를 저장하지 못했어요.'); }
     });
     $id('test')?.addEventListener('click', async () => {
         try {
@@ -2317,7 +2337,7 @@ async function main() {
             $id('server').textContent = 'Jev 연결됨';
             connectionError();
             status(`Jev에 연결됐어요 (${lastJevTransport}).`);
-        } catch (error) { diagnosticError('기타', error, { site: 2320 });
+        } catch (error) { diagnosticError('기타', error, { site: 2340 });
             $id('server').textContent = '연결 실패';
             connectionError(error.message);
             status(error.message);
@@ -2345,7 +2365,7 @@ async function main() {
             $id('newfact').value = '';
             $id('replaces').value = '';
             await save(); render();
-        } catch (error) { diagnosticError('기타', error, { site: 2348 }); status(error.message); }
+        } catch (error) { diagnosticError('기타', error, { site: 2368 }); status(error.message); }
     });
     $id('endscene')?.addEventListener('click', async () => {
         const value = data();
@@ -2418,6 +2438,8 @@ async function main() {
     ctx.eventSource.on((ctx.eventTypes ?? ctx.event_types).CHAT_CHANGED, () => {
         diagnostic('event', { event: 'CHAT_CHANGED', busy, extracting, translating });
         memoryEpoch++; normalGenerating = false; memoryPending = false;
+        memoryForcePending = false;
+        if ($id('collection-status')) { $id('collection-status').hidden = true; $id('collection-status').textContent = ''; }
         const value = data();
         const state = chatState(value, context(), false);
         if (state) initializeAuto(state, context().chat);
@@ -2438,8 +2460,8 @@ const initialContext = context();
 const appReady = (initialContext.eventTypes ?? initialContext.event_types)?.APP_READY;
 if (appReady) {
     initialContext.eventSource.on(appReady, () => {
-        void main().catch((error) => diagnosticError('초기화', error, { site: 2441 }));
+        void main().catch((error) => diagnosticError('초기화', error, { site: 2463 }));
     });
 } else {
-    void main().catch((error) => diagnosticError('초기화', error, { site: 2444 }));
+    void main().catch((error) => diagnosticError('초기화', error, { site: 2466 }));
 }

@@ -187,3 +187,9 @@
   #hundredlog .hundredlog-translation-controls button.menu_button { padding-left: 5px; padding-right: 5px; font-size: .78em; }
   #hundredlog #hundredlog-translation-count { font-size: .74em; }
 }
+
+/* Isolate the dialog from theme alignment, size and transform rules. */
+#hundredlog-wand-overlay { max-width: none !important; max-height: none !important; border: 0 !important; outline: 0; box-sizing: border-box !important; }
+#hundredlog-wand-overlay::backdrop { background: transparent; }
+#hundredlog-wand-popup { position: absolute !important; left: 50% !important; top: 50% !important; right: auto !important; bottom: auto !important; transform: translate(-50%, -50%) !important; width: min(520px, calc(100% - 24px)) !important; }
+#hundredlog-collection-status { margin: 5px 0 12px !important; overflow-wrap: anywhere; }
