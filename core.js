@@ -1,7 +1,6 @@
 export const RECENT_MESSAGE_LIMIT = 100;
 export const MAX_FACTS = 40;
 export const MAX_HISTORY = 200;
-export const MAX_DRAFT = 18000;
 export const newId = () => `log100-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
 export function isVisibleChatMessage(message) {
@@ -50,7 +49,7 @@ export function chatKey(context) {
 
 export function chunksOfDraft(text) {
     const draft = String(text ?? '').trim();
-    if (!draft || draft.length > MAX_DRAFT) throw new Error('초안이 비어 있거나 검수 가능한 길이를 넘었어요.');
+    if (!draft) throw new Error('메인 AI가 빈 초안을 반환했어요.');
     // Split by paragraphs without ever silently dropping the tail.
     const paragraphs = draft.split(/\n\s*\n/).filter(Boolean);
     const chunks = [];

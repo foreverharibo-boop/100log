@@ -11,6 +11,9 @@
 #hundredlog .hundredlog-tab[aria-pressed="true"] { border-bottom-color: var(--SmartThemeQuoteColor); background: transparent; font-weight: 700; opacity: 1; }
 #hundredlog .hundredlog-tab span { font-size: .78em; opacity: .7; margin-left: 3px; }
 #hundredlog [hidden] { display: none !important; }
+#hundredlog .hundredlog-diagnostic-actions { margin-top: 8px; }
+#hundredlog #hundredlog-diagnostics-log { display: block; width: 100%; min-width: 0; height: 175px; min-height: 110px; max-height: 45vh; resize: vertical; padding: 8px; border: 1px solid var(--SmartThemeBorderColor); border-radius: 6px; background: transparent; color: inherit; font: 11px/1.5 monospace; text-shadow: none !important; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+#hundredlog #hundredlog-diagnostics-feedback:empty { display: none; }
 #hundredlog .hundredlog-view { min-width: 0; padding: 0 2px; }
 #hundredlog .hundredlog-row, #hundredlog .hundredlog-scene { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 #hundredlog .hundredlog-state { font-size: .82em; overflow-wrap: anywhere; }

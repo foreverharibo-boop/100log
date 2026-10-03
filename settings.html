@@ -69,6 +69,19 @@
         <p id="hundredlog-connection-error" class="hundredlog-help hundredlog-connection-error" role="alert" hidden></p>
         <p class="hundredlog-help">JEV 키는 새 규칙 자체가 원문과 맞는지 먼저 확인하고, 인물별 ‘알고 있음/아직 모름’도 함께 검증해요. 이름만 언급되었거나 일부 내용만 아는 인물에게 전체 사실을 넘기지 않아요.</p>
       </section>
+      <section class="hundredlog-settings-block hundredlog-diagnostics">
+        <div class="hundredlog-section-title"><strong>마지막 오류</strong></div>
+        <p class="hundredlog-help">마지막 오류 1건만 이 브라우저에 보관해요. 새 오류가 나면 이전 오류를 덮어쓰며, 정상 작동이나 지연 안내는 기록하지 않아요. 추가 API 호출과 원문·인물명·키 기록은 없어요.</p>
+        <div class="hundredlog-row hundredlog-diagnostic-actions">
+          <button type="button" id="hundredlog-diagnostics-copy" class="menu_button">오류 복사</button>
+          <button type="button" id="hundredlog-diagnostics-download" class="menu_button">파일 저장</button>
+          <button type="button" id="hundredlog-diagnostics-clear" class="menu_button">기록 지우기</button>
+        </div>
+        <label for="hundredlog-diagnostics-log" class="hundredlog-label">마지막 오류 내용</label>
+        <textarea id="hundredlog-diagnostics-log" rows="7" readonly spellcheck="false" aria-label="마지막 오류 내용"></textarea>
+        <p id="hundredlog-diagnostics-feedback" class="hundredlog-help" role="status"></p>
+        <p class="hundredlog-help">문제가 생기면 ‘오류 복사’로 전달해 주세요. 새로고침해도 마지막 오류는 유지돼요. 서버 내부나 다른 확장 오류 전체를 기록하는 기능은 아니에요.</p>
+      </section>
       <section id="hundredlog-developer" class="hundredlog-developer" hidden>
         <section class="hundredlog-settings-block"><div class="hundredlog-fold-title"><strong>개발자 모드 · 맞춤 규칙 주입</strong></div>
           <label class="hundredlog-toggle hundredlog-setting-toggle"><input id="hundredlog-developer-memory" type="checkbox"><span>임베딩 + JEV 맞춤 규칙 주입</span></label>
