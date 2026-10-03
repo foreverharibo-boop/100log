@@ -524,7 +524,7 @@ export async function reviewExtractedKnowledge(operations, rows, contextRows = [
         batch.forEach((check, index) => {
             questions[check.questionId] = check.kind === 'fact' ? {
                 type: 'choice',
-                instructions: `Verify review_checks[${index}]. Decide whether proposed_operation is directly and completely supported by source_message, exact_new_evidence, new_messages, recent_context, and previous_memory. Validate both the memory text and the requested action. The memory must also be atomic: one independently verifiable event, statement, promise, intention, or knowledge change. If it combines clauses learned or witnessed by different people, or combines an event with a later private conversation, reaction, message, secret, advice request, or plan, choose compound even when every clause is individually true. For commitment updates, verify progress and event identity as well as text. Approve completion only when the specific promised goal is demonstrably fulfilled: arrival can fulfill a visit promise, but not an unfinished activity. Do not approve completion merely because time passed, the commitment was not mentioned again, or the current scene is only vaguely similar. Do not accept invented off-screen events, participants who were not shown, false attribution of knowledge or presence, a character's lie or belief rewritten as objective truth, an intention rewritten as completion, or a partial quote expanded beyond its meaning.`,
+                instructions: `Verify review_checks[${index}]. Decide whether proposed_operation is directly and completely supported by source_message, exact_new_evidence, new_messages, recent_context, and previous_memory. Validate both the memory text and the requested action. Judge truth and action validity, not subjective importance. A small or ordinary fact is not unsupported merely because it seems unimportant. A promise need not specify a date or place. A short new reply may accept a proposal in recent_context; verify the proposal and acceptance together. Keep tentative intentions, invitations and conditions accurately labeled without assuming agreement. The memory must also be atomic: one independently verifiable event, statement, promise, intention, or knowledge change. Its participants, timing, venue, purpose and terms can belong to that same event and are not compound merely because there are several details. If it combines clauses learned or witnessed by different people, or combines an event with a later private conversation, reaction, message, secret, advice request, or plan, choose compound even when every clause is individually true. For commitment updates, verify progress and event identity as well as text. Approve completion only when the specific promised goal is demonstrably fulfilled: arrival can fulfill a visit promise, but not an unfinished activity. Do not approve completion merely because time passed, the commitment was not mentioned again, or the current scene is only vaguely similar. Do not accept invented off-screen events, participants who were not shown, false attribution of knowledge or presence, a character's lie or belief rewritten as objective truth, an intention rewritten as completion, or a partial quote expanded beyond its meaning.`,
                 criteria: {
                     supported: 'Every material clause and the operation action are directly supported; uncertainty, hearsay, lies and intentions remain correctly labeled.',
                     compound: 'The claims may be supported, but this operation combines two or more independently useful facts or clauses with different knowledge boundaries and must be split.',
@@ -1213,8 +1213,16 @@ function render() {
         actions.append(makeButton(fact.active ? '잠시 끄기' : '다시 켜기', async () => { fact.active = !fact.active; await save(); render(); }));
         actions.append(makeButton(fact.scope === 'scene' ? '지속 기억으로' : '임시 기억으로', async () => { fact.scope = fact.scope === 'scene' ? 'always' : 'scene'; await save(); render(); }));
         actions.append(makeButton('삭제', async () => { if (data(false) !== value) return; removeFact(value, fact.id); await save(); render(); }));
-        const actionMenu = document.createElement('details'); actionMenu.className = 'hundredlog-action-menu';
-        const actionSummary = document.createElement('summary'); actionSummary.textContent = '⋯'; actionSummary.setAttribute('aria-label', '규칙 관리');
+        const actionMenu = document.createElement('div'); actionMenu.className = 'hundredlog-action-menu';
+        const actionSummary = document.createElement('button'); actionSummary.type = 'button'; actionSummary.className = 'hundredlog-action-toggle'; actionSummary.textContent = '⋯'; actionSummary.setAttribute('aria-label', '규칙 관리'); actionSummary.setAttribute('aria-expanded', 'false');
+        actions.hidden = true;
+        actionSummary.addEventListener('click', () => {
+            const open = actions.hidden;
+            actions.hidden = !open;
+            actionSummary.setAttribute('aria-expanded', String(open));
+            actionMenu.classList.toggle('is-open', open);
+            itemHead.classList.toggle('has-actions', open);
+        });
         actionMenu.append(actionSummary, actions);
         itemHead.append(actionMenu);
         item.append(itemHead, title, meta); $id('facts').append(item);
@@ -1243,7 +1251,7 @@ function render() {
             try {
                 approveFact(value, restored, current?.active && isCurrent(current) ? current.id : null);
                 await save(); render(); status('현재 기억으로 복원하고 자동 변경 잠금했어요.');
-            } catch (error) { diagnosticError('기타', error, { site: 1246 }); status(error.message); }
+            } catch (error) { diagnosticError('기타', error, { site: 1254 }); status(error.message); }
         }));
         $id('history').append(item);
     }
@@ -1269,7 +1277,7 @@ function render() {
                 approveFact(value, candidate, replacement.value || null);
                 value.candidates = value.candidates.filter((entry) => entry.id !== candidate.id);
                 await save(); render();
-            } catch (error) { diagnosticError('기타', error, { site: 1272 }); status(error.message); }
+            } catch (error) { diagnosticError('기타', error, { site: 1280 }); status(error.message); }
         }));
         actions.append(makeButton('제외', async () => { value.candidates = value.candidates.filter((entry) => entry.id !== candidate.id); await save(); render(); }));
         item.append(actions);
@@ -1530,7 +1538,7 @@ function queueSourceMutation() {
     // that burst to finish so it is handled once instead of as dozens of edits.
     sourceMutationTimer = setTimeout(() => {
         sourceMutationTimer = null;
-        void processSourceMutation().catch((error) => { diagnosticError('규칙 저장', error, { site: 1533 }); status(error.message); });
+        void processSourceMutation().catch((error) => { diagnosticError('규칙 저장', error, { site: 1541 }); status(error.message); });
     }, 900);
 }
 
@@ -1661,7 +1669,7 @@ async function performMemorySync({ rebuildRecent = false, force = false } = {}) 
             status(stopExtractionRequested ? `수집 중단 · 규칙 ${changed}개 반영. 다음에 이어서 수집해요.${factResult}${knowledgeResult}`
                 : `최근 ${RECENT_MESSAGE_LIMIT}개 대화 수집 완료 · 규칙 ${changed}개 반영${uncertain ? ` · 불확실하거나 중복된 제안 ${uncertain}개는 건너뛰었어요` : ''}${factResult}${knowledgeResult}${cleanupText}`);
         }
-    } catch (error) { diagnosticError('규칙 수집', error, { site: 1664 }); if (sameChat()) status(`기억 정리를 멈췄어요: ${error.message} ‘지금 정리’로 다시 시도할 수 있어요.`); }
+    } catch (error) { diagnosticError('규칙 수집', error, { site: 1672 }); if (sameChat()) status(`기억 정리를 멈췄어요: ${error.message} ‘지금 정리’로 다시 시도할 수 있어요.`); }
     finally { extracting = false; render(); }
 }
 
@@ -1676,7 +1684,7 @@ export function installMemoryHooks(ctx = context()) {
                 const result = callback(...args);
                 if (result?.then) return result.catch((error) => { diagnosticError('미처리', error); throw error; });
                 return result;
-            } catch (error) { diagnosticError('기타', error, { site: 1679 }); diagnosticError('미처리', error); throw error; }
+            } catch (error) { diagnosticError('기타', error, { site: 1687 }); diagnosticError('미처리', error); throw error; }
         });
     };
     on('GENERATION_AFTER_COMMANDS', async (type, eventData, dryRun) => {
@@ -1831,7 +1839,7 @@ async function commitReply(text, key, lastMessage, mode = 'normal') {
             await ctx.eventSource.emit((ctx.eventTypes ?? ctx.event_types).CHARACTER_MESSAGE_RENDERED, index);
             await ctx.saveChat();
             return;
-        } catch (error) { diagnosticError('기타', error, { site: 1834 });
+        } catch (error) { diagnosticError('기타', error, { site: 1842 });
             console.error('[100LOG] 오류·진단 기록을 확인해 주세요.');
             throw new Error('스와이프 표시 또는 저장 중 오류가 났어요. 채팅에 답변이 보이는지 확인해 주세요.');
         }
@@ -1847,7 +1855,7 @@ async function commitReply(text, key, lastMessage, mode = 'normal') {
         ctx.addOneMessage(message);
         await ctx.eventSource.emit((ctx.eventTypes ?? ctx.event_types).CHARACTER_MESSAGE_RENDERED, index);
         await ctx.saveChat();
-    } catch (error) { diagnosticError('기타', error, { site: 1850 });
+    } catch (error) { diagnosticError('기타', error, { site: 1858 });
         // Never remove a message after rendering or after another extension has observed it.
         console.error('[100LOG] 오류·진단 기록을 확인해 주세요.');
         throw new Error('답변 표시 또는 저장 중 오류가 났어요. 채팅에 답변이 보이는지 확인해 주세요.');
@@ -1930,7 +1938,7 @@ async function runHidden(key, lastMessage, selectedContext = null, mode = 'norma
             context().saveSettingsDebounced?.();
         }
         try { await traceDiagnostic('답변 표시·저장', () => commitReply(final, key, lastMessage, mode), { mode, chars: final.length }); }
-        catch (error) { diagnosticError('기타', error, { site: 1933 }); if (store) store.lastActivity = previousActivity; throw error; }
+        catch (error) { diagnosticError('기타', error, { site: 1941 }); if (store) store.lastActivity = previousActivity; throw error; }
         updateReport({ status: flagged.length ? 'corrected' : 'passed', stage: '완료', published: true });
         const replyLabel = mode === 'swipe' ? '스와이프 답변을' : mode === 'regenerate' ? '재생성 답변을' : '답변을';
         status(flagged.length ? `충돌 ${flagged.length}곳을 고쳐 ${replyLabel} 게시했어요.` : `설정 충돌 없이 ${replyLabel} 게시했어요.`);
@@ -1939,7 +1947,7 @@ async function runHidden(key, lastMessage, selectedContext = null, mode = 'norma
             updateReport({ stage, status: 'cancelled' });
             status('답변 생성을 중단했어요.');
         } else {
-            diagnosticError(stage, error, { site: 1942 });
+            diagnosticError(stage, error, { site: 1950 });
             const blocked = report.status === 'blocked';
             const upstream = ['메인 AI 초안 생성', '메인 AI 재작성', 'JEV 초안 검수', 'JEV 재검수'].includes(stage) && !blocked;
             updateReport({ stage, status: blocked ? 'blocked' : upstream ? 'external_error' : stage === '답변 표시·저장' ? 'publish_error' : 'failed' });
@@ -1951,7 +1959,7 @@ async function runHidden(key, lastMessage, selectedContext = null, mode = 'norma
         }
     }
     finally {
-        try { await clearLegacyPrompt(); } catch (error) { diagnosticError('기타', error, { site: 1954 }); console.error('[100LOG] 오류·진단 기록을 확인해 주세요.'); }
+        try { await clearLegacyPrompt(); } catch (error) { diagnosticError('기타', error, { site: 1962 }); console.error('[100LOG] 오류·진단 기록을 확인해 주세요.'); }
         if (activeReviewJob === job) activeReviewJob = null;
         busy = false; normalGenerating = false; render(); if (memoryPending) scheduleMemory();
     }
@@ -1996,7 +2004,7 @@ globalThis.hundredlogGenerationInterceptor = async function (promptChat, _size, 
             selectionStats = { candidates: result.candidateCount, selected: result.selected.length };
             selectedContext = memoryInjection(result.selected, recentChat(ctx), config.maxInjectedMemories, true);
         }
-    } catch (error) { diagnosticError('기타', error, { site: 1999 });
+    } catch (error) { diagnosticError('기타', error, { site: 2007 });
         if (activeReviewJob === job) activeReviewJob = null;
         abort(true);
         busy = false;
@@ -2207,7 +2215,7 @@ async function main() {
             const storage = `${EMBEDDING_KEY_PREFIX}${embeddingProvider()}`;
             if (value) localStorage.setItem(storage, value); else localStorage.removeItem(storage);
             $id('embedding-state').textContent = value ? '키 저장됨 · 연결 확인 필요' : 'API 키를 입력해 주세요';
-        } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 2210 }); status('이 브라우저에 임베딩 키를 저장하지 못했어요.'); }
+        } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 2218 }); status('이 브라우저에 임베딩 키를 저장하지 못했어요.'); }
     });
     $id('embedding-test')?.addEventListener('click', async () => {
         try {
@@ -2223,7 +2231,7 @@ async function main() {
             $id('embedding-state').textContent = `${embeddingLabel()} 연결됨`;
             embeddingError();
             status(facts.length ? `임베딩 연결 완료 · 현재 규칙 ${facts.length}개를 준비했어요.` : '임베딩 연결을 확인했어요. 저장된 현재 규칙은 아직 없어요.');
-        } catch (error) { diagnosticError('기타', error, { site: 2226 });
+        } catch (error) { diagnosticError('기타', error, { site: 2234 });
             $id('embedding-state').textContent = '연결 실패';
             embeddingError(error.message);
             status(error.message);
@@ -2243,7 +2251,7 @@ async function main() {
             $id('embedding-state').textContent = `${embeddingLabel()} 연결됨`;
             embeddingError();
             status(`누락 임베딩 재시도 완료 · ${after.completed}/${after.total}개 성공${after.missing ? ` · ${after.missing}개 미완료` : ''}`);
-        } catch (error) { diagnosticError('기타', error, { site: 2246 });
+        } catch (error) { diagnosticError('기타', error, { site: 2254 });
             $id('embedding-state').textContent = '재시도 실패';
             embeddingError(error.message);
             status(error.message);
@@ -2296,7 +2304,7 @@ async function main() {
             if (value) localStorage.setItem(KEY_STORAGE, value);
             else localStorage.removeItem(KEY_STORAGE);
             $id('server').textContent = value ? '키 저장됨 · 연결 확인 필요' : 'API 키를 입력해 주세요';
-        } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 2299 }); status('이 브라우저에 키를 저장하지 못했어요.'); }
+        } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 2307 }); status('이 브라우저에 키를 저장하지 못했어요.'); }
     });
     $id('test')?.addEventListener('click', async () => {
         try {
@@ -2309,7 +2317,7 @@ async function main() {
             $id('server').textContent = 'Jev 연결됨';
             connectionError();
             status(`Jev에 연결됐어요 (${lastJevTransport}).`);
-        } catch (error) { diagnosticError('기타', error, { site: 2312 });
+        } catch (error) { diagnosticError('기타', error, { site: 2320 });
             $id('server').textContent = '연결 실패';
             connectionError(error.message);
             status(error.message);
@@ -2337,7 +2345,7 @@ async function main() {
             $id('newfact').value = '';
             $id('replaces').value = '';
             await save(); render();
-        } catch (error) { diagnosticError('기타', error, { site: 2340 }); status(error.message); }
+        } catch (error) { diagnosticError('기타', error, { site: 2348 }); status(error.message); }
     });
     $id('endscene')?.addEventListener('click', async () => {
         const value = data();
@@ -2430,8 +2438,8 @@ const initialContext = context();
 const appReady = (initialContext.eventTypes ?? initialContext.event_types)?.APP_READY;
 if (appReady) {
     initialContext.eventSource.on(appReady, () => {
-        void main().catch((error) => diagnosticError('초기화', error, { site: 2433 }));
+        void main().catch((error) => diagnosticError('초기화', error, { site: 2441 }));
     });
 } else {
-    void main().catch((error) => diagnosticError('초기화', error, { site: 2436 }));
+    void main().catch((error) => diagnosticError('초기화', error, { site: 2444 }));
 }

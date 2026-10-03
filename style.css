@@ -75,7 +75,7 @@
 #hundredlog button:not(:disabled):hover { border-color: var(--SmartThemeQuoteColor); }
 #hundredlog .hundredlog-controls { margin-top: 8px; }
 #hundredlog .hundredlog-controls .hundredlog-muted { flex: 1 1 100%; }
-#hundredlog .hundredlog-list { display: grid; gap: 0; border-top: 1px solid var(--SmartThemeBorderColor); }
+#hundredlog .hundredlog-list { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; gap: 0; border-top: 1px solid var(--SmartThemeBorderColor); }
 #hundredlog .hundredlog-item { border: 0; border-bottom: 1px solid var(--SmartThemeBorderColor); border-radius: 0; padding: 13px 2px 14px; }
 #hundredlog .hundredlog-item-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 7px; }
 #hundredlog .hundredlog-kind { min-width: 0; color: var(--SmartThemeQuoteColor); font-size: .8em; font-weight: 600; overflow-wrap: anywhere; }
@@ -147,10 +147,16 @@
 #hundredlog .hundredlog-kind { color: inherit; opacity: .72; font-weight: 500; }
 #hundredlog .hundredlog-text { font-size: 1em; }
 #hundredlog .hundredlog-action-menu > summary { font-size: 1.3em; line-height: 1; padding: 4px 6px; }
-#hundredlog .hundredlog-action-menu[open] { flex-basis: 100%; }
+#hundredlog .hundredlog-action-menu.is-open { flex: 1 1 0; min-width: 0; }
 #hundredlog .hundredlog-item-head { flex-wrap: wrap; }
-#hundredlog .hundredlog-action-menu[open] > summary { text-align: right; }
-#hundredlog .hundredlog-action-menu .hundredlog-actions { justify-content: flex-start; }
+#hundredlog .hundredlog-item-head.has-actions { flex-wrap: nowrap; }
+#hundredlog .hundredlog-item-head.has-actions > .hundredlog-kind { display: none; }
+#hundredlog .hundredlog-action-menu { display: flex; align-items: center; gap: 6px; max-width: 100%; }
+#hundredlog .hundredlog-action-toggle { order: 2; flex: 0 0 28px; width: 28px; min-width: 28px; height: 32px; margin: 0; padding: 0; border: 0; background: transparent; color: var(--SmartThemeBodyColor); font: inherit; font-size: 1.3em; line-height: 1; cursor: pointer; }
+#hundredlog .hundredlog-action-toggle[aria-expanded="true"] { color: var(--SmartThemeQuoteColor); }
+#hundredlog .hundredlog-action-menu .hundredlog-actions { flex: 1 1 0; min-width: 0; flex-wrap: nowrap; justify-content: flex-start; overflow-x: auto; margin: 0; padding: 2px 0; scrollbar-width: thin; }
+#hundredlog .hundredlog-action-menu .hundredlog-actions[hidden] { display: none !important; }
+#hundredlog .hundredlog-action-menu .hundredlog-actions button.menu_button { font-size: .76em; padding: 4px 6px; }
 #hundredlog .hundredlog-knowledge { margin-top: 10px; font-size: .82em; }
 #hundredlog .hundredlog-knowledge-tags { gap: 3px 14px; margin: 0; }
 #hundredlog .hundredlog-knowledge-tags button.menu_button { font-size: 1em; white-space: normal; text-align: left; }
