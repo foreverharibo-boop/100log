@@ -100,7 +100,7 @@
 #hundredlog-wand-body #hundredlog > .inline-drawer-content { display: block !important; padding: 11px 0 10px; }
 @media (max-width: 420px) {
   #hundredlog-wand-overlay { padding: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left)) !important; }
-  #hundredlog-wand-popup { max-height: calc(var(--hundredlog-viewport-height, 100dvh) - 16px - env(safe-area-inset-top) - env(safe-area-inset-bottom)) !important; }
+  #hundredlog-wand-popup { max-height: min(660px, calc(var(--hundredlog-viewport-height, 100dvh) - 16px - env(safe-area-inset-top) - env(safe-area-inset-bottom))) !important; }
   #hundredlog-wand-header { padding: 12px 14px; }
   #hundredlog-wand-body { padding-left: 7px; padding-right: 4px; }
   #hundredlog .hundredlog-overview { gap: 10px; }
@@ -125,6 +125,57 @@
 #hundredlog .hundredlog-edit textarea { display: block; width: 100%; }
 #hundredlog .hundredlog-history .hundredlog-list, #hundredlog-history { margin-top: 12px; }
 #hundredlog .hundredlog-section-title { flex-wrap: wrap; }
+/* Compact, theme-owned reading layout. No global element selectors. */
+#hundredlog .hundredlog-panel { padding: 12px 14px; line-height: 1.55; }
+#hundredlog .hundredlog-overview { flex-wrap: nowrap; padding: 8px 0 14px; border: 0; }
+#hundredlog .hundredlog-overview > div { min-width: 0; }
+#hundredlog .hundredlog-overview strong { font-size: .98em; font-weight: 500; }
+#hundredlog .hundredlog-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+#hundredlog .hundredlog-translation-tools { padding: 4px 0 12px; }
+#hundredlog .hundredlog-translation-controls select { background: transparent; border: 0; padding-left: 0 !important; min-width: 80px !important; font-size: .86em; }
+#hundredlog .hundredlog-translation-controls button.menu_button,
+#hundredlog .hundredlog-quick-actions button.menu_button,
+#hundredlog .hundredlog-knowledge-tags button.menu_button { border: 0; background: transparent; border-radius: 0; padding: 6px 4px; }
+#hundredlog .hundredlog-translation-info { font-size: .75em; opacity: .72; margin-top: 2px; }
+#hundredlog .hundredlog-translation-info > summary { padding: 1px 0; }
+#hundredlog .hundredlog-tabs { margin-bottom: 16px; }
+#hundredlog .hundredlog-review-report { margin: 0 0 16px; font-size: .87em; }
+#hundredlog .hundredlog-review-report summary { padding: 3px 0; overflow-wrap: anywhere; }
+#hundredlog .hundredlog-review-issue { border-top: 1px solid var(--SmartThemeBorderColor); padding: 10px 0; margin-top: 8px; }
+#hundredlog .hundredlog-review-issue p { margin: 4px 0; overflow-wrap: anywhere; }
+#hundredlog .hundredlog-item { padding: 17px 0; }
+#hundredlog .hundredlog-kind { color: inherit; opacity: .72; font-weight: 500; }
+#hundredlog .hundredlog-text { font-size: 1em; }
+#hundredlog .hundredlog-action-menu > summary { font-size: 1.3em; line-height: 1; padding: 4px 6px; }
+#hundredlog .hundredlog-action-menu[open] { flex-basis: 100%; }
+#hundredlog .hundredlog-item-head { flex-wrap: wrap; }
+#hundredlog .hundredlog-action-menu[open] > summary { text-align: right; }
+#hundredlog .hundredlog-action-menu .hundredlog-actions { justify-content: flex-start; }
+#hundredlog .hundredlog-knowledge { margin-top: 10px; font-size: .82em; }
+#hundredlog .hundredlog-knowledge-tags { gap: 3px 14px; margin: 0; }
+#hundredlog .hundredlog-knowledge-tags button.menu_button { font-size: 1em; white-space: normal; text-align: left; }
+#hundredlog .hundredlog-knowledge-editor { margin-top: 7px; padding: 9px 0 0; border-top: 1px solid var(--SmartThemeBorderColor); }
+#hundredlog .hundredlog-knowledge-proof { padding: 7px 9px; margin-top: 6px; border-left: 2px solid var(--SmartThemeQuoteColor); font-size: .92em; white-space: pre-wrap; overflow-wrap: anywhere; }
+#hundredlog .hundredlog-knowledge-reason { width: 100%; height: 32px; margin-top: 6px; }
+#hundredlog .hundredlog-event-history { margin-top: 6px; font-size: .8em; }
+#hundredlog .hundredlog-event-history summary { opacity: .72; padding: 2px 0; }
+#hundredlog .hundredlog-event-step { padding: 8px 0 8px 9px; border-left: 1px solid var(--SmartThemeBorderColor); margin-top: 5px; overflow-wrap: anywhere; }
+#hundredlog .hundredlog-history-filters { display: flex; gap: 16px; margin-top: 14px; }
+#hundredlog .hundredlog-history-filters button { width: auto; padding: 5px 1px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: inherit; font: inherit; font-size: .85em; margin: 0; }
+#hundredlog .hundredlog-history-filters button[aria-pressed="true"] { border-bottom-color: var(--SmartThemeQuoteColor); font-weight: 600; }
+#hundredlog .hundredlog-setting-grid > label { grid-template-columns: minmax(110px, .8fr) minmax(0, 1fr); align-items: center; gap: 12px; }
+#hundredlog .hundredlog-setting-grid input, #hundredlog input[type="password"] { height: 32px; min-height: 32px; margin: 0; }
+#hundredlog .hundredlog-number-field input { width: 64px; flex: 0 1 64px; }
+#hundredlog .hundredlog-activity { border: 0; padding: 0 0 12px; }
+#hundredlog-wand-header strong { font-size: 1.1em; }
+#hundredlog-wand-header button { border: 0; background: transparent; }
+#hundredlog-wand-body { padding: 0 16px 12px; }
+@media (max-width: 380px) {
+  #hundredlog .hundredlog-panel { padding: 8px; }
+  #hundredlog .hundredlog-translation-controls { gap: 1px; }
+  #hundredlog .hundredlog-setting-grid > label { grid-template-columns: minmax(95px, .8fr) minmax(0, 1fr); gap: 6px; }
+  #hundredlog .hundredlog-knowledge-controls { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; }
+}
 @media (max-width: 420px) {
   #hundredlog .hundredlog-translation-controls select { min-width: 96px !important; }
   #hundredlog .hundredlog-translation-controls button.menu_button { padding-left: 5px; padding-right: 5px; font-size: .78em; }

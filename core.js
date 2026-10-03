@@ -127,18 +127,58 @@ export function normalizeKnowledge(raw) {
     const result = {};
     for (const [name, status] of entries.slice(0, 24)) {
         const label = String(name ?? '').trim().slice(0, 50);
-        if (label && !['__proto__', 'constructor', 'prototype'].includes(label) && ['known', 'unknown'].includes(status)) result[label] = status;
+        if (label && !['__proto__', 'constructor', 'prototype'].includes(label) && ['known', 'unknown', 'unverified'].includes(status)) result[label] = status;
     }
     return result;
 }
 
-export function setKnowledge(fact, name, status) {
+export function normalizeKnowledgeEvidence(raw, knowledge = {}) {
+    const result = {};
+    for (const [name, status] of Object.entries(normalizeKnowledge(knowledge))) {
+        const item = raw?.[name];
+        if (!item || typeof item !== 'object' || (item.status && item.status !== status)) continue;
+        result[name] = {
+            status, reason: String(item.reason ?? '').slice(0, 180),
+            evidence: String(item.evidence ?? '').slice(0, 500),
+            sourceId: Number.isInteger(item.sourceId) ? item.sourceId : null,
+            verified: item.verified === true, manual: item.manual === true,
+        };
+    }
+    return result;
+}
+
+export const KNOWLEDGE_LABELS = { known: '알고 있음', unknown: '아직 모름', unverified: '확인 안 됨' };
+export const COMMITMENT_LABELS = { planned: '예정', underway: '진행 중', completed: '완료', cancelled: '취소' };
+
+export function commitmentState(fact) {
+    if (fact.archived === 'completed') return 'completed';
+    if (fact.archived === 'cancelled') return 'cancelled';
+    return fact.commitment?.status === 'underway' ? 'underway' : 'planned';
+}
+
+export function advanceCommitment(prior, op, sourceChatId = '') {
+    const status = op.action === 'complete' ? 'completed' : op.action === 'cancel' ? 'cancelled'
+        : op.progress === 'underway' ? 'underway' : op.progress === 'planned' ? 'planned' : commitmentState(prior || {});
+    const history = Array.isArray(prior?.commitment?.history) ? prior.commitment.history.slice(-11) : [];
+    if (prior && !history.length) history.push({ status: commitmentState(prior), text: prior.text,
+        sourceId: prior.sourceId ?? null, sourceChatId: prior.sourceChatId || '', evidence: prior.sourceText || '' });
+    history.push({ status, text: op.text || prior?.text || '', sourceId: op.sourceId,
+        sourceChatId, evidence: String(op.sourceText || '').slice(0, 500) });
+    return { status, originalText: prior?.commitment?.originalText || prior?.text || op.text,
+        history: history.slice(-12) };
+}
+
+export function setKnowledge(fact, name, status, reason = '') {
     const label = String(name ?? '').trim().slice(0, 50);
     if (!label || ['__proto__', 'constructor', 'prototype'].includes(label)) throw new Error('인물 이름을 입력해 주세요.');
     fact.knowledge = normalizeKnowledge(fact.knowledge);
     if (status !== null && !(label in fact.knowledge) && Object.keys(fact.knowledge).length >= 24) throw new Error('한 사실에 기록할 수 있는 인물은 최대 24명이에요.');
-    if (status === null) delete fact.knowledge[label];
-    else if (['known', 'unknown'].includes(status)) fact.knowledge[label] = status;
+    fact.knowledgeEvidence = normalizeKnowledgeEvidence(fact.knowledgeEvidence, fact.knowledge);
+    if (status === null) { delete fact.knowledge[label]; delete fact.knowledgeEvidence[label]; }
+    else if (['known', 'unknown', 'unverified'].includes(status)) {
+        fact.knowledge[label] = status;
+        fact.knowledgeEvidence[label] = { status, reason: String(reason).trim().slice(0, 180) || '사용자가 직접 지정했어요.', evidence: '', sourceId: null, manual: true, verified: false };
+    }
     else throw new Error('인물의 지식 상태를 확인해 주세요.');
     return fact;
 }
@@ -240,7 +280,10 @@ export function buildChecks(draft, facts, recent = '', speaker = '') {
         state: {
             speaker,
             unpublished_reply: candidate,
-            established_facts: confirmed.map((fact, index) => ({ q: `q${index}`, id: fact.id, text: fact.text, scope: fact.scope, source: fact.sourceText ?? '', knowledge: normalizeKnowledge(fact.knowledge) })),
+            established_facts: confirmed.map((fact, index) => ({ q: `q${index}`, id: fact.id, text: fact.text, scope: fact.scope, source: fact.sourceText ?? '', knowledge: normalizeKnowledge(fact.knowledge),
+                progress: fact.kind === 'commitment' ? commitmentState(fact) : undefined,
+                knowledge_evidence: normalizeKnowledgeEvidence(fact.knowledgeEvidence, fact.knowledge) })),
+            knowledge_policy: 'unverified means insufficient evidence, NOT ignorance. Only explicitly unknown can establish a knowledge leak. Respect planned versus underway commitment progress.',
             recent_chat: recent.slice(-6000)
         },
         questions,

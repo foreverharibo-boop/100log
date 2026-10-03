@@ -1,17 +1,17 @@
 <section id="hundredlog" class="inline-drawer">
-  <div class="inline-drawer-toggle inline-drawer-header"><b id="hundredlog-title">💯 100LOG</b><div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div></div>
+  <div class="inline-drawer-toggle inline-drawer-header"><b id="hundredlog-title">100LOG</b><div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div></div>
   <div class="inline-drawer-content hundredlog-panel">
     <div class="hundredlog-overview">
-      <div><strong>최근 100개 연속성 검사</strong><p class="hundredlog-help">같은 캐릭터의 모든 채팅에서 약속·오해·비밀·정정사항을 함께 관리해요.</p></div>
-      <label class="hundredlog-toggle"><input id="hundredlog-auto-memory" type="checkbox"><span>100LOG 사용</span></label>
+      <div><strong>최근 대화의 흐름을 기억해요</strong><p class="hundredlog-help">최근 100개 · 약속·비밀·정정사항 관리</p></div>
+      <label class="hundredlog-toggle"><input id="hundredlog-auto-memory" type="checkbox"><span>사용</span></label>
     </div>
     <section id="hundredlog-translation-tools" class="hundredlog-translation-tools" aria-labelledby="hundredlog-translation-title">
-      <div class="hundredlog-section-title"><strong id="hundredlog-translation-title">한국어 번역</strong></div>
+      <span id="hundredlog-translation-title" class="hundredlog-sr-only">한국어 번역</span>
       <div class="hundredlog-row hundredlog-translation-controls">
         <select id="hundredlog-translation-provider" aria-label="한국어 번역 방식"><option value="profile">AI 연결 프로필</option><option value="google">Google 번역</option></select>
         <button type="button" id="hundredlog-translate-all" class="menu_button">전체 번역</button><button type="button" id="hundredlog-translate-missing" class="menu_button">미번역만</button><button type="button" id="hundredlog-translate-stop" class="menu_button" hidden>중단</button><span id="hundredlog-translation-count" class="hundredlog-muted"></span>
       </div>
-      <p id="hundredlog-translation-help" class="hundredlog-help">저장된 기억과 출처를 선택한 방식으로 번역해요. 원문과 RP 채팅은 바꾸지 않아요.</p>
+      <details class="hundredlog-translation-info"><summary>번역 안내</summary><p id="hundredlog-translation-help" class="hundredlog-help">저장된 기억과 출처를 선택한 방식으로 번역해요. 원문과 RP 채팅은 바꾸지 않아요.</p></details>
     </section>
     <nav class="hundredlog-tabs" aria-label="100LOG 메뉴">
       <button type="button" id="hundredlog-tab-memory" class="hundredlog-tab" aria-pressed="true" aria-controls="hundredlog-view-memory">검수 규칙</button>
@@ -19,66 +19,65 @@
       <button type="button" id="hundredlog-tab-settings" class="hundredlog-tab" aria-pressed="false" aria-controls="hundredlog-view-settings">설정</button>
     </nav>
     <div id="hundredlog-view-memory" class="hundredlog-view" role="region" aria-labelledby="hundredlog-tab-memory">
+      <section id="hundredlog-review-report" class="hundredlog-review-report" aria-label="이번 답변에서 한 일" aria-live="polite"></section>
       <div class="hundredlog-section-title"><strong>현재 규칙</strong><span id="hundredlog-count"></span></div>
-      <p class="hundredlog-help hundredlog-section-help">기존 규칙은 유지하고 아직 정리하지 않은 새 대화만 이어서 반영해요.</p>
       <div class="hundredlog-row hundredlog-quick-actions"><button type="button" id="hundredlog-sync-now" class="menu_button">새 대화 갱신</button><button type="button" id="hundredlog-undo-last" class="menu_button">최근 갱신 취소</button></div>
       <div id="hundredlog-facts" class="hundredlog-list"></div>
-      <details class="hundredlog-fold hundredlog-compose"><summary>직접 추가 · 기존 규칙 갱신</summary>
+      <details class="hundredlog-fold hundredlog-compose"><summary>+ 규칙 직접 추가 · 갱신</summary>
         <label for="hundredlog-newfact" class="hundredlog-label">검수할 내용</label>
         <div class="hundredlog-add"><textarea id="hundredlog-newfact" rows="2" placeholder="예: 서연의 왼쪽 손목에는 오래된 흉터가 있다."></textarea><select id="hundredlog-replaces" class="hundredlog-select" aria-label="기존 기억 갱신 대상"></select><button type="button" id="hundredlog-add" class="menu_button">저장</button></div>
         <p class="hundredlog-help">직접 쓴 규칙은 자동 변경 잠금 상태로 저장해요. AI가 관리하게 하려면 잠금을 해제하세요.</p>
       </details>
     </div>
     <div id="hundredlog-view-candidates" class="hundredlog-view" role="region" aria-labelledby="hundredlog-tab-candidates" hidden>
-      <div class="hundredlog-section-title"><strong>완료된 일 · 바뀌기 전 상태</strong><span id="hundredlog-history-count"></span></div>
+      <div class="hundredlog-section-title"><strong>지난 규칙</strong><span id="hundredlog-history-count"></span></div>
       <p class="hundredlog-help">현재 답변 검사에는 사용하지 않아요. 잘못 종료된 규칙은 복원할 수 있어요.</p>
+      <nav id="hundredlog-history-filters" class="hundredlog-history-filters" aria-label="지난 규칙 분류"><button type="button" data-filter="all" aria-pressed="true">전체</button><button type="button" data-filter="completed" aria-pressed="false">완료</button><button type="button" data-filter="cancelled" aria-pressed="false">취소</button><button type="button" data-filter="changed" aria-pressed="false">변경</button></nav>
       <div id="hundredlog-history" class="hundredlog-list"></div>
       <details class="hundredlog-fold"><summary>이전 버전의 미승인 후보 <span id="hundredlog-candidate-count"></span></summary><p class="hundredlog-help">예전 후보는 그대로 보관했어요. 새 자동 기억은 승인 없이 저장돼요.</p><div id="hundredlog-candidates" class="hundredlog-list"></div></details>
     </div>
     <div id="hundredlog-view-settings" class="hundredlog-view" role="region" aria-labelledby="hundredlog-tab-settings" hidden>
       <div class="hundredlog-activity"><strong>최근 작업</strong><span id="hundredlog-activity">아직 기록된 작업이 없어요.</span></div>
       <section class="hundredlog-settings-block">
-        <div class="hundredlog-section-title"><strong>규칙 관리</strong></div>
-        <label for="hundredlog-extraction-profile" class="hundredlog-label hundredlog-profile-label">최근 100개 규칙 정리용 프로필</label>
-        <div class="hundredlog-profile-row"><select id="hundredlog-extraction-profile" class="hundredlog-profile-select"></select><button type="button" id="hundredlog-profiles-refresh" class="menu_button">목록 새로고침</button></div>
+        <div class="hundredlog-section-title"><strong>규칙 수집</strong></div>
+        <label for="hundredlog-extraction-profile" class="hundredlog-label hundredlog-profile-label">정리용 연결 프로필</label>
+        <div class="hundredlog-profile-row"><select id="hundredlog-extraction-profile" class="hundredlog-profile-select"></select><button type="button" id="hundredlog-profiles-refresh" class="menu_button" aria-label="프로필 목록 새로고침" title="프로필 목록 새로고침">↻</button></div>
         <div id="hundredlog-translation-profile-setting"><label for="hundredlog-translation-profile" class="hundredlog-label">AI 한국어 번역용 프로필</label><select id="hundredlog-translation-profile" class="hundredlog-profile-select"></select></div>
-        <p class="hundredlog-help">실리태번에 저장한 연결 프로필을 선택해요. 별도 프로필을 고르면 RP용 메인 API를 바꾸지 않고 그 AI가 규칙을 정리해요.</p>
+        <p class="hundredlog-help">RP용 API를 바꾸지 않고, 선택한 프로필로 규칙을 정리해요.</p>
         <div class="hundredlog-setting-grid">
           <label for="hundredlog-collection-intensity"><span>규칙 수집 강도</span><select id="hundredlog-collection-intensity" class="hundredlog-profile-select"><option value="detailed">세세하게</option><option value="balanced">균형</option><option value="meaningful">의미 중심</option></select></label>
           <label for="hundredlog-analysis-interval"><span>자동 규칙 갱신 주기</span><span class="hundredlog-number-field"><input id="hundredlog-analysis-interval" type="number" min="1" step="1" inputmode="numeric"><span>AI 답변마다</span></span></label>
           <label for="hundredlog-cleanup-threshold"><span>자동 청소 시작 개수</span><span class="hundredlog-number-field"><input id="hundredlog-cleanup-threshold" type="number" min="5" max="40" step="1" inputmode="numeric"><span>개 이상</span></span></label>
         </div>
-        <p class="hundredlog-help">세세하게는 작은 결정과 변화까지, 균형은 다음 전개에 필요한 내용을, 의미 중심은 큰 사건 위주로 모아요. 날짜·시간·장소가 정해진 일정과 명시적인 약속·거절·취소·정정·비밀은 모든 강도에서 반드시 수집해요.</p>
-        <p class="hundredlog-help">1 이상의 정수를 직접 입력하면 그 값 그대로 저장해요. 기본값은 AI 답변 1개마다 새 규칙을 갱신해요.</p>
+        <p class="hundredlog-help">약속·비밀·정정은 모든 강도에서 수집해요. 갱신 주기는 AI 답변 수 기준이에요.</p>
         <p id="hundredlog-interval-warning" class="hundredlog-help hundredlog-warning" hidden>갱신 주기가 50 이상이면 정리되기 전에 오래된 메시지가 최근 100개 범위에서 빠질 수 있어요.</p>
         <label class="hundredlog-toggle hundredlog-setting-toggle"><input id="hundredlog-auto-cleanup" type="checkbox"><span>수집 후 규칙 자동 청소</span></label>
-        <p class="hundredlog-help">자동 청소 시작 개수는 5~40개로 정할 수 있어요. 활성 규칙은 최대 40개이며, 정리용 AI가 만든 청소안을 JEV가 원문과 기존 규칙으로 다시 승인한 뒤 안전한 병합·종료만 적용해요. 직접 추가하거나 자동 변경 잠금한 규칙은 건드리지 않아요.</p>
+        <p class="hundredlog-help">5~40개부터 청소해요. JEV가 승인한 병합·종료만 적용하며 직접 추가·잠금한 규칙은 유지해요.</p>
         <p id="hundredlog-cleanup-summary" class="hundredlog-help" aria-live="polite"></p>
       </section>
-      <section class="hundredlog-settings-block"><div class="hundredlog-fold-title"><strong>최근 100개 재수집 · 장면 한정 규칙 관리</strong></div>
-        <p class="hundredlog-help">자동으로 만든 기존 규칙을 비우고 최근 100개를 처음부터 다시 수집해요. 직접 추가하거나 자동 변경 잠금한 규칙은 유지해요.</p>
-        <div class="hundredlog-row hundredlog-controls"><button type="button" id="hundredlog-extract" class="menu_button">최근 100개 처음부터 재수집</button><button type="button" id="hundredlog-stop" class="menu_button" disabled>수집 중단</button><span id="hundredlog-progress" class="hundredlog-muted"></span></div>
-        <div class="hundredlog-scene"><button type="button" id="hundredlog-endscene" class="menu_button">장면 한정 규칙 모두 끄기</button></div>
-        <p class="hundredlog-help">장면 한정 규칙은 현재 장면이나 가까운 몇 턴에만 필요한 사실이에요. 모두 끄기는 삭제하지 않고 검사에서 제외하며, 각 규칙의 ‘다시 켜기’로 복구할 수 있어요.</p>
-      </section>
       <section class="hundredlog-settings-block"><div class="hundredlog-fold-title"><strong>JEV 연결</strong></div>
-        <p class="hundredlog-help">100LOG 사용 중에는 일반 답변·재생성·스와이프를 모두 숨은 초안으로 받은 뒤 JEV가 현재 규칙 전체와 비교해요. 이상이 없으면 표시하고, 충돌이 있을 때만 메인 AI 재작성과 재검수를 한 번 더 실행해요.</p>
-        <p class="hundredlog-help">정상 답변은 ‘메인 AI 초안 1회 + JEV 검수 1회’만 사용해요. 재검수 후에도 충돌이 남은 경우에는 답변을 표시하지 않고 오류 토스트로 알려요.</p>
+        <p class="hundredlog-help">일반·재생성·스와이프 답변을 공개 전에 검수해요. 충돌 시 한 번 재작성하고 다시 검사해요.</p>
         <label for="hundredlog-key" class="hundredlog-label">Jev API 키</label><input id="hundredlog-key" type="password" autocomplete="off" spellcheck="false" placeholder="TypeSafe API 키">
         <div class="hundredlog-row hundredlog-connection-actions"><button type="button" id="hundredlog-test" class="menu_button">연결 확인</button><button type="button" id="hundredlog-clearkey" class="menu_button">키 삭제</button><span id="hundredlog-server" class="hundredlog-state" aria-live="polite">API 키를 입력해 주세요</span></div>
         <p id="hundredlog-connection-error" class="hundredlog-help hundredlog-connection-error" role="alert" hidden></p>
-        <p class="hundredlog-help">JEV 키는 새 규칙 자체가 원문과 맞는지 먼저 확인하고, 인물별 ‘알고 있음/아직 모름’도 함께 검증해요. 이름만 언급되었거나 일부 내용만 아는 인물에게 전체 사실을 넘기지 않아요.</p>
+        <p class="hundredlog-help">수집한 사실과 인물별 지식의 근거도 확인해요. 근거가 부족하면 ‘확인 안 됨’으로 남겨요.</p>
+      </section>
+      <section class="hundredlog-settings-block"><div class="hundredlog-fold-title"><strong>기억 관리</strong></div>
+        <p class="hundredlog-help">자동으로 만든 기존 규칙을 비우고 최근 100개를 처음부터 다시 수집해요. 직접 추가하거나 자동 변경 잠금한 규칙은 유지해요.</p>
+        <div class="hundredlog-row hundredlog-controls"><button type="button" id="hundredlog-extract" class="menu_button">최근 100개 재수집</button><button type="button" id="hundredlog-stop" class="menu_button" disabled>수집 중단</button><span id="hundredlog-progress" class="hundredlog-muted"></span></div>
+        <div class="hundredlog-scene"><button type="button" id="hundredlog-endscene" class="menu_button">장면 한정 규칙 모두 끄기</button></div>
+        <p class="hundredlog-help">장면 한정 규칙은 현재 장면이나 가까운 몇 턴에만 필요한 사실이에요. 모두 끄기는 삭제하지 않고 검사에서 제외하며, 각 규칙의 ‘다시 켜기’로 복구할 수 있어요.</p>
       </section>
       <section class="hundredlog-settings-block hundredlog-diagnostics">
         <div class="hundredlog-section-title"><strong>마지막 오류</strong></div>
-        <p class="hundredlog-help">마지막 오류 1건만 이 브라우저에 보관해요. 새 오류가 나면 이전 오류를 덮어쓰며, 정상 작동이나 지연 안내는 기록하지 않아요. 추가 API 호출과 원문·인물명·키 기록은 없어요.</p>
+        <p class="hundredlog-help">마지막 오류 1건만 보관해요. 실패 단계·소요 시간·오류 전달 경로와 확인 가능한 HTTP 코드·호출 위치를 함께 남겨요. 정상 작업은 저장하지 않으며 추가 API 호출과 원문·인물명·키 기록은 없어요.</p>
         <div class="hundredlog-row hundredlog-diagnostic-actions">
           <button type="button" id="hundredlog-diagnostics-copy" class="menu_button">오류 복사</button>
           <button type="button" id="hundredlog-diagnostics-download" class="menu_button">파일 저장</button>
           <button type="button" id="hundredlog-diagnostics-clear" class="menu_button">기록 지우기</button>
         </div>
         <label for="hundredlog-diagnostics-log" class="hundredlog-label">마지막 오류 내용</label>
-        <textarea id="hundredlog-diagnostics-log" rows="7" readonly spellcheck="false" aria-label="마지막 오류 내용"></textarea>
+        <textarea id="hundredlog-diagnostics-log" rows="10" readonly spellcheck="false" aria-label="마지막 오류 내용"></textarea>
         <p id="hundredlog-diagnostics-feedback" class="hundredlog-help" role="status"></p>
         <p class="hundredlog-help">문제가 생기면 ‘오류 복사’로 전달해 주세요. 새로고침해도 마지막 오류는 유지돼요. 서버 내부나 다른 확장 오류 전체를 기록하는 기능은 아니에요.</p>
       </section>

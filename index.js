@@ -1,6 +1,7 @@
 import { MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js';
 import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, buildRelevanceChecks, selectRelevantFacts, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js';
-import { diagnostic, diagnosticError, traceDiagnostic, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js';
+import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js';
+import { normalizeKnowledgeEvidence, KNOWLEDGE_LABELS, COMMITMENT_LABELS, commitmentState } from './core.js';
 
 const NAME = 'hundredlog';
 const LEGACY_NAME = 'memorybean';
@@ -17,6 +18,7 @@ const EMBEDDING_MODELS = { 'google-ai-studio': 'gemini-embedding-001', 'vertex-e
 const ST_JEV_ROUTE = '/api/backends/chat-completions/generate';
 const ST_STRIP = ['messages', 'prompt', 'stream', 'temperature', 'max_tokens', 'max_completion_tokens', 'presence_penalty', 'frequency_penalty', 'top_p', 'top_k', 'stop', 'logit_bias', 'seed', 'n', 'logprobs', 'top_logprobs', 'tools', 'tool_choice', 'response_format', 'reasoning_effort', 'verbosity'];
 let busy = false;
+let activeReviewJob = null;
 let extracting = false;
 let translating = false;
 let stopTranslationRequested = false;
@@ -27,6 +29,7 @@ let wandMenuObserver = null;
 let wandViewportHandler = null;
 let lastJevTransport = '실리태번 API';
 let selectedView = 'memory';
+let historyFilter = 'all';
 let previousFocus = null;
 let memoryRun = null;
 let memoryTimer = null;
@@ -41,6 +44,42 @@ let developerTitleTimer = null;
 
 const context = () => SillyTavern.getContext();
 const $id = (id) => document.getElementById(`hundredlog-${id}`);
+
+// Only the hidden reply owns this token. Collection/translation requests are separate.
+function reviewCancelledError() {
+    return Object.assign(new Error('답변 생성을 중단했어요.'), { name: 'AbortError', hundredlogCancelled: true });
+}
+
+function checkReviewJob(job) {
+    if (job?.controller.signal.aborted) throw reviewCancelledError();
+}
+
+function stopReviewJob() {
+    if (activeReviewJob && !activeReviewJob.publishing) activeReviewJob.controller.abort(reviewCancelledError());
+}
+
+async function reviewStep(job, action) {
+    checkReviewJob(job);
+    try {
+        const result = await action();
+        checkReviewJob(job);
+        return result;
+    } catch (error) {
+        checkReviewJob(job);
+        throw error;
+    }
+}
+
+function waitForJevRetry(ms, job) {
+    if (!job) return new Promise((resolve) => setTimeout(resolve, ms));
+    checkReviewJob(job);
+    return new Promise((resolve, reject) => {
+        const signal = job.controller.signal;
+        const stopped = () => { clearTimeout(timer); reject(reviewCancelledError()); };
+        const timer = setTimeout(() => { signal.removeEventListener('abort', stopped); resolve(); }, ms);
+        signal.addEventListener('abort', stopped, { once: true });
+    });
+}
 
 const generateUtility = (ctx, prompt, profileId) => traceDiagnostic('보조 AI',
     () => rawGenerateUtility(ctx, prompt, profileId), { profile: Boolean(profileId) });
@@ -92,7 +131,7 @@ function bindDiagnosticPanel() {
 }
 
 function apiKey() {
-    try { return localStorage.getItem(KEY_STORAGE)?.trim() || localStorage.getItem(LEGACY_KEY_STORAGE)?.trim() || ''; } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 95 }); return ''; }
+    try { return localStorage.getItem(KEY_STORAGE)?.trim() || localStorage.getItem(LEGACY_KEY_STORAGE)?.trim() || ''; } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 134 }); return ''; }
 }
 
 function embeddingProvider() {
@@ -100,7 +139,7 @@ function embeddingProvider() {
 }
 
 function embeddingKey(provider = embeddingProvider()) {
-    try { return localStorage.getItem(`${EMBEDDING_KEY_PREFIX}${provider}`)?.trim() || ''; } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 103 }); return ''; }
+    try { return localStorage.getItem(`${EMBEDDING_KEY_PREFIX}${provider}`)?.trim() || ''; } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 142 }); return ''; }
 }
 
 function embeddingLabel(provider = embeddingProvider()) {
@@ -108,7 +147,7 @@ function embeddingLabel(provider = embeddingProvider()) {
 }
 
 function isDeveloperUnlocked() {
-    try { return localStorage.getItem(DEVELOPER_UNLOCK_STORAGE) === 'true'; } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 111 }); return false; }
+    try { return localStorage.getItem(DEVELOPER_UNLOCK_STORAGE) === 'true'; } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 150 }); return false; }
 }
 
 function translationProvider() {
@@ -127,7 +166,7 @@ async function googleTranslateText(value) {
     let response;
     try {
         response = await diagnosticFetch(url.toString(), { credentials: 'omit', referrerPolicy: 'no-referrer', signal: AbortSignal.timeout(30000) });
-    } catch (error) { diagnosticError('기타', error, { site: 130 });
+    } catch (error) { diagnosticError('기타', error, { site: 169 });
         if (error?.name === 'TimeoutError') throw new Error('Google 번역 연결 시간이 초과됐어요.');
         const headers = context().getRequestHeaders?.();
         if (!headers) throw new Error('Google 번역 직접 연결이 차단됐고 실리태번 프록시를 사용할 수 없어요.');
@@ -135,11 +174,11 @@ async function googleTranslateText(value) {
             response = await diagnosticFetch(`/proxy/${encodeURIComponent(url.toString())}`, {
                 headers, credentials: 'same-origin', signal: AbortSignal.timeout(30000)
             });
-        } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 138 }); throw new Error('Google 번역에 연결하지 못했어요. 실리태번 서버의 인터넷 연결을 확인해 주세요.'); }
+        } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 177 }); throw new Error('Google 번역에 연결하지 못했어요. 실리태번 서버의 인터넷 연결을 확인해 주세요.'); }
         if (response.status === 404) throw new Error('실리태번 내장 프록시가 꺼져 있어요. config.yaml에서 enableCorsProxy: true로 바꾸고 서버를 다시 시작해 주세요.');
     }
     let result;
-    try { result = await response.json(); } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 142 }); throw new Error('Google 번역 응답을 읽지 못했어요.'); }
+    try { result = await response.json(); } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 181 }); throw new Error('Google 번역 응답을 읽지 못했어요.'); }
     if (!response.ok) {
         if (response.status === 429) throw new Error('Google 번역 요청이 너무 많아요. 잠시 후 다시 시도해 주세요.');
         throw new Error(`Google 번역 오류 (${response.status})`);
@@ -187,7 +226,7 @@ async function requestGoogleJson(url, key, payload, label) {
             method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders }, body: JSON.stringify(payload),
             credentials: 'omit', referrerPolicy: 'no-referrer', signal: AbortSignal.timeout(45000)
         });
-    } catch (error) { diagnosticError('기타', error, { site: 190 });
+    } catch (error) { diagnosticError('기타', error, { site: 229 });
         if (error?.name === 'TimeoutError') throw new Error(`${label} 임베딩 연결 시간이 초과됐어요.`);
         const headers = context().getRequestHeaders?.();
         if (!headers) throw new Error(`${label} 직접 연결이 차단됐고 실리태번 프록시를 사용할 수 없어요.`);
@@ -196,11 +235,11 @@ async function requestGoogleJson(url, key, payload, label) {
                 method: 'POST', headers: { ...headers, 'Content-Type': 'application/json', ...authHeaders }, body: JSON.stringify(payload),
                 credentials: 'same-origin', signal: AbortSignal.timeout(45000)
             });
-        } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 199 }); throw new Error(`${label}에 연결하지 못했어요. 실리태번 서버의 인터넷 연결을 확인해 주세요.`); }
+        } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 238 }); throw new Error(`${label}에 연결하지 못했어요. 실리태번 서버의 인터넷 연결을 확인해 주세요.`); }
         if (response.status === 404) throw new Error('실리태번 내장 프록시가 꺼져 있어요. config.yaml에서 enableCorsProxy: true로 바꾸고 서버를 다시 시작해 주세요.');
     }
     let result;
-    try { result = await response.json(); } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 203 }); throw new Error(`${label} 임베딩 응답을 읽지 못했어요.`); }
+    try { result = await response.json(); } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 242 }); throw new Error(`${label} 임베딩 응답을 읽지 못했어요.`); }
     if (!response.ok || result?.error) {
         const detail = String(result?.error?.message ?? result?.error ?? '').slice(0, 180);
         if ([400, 401, 403].includes(response.status)) throw new Error(`${label} 키 또는 사용 권한을 확인해 주세요${detail ? `: ${detail}` : ''}`);
@@ -255,7 +294,8 @@ function jevRetryAfter(response) {
     return Number.isFinite(delay) ? Math.max(0, delay) : 0;
 }
 
-async function readJevResponse(response, transport, questions) {
+async function readJevResponse(response, transport, questions, job = null) {
+    checkReviewJob(job);
     if (!response.ok) {
         const code = response.status;
         const retryable = [408, 429].includes(code) || (code >= 500 && code <= 599);
@@ -268,8 +308,8 @@ async function readJevResponse(response, transport, questions) {
         throw jevRequestError(`${message} [${transport}]`, { status: code, retryable, retryAfterMs: jevRetryAfter(response) });
     }
     let result;
-    try { result = await response.json(); }
-    catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 272 }); throw jevRequestError(`JEV 응답을 읽지 못했어요. [${transport}]`, { retryable: true }); }
+    try { result = await response.json(); checkReviewJob(job); }
+    catch (diagnosticCaughtError) { checkReviewJob(job); diagnosticError('기타', diagnosticCaughtError, { site: 312 }); throw jevRequestError(`JEV 응답을 읽지 못했어요. [${transport}]`, { retryable: true }); }
     if (result?.error) {
         // Some relay servers wrap upstream errors in an HTTP 200 response.
         // Inspect for classification only; never display the raw upstream body.
@@ -304,7 +344,9 @@ async function readJevResponse(response, transport, questions) {
     return result;
 }
 
-async function requestJevOnce(state, questions, key) {
+async function requestJevOnce(state, questions, key, job = null) {
+    checkReviewJob(job);
+    const signal = job?.controller.signal;
     const body = JSON.stringify({ model: 'jev-latest', state, questions });
     let response;
     // Keep existing relay/direct/proxy compatibility. Elapsed time never aborts JEV.
@@ -312,7 +354,7 @@ async function requestJevOnce(state, questions, key) {
         const headers = context().getRequestHeaders?.();
         if (headers) {
             response = await diagnosticFetch(ST_JEV_ROUTE, {
-                method: 'POST',
+                method: 'POST', signal,
                 headers: { 'Content-Type': 'application/json', ...headers },
                 credentials: 'same-origin',
                 body: JSON.stringify({
@@ -324,38 +366,39 @@ async function requestJevOnce(state, questions, key) {
                 })
             });
         }
-    } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 327 });
+    } catch (diagnosticCaughtError) { checkReviewJob(job); diagnosticError('기타', diagnosticCaughtError, { site: 369 });
         response = null;
     }
     if (response && ![404, 405].includes(response.status)) {
-        return readJevResponse(response, '실리태번 API', questions);
+        return readJevResponse(response, '실리태번 API', questions, job);
     }
     let transport = '직접 연결';
     try {
         response = await diagnosticFetch(JEV_URL, {
-            method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+            method: 'POST', signal, headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
             body, credentials: 'omit', referrerPolicy: 'no-referrer'
         });
-    } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 339 });
+    } catch (diagnosticCaughtError) { checkReviewJob(job); diagnosticError('기타', diagnosticCaughtError, { site: 381 });
         const headers = context().getRequestHeaders?.();
         if (!headers) throw jevRequestError('JEV 직접 연결이 실패했고 실리태번 요청 헤더를 가져오지 못했어요.', { retryable: true });
         try {
             response = await diagnosticFetch(`/proxy/${encodeURIComponent(JEV_URL)}`, {
-                method: 'POST', headers: { ...headers, Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+                method: 'POST', signal, headers: { ...headers, Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
                 body, credentials: 'same-origin'
             });
             transport = '실리태번 내장 프록시';
-        } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 348 });
+        } catch (diagnosticCaughtError) { checkReviewJob(job); diagnosticError('기타', diagnosticCaughtError, { site: 390 });
             throw jevRequestError('JEV 연결에 실패했어요. 서버 인터넷 연결을 확인해 주세요.', { retryable: true });
         }
         if (response.status === 404) {
             throw jevRequestError('JEV 직접 연결이 막혔고 실리태번 내장 프록시가 꺼져 있어요. 연결 설정을 확인해 주세요.');
         }
     }
-    return readJevResponse(response, transport, questions);
+    return readJevResponse(response, transport, questions, job);
 }
 
-async function requestJev(state, questions) {
+async function requestJev(state, questions, job = null) {
+    checkReviewJob(job);
     const key = apiKey();
     if (!key) throw new Error('확장 설정에 Jev API 키를 먼저 입력해 주세요.');
     const requestChat = chatKey(context());
@@ -364,19 +407,21 @@ async function requestJev(state, questions) {
     // One notice for the whole logical request, including retries and response-body reading.
     const delayNotice = setTimeout(() => {
         diagnostic('delay', { stage: 'JEV 요청', ms: 30000 }, 'warn');
-        if (sameChat()) globalThis.toastr?.info?.('JEV 응답이 늦어지고 있습니다.', '100LOG');
+        if (sameChat() && !job?.controller.signal.aborted) globalThis.toastr?.info?.('JEV 응답이 늦어지고 있습니다.', '100LOG');
     }, 30000);
     try {
         for (let attempt = 0; ; attempt++) {
+            checkReviewJob(job);
             if (!sameChat()) throw new Error('대화가 바뀌어 JEV 요청을 중단했어요.');
             const attemptStarted = Date.now();
             diagnostic('attempt', { stage: 'JEV 요청', attempt: attempt + 1, questions: Object.keys(questions).length });
             try {
-                const result = await requestJevOnce(state, questions, key);
+                const result = await requestJevOnce(state, questions, key, job);
+                checkReviewJob(job);
                 if (!sameChat()) throw new Error('대화가 바뀌어 JEV 판정을 적용하지 않았어요.');
                 diagnostic('jevDone', { attempt: attempt + 1, ms: Date.now() - attemptStarted, questions: Object.keys(questions).length });
                 return result;
-            } catch (error) { diagnosticError('기타', error, { site: 379 });
+            } catch (error) { checkReviewJob(job); diagnosticError('기타', error, { site: 424 });
                 if (!error.retryable) throw error;
                 if (attempt >= retryDelays.length) {
                     throw jevRequestError(`${error.message} 자동 재시도 2회도 실패했어요.`, { status: error.status });
@@ -386,7 +431,8 @@ async function requestJev(state, questions) {
                 diagnostic('retry', { stage: 'JEV 요청', attempt: attempt + 2, waitMs: wait, http: error.status || 0 }, 'warn');
                 // Use bounded timer chunks so long Retry-After values cannot overflow setTimeout.
                 for (let remaining = wait; remaining > 0; remaining -= 60000) {
-                    await new Promise((resolve) => setTimeout(resolve, Math.min(remaining, 60000)));
+                    await waitForJevRetry(Math.min(remaining, 60000), job);
+                    checkReviewJob(job);
                     if (!sameChat()) throw new Error('대화가 바뀌어 JEV 재시도를 중단했어요.');
                 }
             }
@@ -397,7 +443,8 @@ async function requestJev(state, questions) {
 }
 
 export async function reviewExtractedKnowledge(operations, rows, contextRows = [], currentFacts = []) {
-    const reviewed = operations.map((operation) => ({ ...operation, knowledge: normalizeKnowledge(operation.knowledge) }));
+    const reviewed = operations.map((operation) => ({ ...operation, knowledge: normalizeKnowledge(operation.knowledge),
+        knowledgeEvidence: normalizeKnowledgeEvidence(operation.knowledgeEvidence, operation.knowledge) }));
     const factChecks = reviewed.map((operation, operationIndex) => ({ kind: 'fact', operationIndex, questionId: `f${operationIndex}` }));
     const knowledgeChecks = [];
     reviewed.forEach((operation, operationIndex) => {
@@ -409,7 +456,7 @@ export async function reviewExtractedKnowledge(operations, rows, contextRows = [
     const checks = [...factChecks, ...knowledgeChecks];
     if (!checks.length) return { operations: reviewed, compoundOperations: [], factsChecked: 0, factsRejected: 0, compoundCount: 0, checked: 0, changed: 0, removed: 0, noKey: false };
     if (!apiKey()) {
-        for (const operation of reviewed) operation.knowledge = {};
+        for (const operation of reviewed) { operation.knowledge = {}; operation.knowledgeEvidence = {}; }
         return { operations: reviewed, compoundOperations: [], factsChecked: 0, factsRejected: 0, compoundCount: 0, checked: 0, changed: 0, removed: knowledgeChecks.length, noKey: true };
     }
     let factsChecked = 0, factsRejected = 0, changed = 0, removed = 0;
@@ -427,17 +474,18 @@ export async function reviewExtractedKnowledge(operations, rows, contextRows = [
                     check_type: 'fact_validity',
                     proposed_operation: {
                         action: operation.action, kind: operation.kind, text: operation.text,
-                        evidence_type: operation.evidenceType, source_id: operation.sourceId,
+                        evidence_type: operation.evidenceType, source_id: operation.sourceId, progress: operation.progress,
                     },
                     exact_new_evidence: operation.sourceText ?? '',
                     source_message: source ? { id: source.id, role: source.role, name: source.name, text: source.text } : null,
-                    previous_memory: prior ? { text: prior.text, kind: prior.kind, knowledge: normalizeKnowledge(prior.knowledge) } : null,
+                    previous_memory: prior ? { text: prior.text, kind: prior.kind, progress: prior.kind === 'commitment' ? commitmentState(prior) : undefined, knowledge: normalizeKnowledge(prior.knowledge) } : null,
                 };
             }
             return {
                 check_type: 'character_knowledge',
                 character: check.character,
                 proposed_status: check.proposedStatus,
+                proposed_knowledge_evidence: operation.knowledgeEvidence[check.character] ?? null,
                 proposed_memory: operation.text,
                 exact_new_evidence: operation.sourceText ?? '',
                 source_message: source ? { id: source.id, role: source.role, name: source.name, text: source.text } : null,
@@ -448,7 +496,7 @@ export async function reviewExtractedKnowledge(operations, rows, contextRows = [
         batch.forEach((check, index) => {
             questions[check.questionId] = check.kind === 'fact' ? {
                 type: 'choice',
-                instructions: `Verify review_checks[${index}]. Decide whether proposed_operation is directly and completely supported by source_message, exact_new_evidence, new_messages, recent_context, and previous_memory. Validate both the memory text and the requested action. The memory must also be atomic: one independently verifiable event, statement, promise, intention, or knowledge change. If it combines clauses learned or witnessed by different people, or combines an event with a later private conversation, reaction, message, secret, advice request, or plan, choose compound even when every clause is individually true. For a complete operation on a pending commitment, approve when the recent scene directly shows the promised participants arriving at the promised venue or actually performing the promised activity; the text does not need to literally say "the promise was fulfilled" or "as planned". The previous commitment plus clear semantic scene evidence is sufficient. Do not approve completion merely because time passed, the commitment was not mentioned again, or the current scene is only vaguely similar. Do not accept invented off-screen events, participants who were not shown, false attribution of knowledge or presence, a character's lie or belief rewritten as objective truth, an intention rewritten as completion, or a partial quote expanded beyond its meaning.`,
+                instructions: `Verify review_checks[${index}]. Decide whether proposed_operation is directly and completely supported by source_message, exact_new_evidence, new_messages, recent_context, and previous_memory. Validate both the memory text and the requested action. The memory must also be atomic: one independently verifiable event, statement, promise, intention, or knowledge change. If it combines clauses learned or witnessed by different people, or combines an event with a later private conversation, reaction, message, secret, advice request, or plan, choose compound even when every clause is individually true. For commitment updates, verify progress and event identity as well as text. Approve completion only when the specific promised goal is demonstrably fulfilled: arrival can fulfill a visit promise, but not an unfinished activity. Do not approve completion merely because time passed, the commitment was not mentioned again, or the current scene is only vaguely similar. Do not accept invented off-screen events, participants who were not shown, false attribution of knowledge or presence, a character's lie or belief rewritten as objective truth, an intention rewritten as completion, or a partial quote expanded beyond its meaning.`,
                 criteria: {
                     supported: 'Every material clause and the operation action are directly supported; uncertainty, hearsay, lies and intentions remain correctly labeled.',
                     compound: 'The claims may be supported, but this operation combines two or more independently useful facts or clauses with different knowledge boundaries and must be split.',
@@ -466,10 +514,15 @@ export async function reviewExtractedKnowledge(operations, rows, contextRows = [
                 },
             };
         });
+        for (const check of batch) {
+            if (check.kind === 'knowledge') questions[check.questionId].instructions += ' Also verify proposed_knowledge_evidence: its exact quote, source ID and Korean reason must actually support BOTH the proposed status and information flow for this character. If missing, misleading, or incompatible with the status you would choose, choose unverified. The absence of evidence is not evidence of ignorance.';
+            else questions[check.questionId].instructions += ' Compare current_commitments too: reject an add as distorted if it only restates progress or completion of an existing event that should use update/complete on its ID. Do not conflate a new appointment with an older similar one. For updates, verify that planned/underway matches the full proposed text and source.';
+        }
         const body = await requestJev({
             recent_context: contextRows.slice(-8),
             new_messages: rows.map(({ id, role, name, text }) => ({ id, role, name, text })),
             review_checks: reviewChecks,
+            current_commitments: currentFacts.filter((fact) => isCurrent(fact) && fact.kind === 'commitment').map((fact) => ({ id: fact.id, text: fact.text, original_goal: fact.commitment?.originalText || fact.text, progress: commitmentState(fact) })),
         }, questions);
         batch.forEach((check) => {
             const answer = body.answers?.[check.questionId];
@@ -488,16 +541,20 @@ export async function reviewExtractedKnowledge(operations, rows, contextRows = [
             const requiredConfidence = answer?.choice === 'unknown' ? .8 : .65;
             if (answer?.type !== 'choice' || !['known', 'unknown', 'unverified'].includes(answer.choice)
                 || !Number.isFinite(confidence) || confidence < requiredConfidence) {
-                delete operation.knowledge[check.character];
+                operation.knowledge[check.character] = 'unverified';
+                operation.knowledgeEvidence[check.character] = { status: 'unverified', reason: 'JEV가 지식 상태를 확정하지 못했어요.', verified: false };
                 removed++;
                 return;
             }
-            if (answer.choice === 'unverified') {
-                delete operation.knowledge[check.character];
+            const proof = operation.knowledgeEvidence[check.character];
+            if (answer.choice === 'unverified' || !proof || proof.status !== answer.choice) {
+                operation.knowledge[check.character] = 'unverified';
+                operation.knowledgeEvidence[check.character] = { status: 'unverified', reason: '알고 있는지, 모르는지 확인할 근거가 충분하지 않아요.', verified: false };
                 removed++;
                 return;
             }
             operation.knowledge[check.character] = answer.choice;
+            proof.verified = true;
             if (answer.choice !== check.proposedStatus) changed++;
         });
     }
@@ -517,10 +574,12 @@ function compoundSplitRequest(operations, facts, rows, contextRows = []) {
         pinned: Boolean(pinned), paused: !active,
     }));
     return [
-        'Split ONLY the rejected compound continuity memories below into atomic Korean memory operations. Return JSON only in exactly this shape: {"operations":[{"action":"add|update|complete|cancel|archive","id":"existing id or null","kind":"fact|relationship|commitment|knowledge|temporary","text":"one atomic Korean memory","sourceId":0,"evidence":"exact quote from NEW_MESSAGES","evidenceType":"occurred|explicit_statement|promise|intention|explicit_cancellation","confidence":0.0,"importance":3,"retention":"summary|recent","knowledge":{"Name":"known|unknown"},"reason":"short Korean reason"}]}.',
-        'Each output operation must contain exactly ONE independently verifiable event, statement, promise, intention, or knowledge change. If two clauses were witnessed or learned by different people, they MUST be separate operations. Never combine an event with a later private conversation, reaction, message, advice request, secret, or plan. Determine knowledge from demonstrated information flow rather than scene presence. A character may be marked known only when they know every clause through direct experience, communication, records, observation, monitoring, interception, or another shown exposure. Mark unknown only when non-receipt or ignorance is positively supported; absence, silence, or lack of reply is not proof. Omit a character when neither state is established.',
+        'Split ONLY the rejected compound continuity memories below into atomic Korean memory operations. Return JSON only in exactly this shape: {"operations":[{"action":"add|update|complete|cancel|archive","id":"existing id or null","kind":"fact|relationship|commitment|knowledge|temporary","text":"one atomic Korean memory","sourceId":0,"evidence":"exact quote from NEW_MESSAGES","evidenceType":"occurred|explicit_statement|promise|intention|explicit_cancellation","confidence":0.0,"importance":3,"retention":"summary|recent","knowledge":{"Name":"known|unknown|unverified"},"knowledgeEvidence":{"Name":{"status":"known|unknown|unverified","reason":"Korean information-flow explanation","sourceId":0,"evidence":"exact source quote"}},"progress":"planned|underway","reason":"short Korean reason"}]}.',
+        'Each output operation must contain exactly ONE independently verifiable event, statement, promise, intention, or knowledge change. If two clauses were witnessed or learned by different people, they MUST be separate operations. Never combine an event with a later private conversation, reaction, message, advice request, secret, or plan. Determine knowledge from demonstrated information flow rather than scene presence. A character may be marked known only when they know every clause through direct experience, communication, records, observation, monitoring, interception, or another shown exposure. Mark unknown only when non-receipt or ignorance is positively supported; absence, silence, or lack of reply is not proof. Use unverified for a relevant character when neither state is established.',
         'Preserve only claims directly supported by NEW_MESSAGES. Evidence must be an exact excerpt from the matching numbered source. CONTEXT is interpretation only. Do not invent off-screen events or knowledge transfer. Do not repeat an already-current memory. For an update, use the existing id only when the atomic output genuinely replaces that same memory; otherwise use add. Protected or paused memories must not be changed.',
         `REJECTED_COMPOUND_OPERATIONS: ${JSON.stringify(operations)}`,
+        'EVENT LIFECYCLE: Match an existing commitment by the same intended event, participants and purpose, not just names. For progress on that event, use update with its existing ID and progress planned or underway; rewrite text to describe the current stage while retaining the intended goal. Never add a second fact just to restate arrival or progress for the same event. A visit promise is fulfilled by an evidenced visit; a promise to finish an activity needs evidence of that outcome, not mere arrival. Use complete only when the specific promised goal is fulfilled, cancel for explicit cancellation, and leave ambiguity unchanged. Never move an underway event back to planned without explicit rescheduling. A genuinely new recurring appointment is a separate event. The progress value and changed text must both be supported by new evidence.',
+        'KNOWLEDGE EVIDENCE: For every named knowledge entry include knowledgeEvidence with the same name as key and {status, reason, sourceId, evidence}. reason is a short Korean explanation of HOW information was learned or why ignorance is established, not a guess. evidence is an exact original quote from the numbered NEW_MESSAGES or CONTEXT. Choose known, unknown, or unverified. unverified means neither knowledge nor ignorance is established and imposes NO ignorance constraint. Do not infer ignorance from absence or silence. On update, re-evaluate every previous knowledge entry against the updated full text; explicitly mark unverified when an old boundary is no longer established. Do not inherit old knowledge automatically.',
         `CURRENT_MEMORIES: ${JSON.stringify(current)}`,
         `CONTEXT: ${JSON.stringify(contextRows)}`,
         `NEW_MESSAGES: ${JSON.stringify(rows)}`,
@@ -605,7 +664,7 @@ function ensureCharacterUuid(ctx = context()) {
         character.data.extensions[IDENTITY_FIELD] = payload;
         if (!embedded || embedded !== uuid) {
             Promise.resolve(ctx.writeExtensionField?.(characterId, IDENTITY_FIELD, payload))
-                .catch((error) => diagnosticError('초기화', error, { site: 608 }));
+                .catch((error) => diagnosticError('초기화', error, { site: 667 }));
         }
     }
     if (registryChanged) ctx.saveSettingsDebounced?.();
@@ -679,7 +738,7 @@ function data(create = true) {
         mergeLegacyChatData(value, legacy, sourceChatId(ctx));
         ctx.chatMetadata.hundredlogCharacterStoreMigration = ownerKey;
         ctx.saveSettingsDebounced?.();
-        void Promise.resolve(ctx.saveMetadata?.()).catch((error) => diagnosticError('초기화', error, { site: 682 }));
+        void Promise.resolve(ctx.saveMetadata?.()).catch((error) => diagnosticError('초기화', error, { site: 741 }));
     }
     value.embeddingIndex ??= { provider: '', model: '', entries: {} };
     value.embeddingIndex.entries ??= {};
@@ -714,7 +773,7 @@ function setDeveloperUnlocked(unlocked) {
     try {
         if (unlocked) localStorage.setItem(DEVELOPER_UNLOCK_STORAGE, 'true');
         else localStorage.removeItem(DEVELOPER_UNLOCK_STORAGE);
-    } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 717 }); /* local storage can be unavailable in restricted browser contexts */ }
+    } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 776 }); /* local storage can be unavailable in restricted browser contexts */ }
     render();
 }
 
@@ -795,7 +854,7 @@ function appendOriginal(parent, record) {
 function refreshProfiles() {
     if (!$id('extraction-profile')) return;
     let profiles = [];
-    try { profiles = availableProfiles(context()); } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 798 }); /* Keep saved choices visible for correction. */ }
+    try { profiles = availableProfiles(context()); } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 857 }); /* Keep saved choices visible for correction. */ }
     for (const [id, key] of [['extraction-profile', 'extractionProfileId'], ['translation-profile', 'translationProfileId']]) {
         const select = $id(id);
         const choices = id === 'translation-profile' ? [['@extraction', '사실 추출용 프로필과 동일']] : [];
@@ -848,7 +907,7 @@ export async function translateRecords(mode = 'missing') {
             render();
         }
         status(stopTranslationRequested ? `${done}/${targets.length}개 번역 후 중단했어요. 완료한 번역은 저장됐어요.` : `${done}개를 한국어로 번역했어요. 원문 보기에서 원래 내용을 확인할 수 있어요.`);
-    } catch (error) { diagnosticError('번역', error, { site: 851 }); status(`번역 중단 · ${done}개 저장됨: ${error.message}`); }
+    } catch (error) { diagnosticError('번역', error, { site: 910 }); status(`번역 중단 · ${done}개 저장됨: ${error.message}`); }
     finally { translating = false; render(); if (memoryPending) scheduleMemory(); }
 }
 
@@ -872,55 +931,140 @@ function replacementSelect(value, selectedId, onChange) {
     return select;
 }
 
+function renderReviewReport() {
+    const host = $id('review-report');
+    if (!host) return;
+    const state = chatState(data(false), context(), false);
+    const report = state?.lastReview;
+    const wasOpen = host.querySelector('details')?.open;
+    host.replaceChildren();
+    if (!report) {
+        const empty = document.createElement('p'); empty.className = 'hundredlog-help';
+        empty.textContent = '이 채팅에서 새 답변을 검수하면 결과가 여기에 표시돼요.';
+        host.append(empty); return;
+    }
+    const details = document.createElement('details'); details.open = Boolean(wasOpen);
+    const summary = document.createElement('summary');
+    const prefix = report.mode === 'swipe' ? '스와이프 · ' : report.mode === 'regenerate' ? '재생성 · ' : '';
+    const labels = {
+        running: `${report.stage} 중…`,
+        passed: `기억 ${report.checked}개 확인 · ${report.uncertain ? '명확한 충돌 없음' : '모순 없음'}`,
+        corrected: `충돌 ${report.issues?.length || 0}개 수정 · 재검수 후 표시`,
+        blocked: `재검수 실패 · 충돌 ${report.remaining || 0}개가 남아 표시하지 않음`,
+        failed: `${report.stage} 실패 · 답변 표시 안 됨`,
+        cancelled: '생성 중단 · 답변 표시 안 됨',
+        external_error: `${report.stage} 응답을 받지 못함 · 연결 상태 확인 필요`,
+        publish_error: '검수 후 표시·저장 오류 · 채팅 확인 필요',
+    };
+    summary.textContent = prefix + (report.status === 'running' && !busy ? '이전 검수의 완료 기록이 없어요 · 다시 생성해 주세요' : (labels[report.status] || '검수 결과 확인'));
+    details.append(summary);
+    const meta = document.createElement('p'); meta.className = 'hundredlog-help';
+    meta.textContent = new Date(report.at).toLocaleString() + ' · 이 채팅의 마지막 검수'; details.append(meta);
+    if (report.uncertain) {
+        const note = document.createElement('p'); note.className = 'hundredlog-help';
+        note.textContent = `${report.uncertain}개 규칙은 판정이 불확실했어요. 명확한 충돌만 재작성 대상으로 삼아요.`;
+        details.append(note);
+    }
+    for (const issue of report.issues || []) {
+        const row = document.createElement('div'); row.className = 'hundredlog-review-issue';
+        const label = document.createElement('strong'); label.textContent = issue.kind === 'knowledge_leak' ? '인물별 지식 충돌' : '기억과 내용 충돌';
+        const rule = document.createElement('p'); rule.textContent = issue.rule;
+        const instruction = document.createElement('p'); instruction.className = 'hundredlog-help'; instruction.textContent = issue.instruction;
+        row.append(label, rule, instruction); details.append(row);
+    }
+    if (report.remainingRules?.length) {
+        const pending = document.createElement('p'); pending.className = 'hundredlog-help';
+        pending.textContent = `재검수에서 남은 충돌: ${report.remainingRules.join(' / ')}`; details.append(pending);
+    }
+    if (report.status === 'failed' || report.status === 'publish_error' || report.status === 'external_error') {
+        const note = document.createElement('p'); note.className = 'hundredlog-help';
+        note.textContent = '자세한 오류는 설정의 마지막 오류에서 확인해 주세요.'; details.append(note);
+    }
+    host.append(details);
+}
+
+function appendCommitmentHistory(parent, fact) {
+    if (fact.kind !== 'commitment') return;
+    const details = document.createElement('details'); details.className = 'hundredlog-event-history';
+    const summary = document.createElement('summary');
+    summary.textContent = `${COMMITMENT_LABELS[commitmentState(fact)]} · 진행 이력`;
+    details.append(summary);
+    const rows = fact.commitment?.history || [{ status: commitmentState(fact), text: fact.text, sourceId: fact.sourceId, evidence: fact.sourceText }];
+    for (const step of rows) {
+        const row = document.createElement('div'); row.className = 'hundredlog-event-step';
+        const text = document.createElement('div'); text.textContent = `${COMMITMENT_LABELS[step.status] || '변경'} · ${step.text}`;
+        const proof = document.createElement('div'); proof.className = 'hundredlog-meta';
+        proof.textContent = `${Number.isInteger(step.sourceId) ? `대화 #${step.sourceId}` : '저장된 기록'}${step.evidence ? ` · ${step.evidence}` : ''}`;
+        row.append(text, proof); details.append(row);
+    }
+    parent.append(details);
+}
+
 function knowledgeEditor(record, persist) {
-    const panel = document.createElement('div');
-    panel.className = 'hundredlog-knowledge';
-    const title = document.createElement('div');
-    title.className = 'hundredlog-knowledge-title';
-    title.textContent = `인물별 지식 · ${Object.keys(normalizeKnowledge(record.knowledge)).length}명`;
-    panel.append(title);
-    const tags = document.createElement('div');
-    tags.className = 'hundredlog-knowledge-tags';
-    for (const [name, state] of Object.entries(normalizeKnowledge(record.knowledge))) {
-        const tag = document.createElement('span');
-        tag.className = 'hundredlog-knowledge-tag';
-        const toggle = makeButton(`${name} · ${state === 'known' ? '알고 있음' : '아직 모름'}`, async () => {
-            setKnowledge(record, name, state === 'known' ? 'unknown' : 'known');
-            await persist();
+    const panel = document.createElement('div'); panel.className = 'hundredlog-knowledge';
+    const tags = document.createElement('div'); tags.className = 'hundredlog-knowledge-tags';
+    const editor = document.createElement('div'); editor.className = 'hundredlog-knowledge-editor'; editor.hidden = true;
+    const knowledge = normalizeKnowledge(record.knowledge);
+    const evidence = normalizeKnowledgeEvidence(record.knowledgeEvidence, knowledge);
+    const openEditor = (selected = '') => {
+        editor.replaceChildren(); editor.hidden = false;
+        const proof = evidence[selected];
+        const explanation = document.createElement('p'); explanation.className = 'hundredlog-help';
+        explanation.textContent = proof?.reason || (selected ? '이전 버전에서 저장된 상태예요. 당시 판단 근거는 기록되어 있지 않아요.' : '인물의 지식 상태와 근거를 직접 기록해요.');
+        editor.append(explanation);
+        if (proof?.evidence) {
+            const quote = document.createElement('div'); quote.className = 'hundredlog-knowledge-proof';
+            quote.textContent = `${Number.isInteger(proof.sourceId) ? `대화 #${proof.sourceId} · ` : ''}${proof.evidence}`;
+            editor.append(quote);
+        }
+        const controls = document.createElement('div'); controls.className = 'hundredlog-knowledge-controls';
+        const name = document.createElement('input'); name.type = 'text'; name.maxLength = 50;
+        name.placeholder = '인물 이름'; name.value = selected; name.setAttribute('aria-label', '인물 이름');
+        const choice = document.createElement('select'); choice.setAttribute('aria-label', '지식 상태');
+        for (const [state, label] of Object.entries(KNOWLEDGE_LABELS)) {
+            const option = document.createElement('option'); option.value = state; option.textContent = label; choice.append(option);
+        }
+        choice.value = knowledge[selected] || 'unverified';
+        const reason = document.createElement('input'); reason.type = 'text'; reason.maxLength = 180;
+        reason.className = 'hundredlog-knowledge-reason'; reason.placeholder = '판단 근거 (선택)'; reason.value = proof?.reason || '';
+        reason.setAttribute('aria-label', '판단 근거');
+        const saveButton = makeButton('저장', async () => {
+            const nextName = name.value.trim();
+            if (selected && nextName !== selected && Object.hasOwn(record.knowledge || {}, nextName)) {
+                explanation.textContent = '이미 있는 인물 이름이에요. 해당 이름을 눌러 수정해 주세요.'; return;
+            }
+            try {
+                if (busy || extracting || translating) return;
+                // Validate before changing the original entry.
+                const updated = { ...record, knowledge: { ...record.knowledge }, knowledgeEvidence: { ...record.knowledgeEvidence } };
+                if (selected && nextName !== selected) setKnowledge(updated, selected, null);
+                setKnowledge(updated, nextName, choice.value, reason.value);
+                record.knowledge = updated.knowledge; record.knowledgeEvidence = updated.knowledgeEvidence;
+                record.pinned = true;
+                await persist();
+            } catch (error) { explanation.textContent = error.message; }
         });
-        toggle.className += ' hundredlog-knowledge-toggle';
-        toggle.title = '눌러서 알고 있음/아직 모름 전환';
-        const remove = makeButton('×', async () => {
-            setKnowledge(record, name, null);
-            await persist();
-        });
-        remove.className += ' hundredlog-knowledge-remove';
-        remove.setAttribute('aria-label', `${name} 지식 기록 삭제`);
-        tag.append(toggle, remove);
-        tags.append(tag);
+        controls.append(name, choice, saveButton); editor.append(controls, reason);
+        const actions = document.createElement('div'); actions.className = 'hundredlog-actions';
+        if (selected) actions.append(makeButton('× 기록 삭제', async () => {
+            if (busy || extracting || translating) return;
+            setKnowledge(record, selected, null); record.pinned = true; await persist();
+        }));
+        actions.append(makeButton('닫기', () => { editor.hidden = true; })); editor.append(actions);
+    };
+    for (const [name, state] of Object.entries(knowledge)) {
+        const button = makeButton(`${name} · ${KNOWLEDGE_LABELS[state]}`, () => openEditor(name));
+        button.className += ' hundredlog-knowledge-toggle'; button.title = '판단 근거 보기 · 수정';
+        tags.append(button);
     }
-    panel.append(tags);
-    const controls = document.createElement('div');
-    controls.className = 'hundredlog-knowledge-controls';
-    const name = document.createElement('input');
-    name.type = 'text'; name.maxLength = 50; name.placeholder = '인물 이름'; name.setAttribute('aria-label', '인물 이름');
-    const choice = document.createElement('select');
-    choice.className = 'hundredlog-select';
-    choice.setAttribute('aria-label', '인물이 아는지 여부');
-    for (const [label, state] of [['알고 있음', 'known'], ['아직 모름', 'unknown']]) {
-        const option = document.createElement('option'); option.value = state; option.textContent = label; choice.append(option);
-    }
-    controls.append(name, choice, makeButton('기록', async () => {
-        try { setKnowledge(record, name.value, choice.value); await persist(); }
-        catch (error) { diagnosticError('기타', error, { site: 915 }); status(error.message); }
-    }));
-    panel.append(controls);
-    return panel;
+    const add = makeButton('+ 인물', () => openEditor()); add.className += ' hundredlog-knowledge-toggle';
+    tags.append(add); panel.append(tags, editor); return panel;
 }
 
 function render() {
     if (!$id('facts')) return;
     const value = data();
+    renderReviewReport();
     const currentFacts = value?.facts.filter(isCurrent) ?? [];
     const working = busy || extracting || translating;
     $id('auto-memory').checked = settings().autoMemory;
@@ -939,7 +1083,8 @@ function render() {
     refreshProfiles();
     const allRecords = value ? [...value.facts, ...value.candidates] : [];
     const missing = allRecords.filter((record) => !hasUsableKoreanText(record)).length;
-    $id('translation-count').textContent = `미번역 ${missing} / 전체 ${allRecords.length}개`;
+    $id('translation-count').textContent = `미번역 ${missing}`;
+    $id('translation-count').title = `전체 ${allRecords.length}개 중 미번역 ${missing}개`;
     $id('translation-provider').value = translationProvider();
     $id('translation-provider').disabled = working;
     $id('translation-profile-setting').hidden = translationProvider() === 'google';
@@ -1003,10 +1148,11 @@ function render() {
     }
     const conflictIds = new Set((value.cleanupConflicts ?? []).flatMap((entry) => entry.ids ?? []));
     const warningIds = new Set((value.cleanupWarnings ?? []).flatMap((entry) => entry.ids ?? []));
-    for (const fact of currentFacts) {
+    for (const fact of [...currentFacts].sort((a, b) => Number(b.kind === 'commitment') - Number(a.kind === 'commitment'))) {
         const item = document.createElement('div'); item.className = 'hundredlog-item';
         const itemHead = document.createElement('div'); itemHead.className = 'hundredlog-item-head';
         const kind = document.createElement('span'); kind.className = 'hundredlog-kind'; kind.textContent = MEMORY_KINDS[fact.kind] || '중요한 사실';
+        if (fact.kind === 'commitment') kind.textContent += ` · ${COMMITMENT_LABELS[commitmentState(fact)]}`;
         itemHead.append(kind);
         const title = document.createElement('div'); title.className = 'hundredlog-text'; title.textContent = displayText(fact);
         const carryoverAge = fact.summaryCarryover && fact.sourceChatId === sourceChatId() && Number.isInteger(fact.carryoverStartId)
@@ -1031,36 +1177,40 @@ function render() {
         actions.append(makeButton(fact.scope === 'scene' ? '지속 기억으로' : '임시 기억으로', async () => { fact.scope = fact.scope === 'scene' ? 'always' : 'scene'; await save(); render(); }));
         actions.append(makeButton('삭제', async () => { if (data(false) !== value) return; removeFact(value, fact.id); await save(); render(); }));
         const actionMenu = document.createElement('details'); actionMenu.className = 'hundredlog-action-menu';
-        const actionSummary = document.createElement('summary'); actionSummary.textContent = '관리';
+        const actionSummary = document.createElement('summary'); actionSummary.textContent = '⋯'; actionSummary.setAttribute('aria-label', '규칙 관리');
         actionMenu.append(actionSummary, actions);
         itemHead.append(actionMenu);
         item.append(itemHead, title, meta); $id('facts').append(item);
         appendOriginal(item, fact);
         item.append(knowledgeEditor(fact, async () => { if (data(false) !== value) return; await save(); render(); }));
+        appendCommitmentHistory(item, fact);
     }
-    for (const fact of history) {
+    for (const button of document.querySelectorAll('#hundredlog-history-filters button')) button.setAttribute('aria-pressed', String(button.dataset.filter === historyFilter));
+    const visibleHistory = history.filter((fact) => historyFilter === 'all' || (historyFilter === 'changed' ? !['completed', 'cancelled'].includes(fact.archived) : fact.archived === historyFilter));
+    for (const fact of [...visibleHistory].reverse()) {
         const item = document.createElement('div'); item.className = 'hundredlog-item';
         const title = document.createElement('div'); title.className = 'hundredlog-text'; title.textContent = displayText(fact);
         const next = value.facts.find((entry) => entry.id === fact.supersededBy);
         const meta = document.createElement('div'); meta.className = 'hundredlog-meta';
         const reason = { completed: '완료됨', cancelled: '취소됨', past_scene: '지난 상황', updated: '새 상태로 갱신', merged: '비슷한 규칙에 병합', low_importance: '중요도가 낮아 자동 정리', restored: '이전 기억 복원' }[fact.archived] || '지난 상태';
         meta.textContent = `${reason}${fact.archiveReason ? ` · ${fact.archiveReason}` : ''}${next ? ` → ${displayText(next)}` : ''}`;
-        item.append(title, meta); appendOriginal(item, fact);
+        item.append(title, meta); appendOriginal(item, fact); appendCommitmentHistory(item, fact);
         if (fact.closedEvidence) { const evidence = document.createElement('div'); evidence.className = 'hundredlog-meta'; evidence.textContent = `변경 근거: ${fact.closedEvidence}`; item.append(evidence); }
         item.append(makeButton('현재 기억으로 복원', async () => {
             if (data(false) !== value) return;
             const restored = { ...fact, id: newId(), active: true, pinned: true, origin: 'manual', restoredFrom: fact.id };
+            if (restored.commitment) restored.commitment = { ...restored.commitment, status: 'planned', history: [...(restored.commitment.history || [])] };
             for (const name of ['archived', 'supersededBy', 'previousId', 'endedAtSourceId', 'closedEvidence', 'archiveReason']) delete restored[name];
             let current = next;
             for (let i = 0; current?.supersededBy && i < value.facts.length; i++) current = value.facts.find((entry) => entry.id === current.supersededBy);
             try {
                 approveFact(value, restored, current?.active && isCurrent(current) ? current.id : null);
                 await save(); render(); status('현재 기억으로 복원하고 자동 변경 잠금했어요.');
-            } catch (error) { diagnosticError('기타', error, { site: 1059 }); status(error.message); }
+            } catch (error) { diagnosticError('기타', error, { site: 1209 }); status(error.message); }
         }));
         $id('history').append(item);
     }
-    if (!history.length) { const empty = document.createElement('p'); empty.className = 'hundredlog-empty'; empty.textContent = '완료된 약속이나 바뀌기 전의 상태가 여기에 남아요.'; $id('history').append(empty); }
+    if (!visibleHistory.length) { const empty = document.createElement('p'); empty.className = 'hundredlog-empty'; empty.textContent = history.length ? '이 분류에 해당하는 지난 규칙이 없어요.' : '완료된 약속이나 바뀌기 전의 상태가 여기에 남아요.'; $id('history').append(empty); }
     if (!value.candidates.length) {
         const empty = document.createElement('p'); empty.className = 'hundredlog-empty'; empty.textContent = '검토할 후보가 없어요.'; $id('candidates').append(empty);
     }
@@ -1082,7 +1232,7 @@ function render() {
                 approveFact(value, candidate, replacement.value || null);
                 value.candidates = value.candidates.filter((entry) => entry.id !== candidate.id);
                 await save(); render();
-            } catch (error) { diagnosticError('기타', error, { site: 1085 }); status(error.message); }
+            } catch (error) { diagnosticError('기타', error, { site: 1235 }); status(error.message); }
         }));
         actions.append(makeButton('제외', async () => { value.candidates = value.candidates.filter((entry) => entry.id !== candidate.id); await save(); render(); }));
         item.append(actions);
@@ -1135,8 +1285,9 @@ export async function reviewCleanupActions(actions, value, rows) {
     const active = new Map((value.facts ?? []).filter((fact) => fact.active && isCurrent(fact)).map((fact) => [fact.id, fact]));
     if (!actions.length) return { actions: [], warnings: [], checked: 0, rejected: 0, conflictsResolved: 0, conflictsPending: 0, noKey: false };
     if (!apiKey()) return { actions: [], warnings: [], checked: 0, rejected: actions.length, conflictsResolved: 0, conflictsPending: 0, noKey: true };
-    const rules = [...active.values()].map(({ id, text, kind, sourceId, sourceText, knowledge, pinned, origin, importance }) => ({
+    const rules = [...active.values()].map(({ id, text, kind, sourceId, sourceText, knowledge, commitment, pinned, origin, importance }) => ({
         id, text, kind, sourceId, sourceText: sourceText ?? '', knowledge: normalizeKnowledge(knowledge),
+        commitment: commitment ? { status: commitment.status, originalText: commitment.originalText } : undefined,
         protected: Boolean(pinned || origin === 'manual'), importance: Number(importance) || 3,
     }));
     const answersByIndex = new Map();
@@ -1230,7 +1381,7 @@ async function runAutomaticCleanup(value, ctx, profileId, sameChat) {
     const review = await reviewCleanupActions(actions, value, rows);
     if (!sameChat()) return null;
     if (review.noKey) return { merged: 0, archived: 0, conflicts: value.cleanupConflicts?.length ?? 0, changes: [], skipped: true, jevRequired: true };
-    const result = { ...applyCleanupActions(value, review.actions), cleanupChecked: review.checked, cleanupRejected: review.rejected,
+    const result = { ...applyCleanupActions(value, review.actions, sourceChatId(ctx)), cleanupChecked: review.checked, cleanupRejected: review.rejected,
         conflictsResolved: review.conflictsResolved, conflictsPending: review.conflictsPending, warnings: review.warnings.length };
     value.cleanupWarnings = review.warnings;
     value.lastCleanupAt = Date.now();
@@ -1341,7 +1492,7 @@ function queueSourceMutation() {
     // that burst to finish so it is handled once instead of as dozens of edits.
     sourceMutationTimer = setTimeout(() => {
         sourceMutationTimer = null;
-        void processSourceMutation().catch((error) => { diagnosticError('규칙 저장', error, { site: 1344 }); status(error.message); });
+        void processSourceMutation().catch((error) => { diagnosticError('규칙 저장', error, { site: 1495 }); status(error.message); });
     }, 900);
 }
 
@@ -1384,8 +1535,10 @@ async function performMemorySync({ rebuildRecent = false, force = false } = {}) 
             // Track skipped sources too, so edits to OOC/system messages invalidate their checkpoint.
             const tracked = [];
             for (let id = start; id < Math.min(end, batch.nextCursor + (batch.nextOffset ? 1 : 0)); id++) tracked.push({ id, signature: messageSignature(ctx.chat[id]) });
-            const contextRows = ctx.chat.slice(0, start).filter(isVisibleChatMessage).slice(-8)
-                .map((message) => ({ name: message.name, text: String(message.mes ?? '').slice(-1800) }));
+            const contextRows = ctx.chat.map((message, id) => ({ message, id })).slice(recentWindowStart(ctx.chat), start)
+                .filter(({ message }) => isVisibleChatMessage(message)).slice(-8)
+                .map(({ message, id }) => ({ id, signature: messageSignature(message), name: message.name, text: String(message.mes ?? '').slice(-1800) }));
+            for (const row of contextRows) if (!tracked.some((item) => item.id === row.id)) tracked.push({ id: row.id, signature: row.signature });
             const progress = recentWindowProgress(ctx.chat.slice(0, end), start);
             status(`최근 ${RECENT_MESSAGE_LIMIT}개 대화 수집 중 · ${progress.completed}/${progress.total} · 규칙 ${changed}개 반영`);
             let parsed = { operations: [], rejected: 0 };
@@ -1397,7 +1550,7 @@ async function performMemorySync({ rebuildRecent = false, force = false } = {}) 
                     status('대화가 수정되어 바뀐 내용으로 다시 정리할게요.');
                     return;
                 }
-                parsed = await traceDiagnostic('규칙 파싱', () => parseMemoryOperations(raw, rows, value.facts, currentSourceChatId));
+                parsed = await traceDiagnostic('규칙 파싱', () => parseMemoryOperations(raw, rows, value.facts, currentSourceChatId, contextRows));
                 if (parsed.operations.length) {
                     status(`Jev가 새 규칙 ${parsed.operations.length}개와 인물별 지식을 검증 중이에요…`);
                     const review = await reviewExtractedKnowledge(parsed.operations, rows, contextRows, value.facts);
@@ -1414,7 +1567,7 @@ async function performMemorySync({ rebuildRecent = false, force = false } = {}) 
                         status(`Jev가 복합 규칙 ${review.compoundOperations.length}개를 발견해 인물별 지식 경계에 맞게 다시 나누고 있어요…`);
                         const splitRaw = await generateUtility(ctx, compoundSplitRequest(review.compoundOperations, value.facts, rows, contextRows), profileId);
                         if (!sameChat()) return;
-                        const splitParsed = parseMemoryOperations(splitRaw, rows, value.facts, currentSourceChatId);
+                        const splitParsed = parseMemoryOperations(splitRaw, rows, value.facts, currentSourceChatId, contextRows);
                         const splitReview = await reviewExtractedKnowledge(splitParsed.operations, rows, contextRows, value.facts);
                         if (!sameChat()) return;
                         parsed.operations.push(...splitReview.operations);
@@ -1463,7 +1616,7 @@ async function performMemorySync({ rebuildRecent = false, force = false } = {}) 
             status(stopExtractionRequested ? `수집 중단 · 규칙 ${changed}개 반영. 다음에 이어서 수집해요.${factResult}${knowledgeResult}`
                 : `최근 ${RECENT_MESSAGE_LIMIT}개 대화 수집 완료 · 규칙 ${changed}개 반영${uncertain ? ` · 불확실하거나 중복된 제안 ${uncertain}개는 건너뛰었어요` : ''}${factResult}${knowledgeResult}${cleanupText}`);
         }
-    } catch (error) { diagnosticError('규칙 수집', error, { site: 1466 }); if (sameChat()) status(`기억 정리를 멈췄어요: ${error.message} ‘지금 정리’로 다시 시도할 수 있어요.`); }
+    } catch (error) { diagnosticError('규칙 수집', error, { site: 1619 }); if (sameChat()) status(`기억 정리를 멈췄어요: ${error.message} ‘지금 정리’로 다시 시도할 수 있어요.`); }
     finally { extracting = false; render(); }
 }
 
@@ -1478,7 +1631,7 @@ export function installMemoryHooks(ctx = context()) {
                 const result = callback(...args);
                 if (result?.then) return result.catch((error) => { diagnosticError('미처리', error); throw error; });
                 return result;
-            } catch (error) { diagnosticError('기타', error, { site: 1481 }); diagnosticError('미처리', error); throw error; }
+            } catch (error) { diagnosticError('기타', error, { site: 1634 }); diagnosticError('미처리', error); throw error; }
         });
     };
     on('GENERATION_AFTER_COMMANDS', async (type, eventData, dryRun) => {
@@ -1499,7 +1652,7 @@ export function installMemoryHooks(ctx = context()) {
         normalGenerating = false;
         if (memoryPending) scheduleMemory();
     });
-    on('GENERATION_STOPPED', () => { normalGenerating = false; });
+    on('GENERATION_STOPPED', () => { normalGenerating = false; stopReviewJob(); });
     for (const event of ['MESSAGE_SWIPED', 'MESSAGE_EDITED', 'MESSAGE_DELETED']) on(event, queueSourceMutation);
 }
 
@@ -1510,12 +1663,17 @@ function recentChat(ctx, excludeLast = false) {
         .slice(-12).map((message) => `${message.name ?? (message.is_user ? ctx.name1 : ctx.name2)}: ${String(message.mes ?? '').slice(0, 1000)}`).join('\n');
 }
 
-async function judge(draft, facts, recent, speaker) {
+async function judge(draft, facts, recent, speaker, job = null) {
     const batches = buildChecks(draft, facts, recent, speaker);
     const found = [];
+    found.uncertain = 0;
     for (const batch of batches) {
-        const body = await requestJev(batch.state, batch.questions);
+        const body = await requestJev(batch.state, batch.questions, job);
         found.push(...readContradictions(batch, body.answers));
+        found.uncertain += batch.tasks.filter((_task, index) => {
+            const answer = body.answers?.[`q${index}`];
+            return answer?.choice === 'unclear' || (['contradiction', 'knowledge_leak'].includes(answer?.choice) && Number(answer?.confidence) < .78);
+        }).length;
     }
     return found;
 }
@@ -1560,22 +1718,25 @@ async function ensureFactEmbeddings(facts, { announce = true } = {}) {
     return index;
 }
 
-async function selectInjectionFactsWithJev(facts, ctx) {
+async function selectInjectionFactsWithJev(facts, ctx, job = null) {
+    checkReviewJob(job);
     const recent = recentChat(ctx);
     const latestUser = [...ctx.chat].reverse().find((message) => message?.is_user && isVisibleChatMessage(message));
     const focus = `${latestUser?.name ?? ctx.name1}: ${String(latestUser?.mes ?? '').slice(0, 4000)}\n\n${recent}`;
     const requested = positiveInteger(settings().maxInjectedMemories, 12);
     const candidateLimit = Math.max(12, requested * 2);
     const index = await ensureFactEmbeddings(facts);
+    checkReviewJob(job);
     status('현재 장면을 임베딩하고 가까운 규칙 후보를 찾고 있어요…');
     const [queryVector] = await requestEmbeddings([focus], 'RETRIEVAL_QUERY');
+    checkReviewJob(job);
     const candidates = rankFactsByVectors(queryVector, facts, index.entries, candidateLimit);
     if (!candidates.length) throw new Error('사용 가능한 규칙 임베딩이 없어요. 임베딩 연결을 다시 확인해 주세요.');
     status(`임베딩 후보 ${candidates.length}개를 Jev가 최종 판정 중이에요…`);
     const relevance = buildRelevanceChecks(focus, candidates, recent);
     const answers = [];
     for (const batch of relevance) {
-        const body = await requestJev(batch.state, batch.questions);
+        const body = await requestJev(batch.state, batch.questions, job);
         answers.push(body.answers);
     }
     return { selected: selectRelevantFacts(focus, relevance, answers, requested), candidateCount: candidates.length };
@@ -1625,7 +1786,7 @@ async function commitReply(text, key, lastMessage, mode = 'normal') {
             await ctx.eventSource.emit((ctx.eventTypes ?? ctx.event_types).CHARACTER_MESSAGE_RENDERED, index);
             await ctx.saveChat();
             return;
-        } catch (error) { diagnosticError('기타', error, { site: 1628 });
+        } catch (error) { diagnosticError('기타', error, { site: 1789 });
             console.error('[100LOG] 오류·진단 기록을 확인해 주세요.');
             throw new Error('스와이프 표시 또는 저장 중 오류가 났어요. 채팅에 답변이 보이는지 확인해 주세요.');
         }
@@ -1641,19 +1802,32 @@ async function commitReply(text, key, lastMessage, mode = 'normal') {
         ctx.addOneMessage(message);
         await ctx.eventSource.emit((ctx.eventTypes ?? ctx.event_types).CHARACTER_MESSAGE_RENDERED, index);
         await ctx.saveChat();
-    } catch (error) { diagnosticError('기타', error, { site: 1644 });
+    } catch (error) { diagnosticError('기타', error, { site: 1805 });
         // Never remove a message after rendering or after another extension has observed it.
         console.error('[100LOG] 오류·진단 기록을 확인해 주세요.');
         throw new Error('답변 표시 또는 저장 중 오류가 났어요. 채팅에 답변이 보이는지 확인해 주세요.');
     }
 }
 
-async function runHidden(key, lastMessage, selectedContext = null, mode = 'normal', selectionStats = null) {
+async function runHidden(key, lastMessage, selectedContext = null, mode = 'normal', selectionStats = null, job = null) {
+    job ??= { controller: new AbortController(), publishing: false };
+    activeReviewJob = job;
     let stage = '생성 준비';
+    const owner = chatKey(context()) === key ? data(false) : null;
+    const reportState = owner ? chatState(owner) : null;
+    const report = { at: Date.now(), mode, status: 'running', stage, checked: 0, uncertain: 0, issues: [] };
+    const updateReport = (patch) => {
+        Object.assign(report, patch);
+        if (reportState) reportState.lastReview = report;
+        context().saveSettingsDebounced?.();
+        renderReviewReport();
+    };
     try {
+        checkReviewJob(job);
         const ctx = context();
-        if (!stillSameChat(key, lastMessage, mode)) throw new Error('대화가 바뀌어 생성을 중단했어요.');
+        if (!stillSameChat(key, lastMessage, mode)) throw reviewCancelledError();
         const facts = data(false)?.facts.filter((item) => item.active && isCurrent(item)).map((item) => ({ ...item })) ?? [];
+        updateReport({ rules: facts.length });
         if (!apiKey()) throw new Error('확장 설정에 Jev API 키를 먼저 입력해 주세요.');
         const recent = recentChat(ctx, mode !== 'normal');
         const activeContext = selectedContext === null ? memoryInjection(facts, recent, MAX_FACTS, true) : selectedContext;
@@ -1662,27 +1836,44 @@ async function runHidden(key, lastMessage, selectedContext = null, mode = 'norma
             ? 'Write a new alternative in-character roleplay reply to the user message immediately before the existing assistant reply. Replace that assistant reply rather than continuing from it. Make the alternative meaningfully distinct while respecting the supplied recent-continuity rules as factual guardrails. Output only the full alternative reply, with no preface or explanation.'
             : 'Write the next in-character roleplay reply to the latest user message. Treat the supplied recent-continuity rules only as factual guardrails, not as dialogue or permanent lore. Output only the reply, with no preface or explanation.';
         stage = '메인 AI 초안 생성';
-        const draft = String(await traceDiagnostic(stage, () => ctx.generateQuietPrompt({ quietPrompt: `${activeContext ? `${activeContext}\n\n` : ''}${draftInstruction}` })) ?? '').trim();
+        updateReport({ stage });
+        const draft = await traceGeneration(stage, () => reviewStep(job, () => ctx.generateQuietPrompt({ quietPrompt: `${activeContext ? `${activeContext}\n\n` : ''}${draftInstruction}` })), { mode, rules: facts.length });
         if (!draft) throw new Error('메인 AI가 빈 응답을 반환했어요. 실리태번의 API 오류와 연결 상태를 확인해 주세요.');
-        if (!stillSameChat(key, lastMessage, mode)) throw new Error('대화가 바뀌어 생성을 중단했어요.');
+        if (!stillSameChat(key, lastMessage, mode)) throw reviewCancelledError();
         stage = 'JEV 초안 검수';
+        updateReport({ stage });
         status(`Jev가 연속성 규칙 ${facts.length}개와 초안을 한 번에 검수 중이에요…`);
-        const flagged = await traceDiagnostic(stage, () => judge(draft, facts, recent, ctx.name2), { rules: facts.length, chars: draft.length });
+        const flagged = await traceDiagnostic(stage, () => reviewStep(job, () => judge(draft, facts, recent, ctx.name2, job)), { rules: facts.length, chars: draft.length });
+        updateReport({ checked: facts.length, uncertain: flagged.uncertain || 0,
+            issues: flagged.map((item) => ({ ruleId: item.fact.id, rule: item.fact.text,
+                kind: item.kind, sourceId: item.fact.sourceId,
+                instruction: item.kind === 'knowledge_leak' ? '이 인물이 아직 모르는 정보를 행동이나 대사에 사용하지 않도록 재작성 요청'
+                    : '이 규칙과 충돌하는 내용을 고치고 나머지 말투·언어·전개는 유지하도록 재작성 요청' })) });
         let final = draft;
         if (flagged.length) {
-            if (!stillSameChat(key, lastMessage, mode)) throw new Error('대화가 바뀌어 재작성을 중단했어요.');
+            if (!stillSameChat(key, lastMessage, mode)) throw reviewCancelledError();
             stage = '메인 AI 재작성';
+            updateReport({ stage, rewriteRequested: true });
             status(`설정 충돌 ${flagged.length}곳을 발견했어요. 메인 AI에게 수정 요청 중이에요…`);
-            final = String(await traceDiagnostic(stage, () => ctx.generateQuietPrompt({ quietPrompt: correctionPrompt(draft, flagged, activeContext) })) ?? '').trim();
+            final = await traceGeneration(stage, () => reviewStep(job, () => ctx.generateQuietPrompt({ quietPrompt: correctionPrompt(draft, flagged, activeContext) })), { mode, rules: facts.length });
             if (!final) throw new Error('수정 답변이 비어 있어 게시하지 않았어요.');
-            if (!stillSameChat(key, lastMessage, mode)) throw new Error('대화가 바뀌어 재검수를 중단했어요.');
+            if (!stillSameChat(key, lastMessage, mode)) throw reviewCancelledError();
             stage = 'JEV 재검수';
+            updateReport({ stage });
             status('수정 답변을 한 번 더 확인하고 있어요…');
-            const again = await traceDiagnostic(stage, () => judge(final, facts, recent, ctx.name2), { rules: facts.length, chars: final.length });
-            if (again.length) throw new Error(`재검수 후에도 설정 충돌 ${again.length}곳이 남아 있어 답변을 표시하지 않았어요.`);
+            const again = await traceDiagnostic(stage, () => reviewStep(job, () => judge(final, facts, recent, ctx.name2, job)), { rules: facts.length, chars: final.length });
+            updateReport({ uncertain: again.uncertain || 0, remaining: again.length });
+            if (again.length) {
+                updateReport({ status: 'blocked', remainingRules: again.map((item) => item.fact.text) });
+                throw new Error(`재검수 후에도 설정 충돌 ${again.length}곳이 남아 있어 답변을 표시하지 않았어요.`);
+            }
         }
         if (!final) throw new Error('최종 답변이 비어 있어 게시하지 않았어요.');
+        checkReviewJob(job);
+        if (!stillSameChat(key, lastMessage, mode)) throw reviewCancelledError();
+        job.publishing = true;
         stage = '답변 표시·저장';
+        updateReport({ stage });
         const store = data(false);
         const previousActivity = store?.lastActivity;
         if (store) {
@@ -1694,17 +1885,29 @@ async function runHidden(key, lastMessage, selectedContext = null, mode = 'norma
             context().saveSettingsDebounced?.();
         }
         try { await traceDiagnostic('답변 표시·저장', () => commitReply(final, key, lastMessage, mode), { mode, chars: final.length }); }
-        catch (error) { diagnosticError('기타', error, { site: 1697 }); if (store) store.lastActivity = previousActivity; throw error; }
+        catch (error) { diagnosticError('기타', error, { site: 1888 }); if (store) store.lastActivity = previousActivity; throw error; }
+        updateReport({ status: flagged.length ? 'corrected' : 'passed', stage: '완료', published: true });
         const replyLabel = mode === 'swipe' ? '스와이프 답변을' : mode === 'regenerate' ? '재생성 답변을' : '답변을';
         status(flagged.length ? `충돌 ${flagged.length}곳을 고쳐 ${replyLabel} 게시했어요.` : `설정 충돌 없이 ${replyLabel} 게시했어요.`);
-    } catch (error) { diagnosticError(stage, error, { site: 1700 });
-        console.error('[100LOG] 오류·진단 기록을 확인해 주세요.');
-        const message = `${stage} 실패: ${error.message}`;
-        status(message);
-        globalThis.toastr?.error?.(message, '100LOG');
+    } catch (error) {
+        if (job.controller.signal.aborted || error?.hundredlogCancelled === true) {
+            updateReport({ stage, status: 'cancelled' });
+            status('답변 생성을 중단했어요.');
+        } else {
+            diagnosticError(stage, error, { site: 1897 });
+            const blocked = report.status === 'blocked';
+            const upstream = ['메인 AI 초안 생성', '메인 AI 재작성', 'JEV 초안 검수', 'JEV 재검수'].includes(stage) && !blocked;
+            updateReport({ stage, status: blocked ? 'blocked' : upstream ? 'external_error' : stage === '답변 표시·저장' ? 'publish_error' : 'failed' });
+            const message = upstream ? `${stage} 응답을 받지 못했어요. 설정의 마지막 오류를 확인해 주세요.` : `${stage} 실패: ${error.message}`;
+            status(message);
+            // Only an explicit 100LOG rejection owns an error toast. Upstream/ST errors
+            // remain available in diagnostics; do not duplicate another system's alert.
+            if (blocked) globalThis.toastr?.error?.(message, '100LOG');
+        }
     }
     finally {
-        try { await clearLegacyPrompt(); } catch (error) { diagnosticError('기타', error, { site: 1707 }); console.error('[100LOG] 오류·진단 기록을 확인해 주세요.'); }
+        try { await clearLegacyPrompt(); } catch (error) { diagnosticError('기타', error, { site: 1909 }); console.error('[100LOG] 오류·진단 기록을 확인해 주세요.'); }
+        if (activeReviewJob === job) activeReviewJob = null;
         busy = false; normalGenerating = false; render(); if (memoryPending) scheduleMemory();
     }
 }
@@ -1720,7 +1923,13 @@ globalThis.hundredlogGenerationInterceptor = async function (promptChat, _size, 
     }
     const confirmed = data(false)?.facts.filter((fact) => fact.active && isCurrent(fact)) ?? [];
     if (!confirmed.length) { diagnostic('skip', { reason: '규칙 없음' }); return; }
-    if (!apiKey()) { diagnostic('skip', { reason: '키 없음' }, 'warn'); abort(true); status('Jev API 키가 없어 공개 전 검수를 실행하지 못했어요.'); return; }
+    if (!apiKey()) {
+        diagnostic('skip', { reason: '키 없음' }, 'warn'); abort(true);
+        const state = chatState(data(false));
+        if (state) state.lastReview = { at: Date.now(), mode, status: 'failed', stage: 'JEV 연결 · API 키 없음', checked: 0, issues: [] };
+        context().saveSettingsDebounced?.(); renderReviewReport();
+        status('Jev API 키가 없어 공개 전 검수를 실행하지 못했어요.'); return;
+    }
     if (selectMemory && mode === 'normal' && !embeddingKey()) { abort(true); status(`${embeddingLabel()} 임베딩 키가 없어 맞춤 규칙 주입을 실행하지 못했어요.`); return; }
     if (extracting || translating) { abort(true); status('연속성 규칙 갱신 또는 번역을 마친 뒤 답변을 생성해 주세요.'); return; }
     if (busy) { abort(true); status('이미 JEV 규칙 선별 또는 공개 전 검수를 진행하고 있어요. 잠시 기다려 주세요.'); return; }
@@ -1728,6 +1937,8 @@ globalThis.hundredlogGenerationInterceptor = async function (promptChat, _size, 
     if (mode === 'normal' && !last?.is_user) { abort(true); status('마지막 메시지가 사용자 메시지가 아니라 공개 전 검수 생성을 멈췄어요.'); return; }
     if (mode !== 'normal' && (last?.is_user || !ctx.chat.slice(0, -1).some((message) => message?.is_user))) { abort(true); status(`${mode === 'swipe' ? '스와이프' : '재생성'}할 기존 AI 답변이나 이전 사용자 메시지를 찾지 못했어요.`); return; }
     const key = chatKey(ctx);
+    const job = { controller: new AbortController(), publishing: false };
+    activeReviewJob = job;
     busy = true;
     render();
     let selectedContext = null;
@@ -1735,22 +1946,28 @@ globalThis.hundredlogGenerationInterceptor = async function (promptChat, _size, 
     try {
         if (selectMemory && mode === 'normal') {
             status(`${embeddingLabel()} 임베딩으로 현재 장면과 가까운 규칙을 찾고 있어요…`);
-            const result = await selectInjectionFactsWithJev(confirmed, ctx);
+            const result = await reviewStep(job, () => selectInjectionFactsWithJev(confirmed, ctx, job));
             if (chatKey(context()) !== key) throw new Error('대화가 바뀌어 맞춤 규칙 주입을 중단했어요.');
             selectionStats = { candidates: result.candidateCount, selected: result.selected.length };
             selectedContext = memoryInjection(result.selected, recentChat(ctx), config.maxInjectedMemories, true);
         }
-    } catch (error) { diagnosticError('기타', error, { site: 1743 });
+    } catch (error) { diagnosticError('기타', error, { site: 1954 });
+        if (activeReviewJob === job) activeReviewJob = null;
         abort(true);
         busy = false;
-        status(`Jev 맞춤 규칙 선별을 실패해 생성을 멈췄어요: ${error.message}`);
+        if (job.controller.signal.aborted || error?.hundredlogCancelled === true) {
+            const state = chatState(data(false));
+            if (state) state.lastReview = { at: Date.now(), mode, status: 'cancelled', stage: '생성 준비', checked: 0, issues: [] };
+            context().saveSettingsDebounced?.();
+            status('답변 생성을 중단했어요.');
+        } else status(`Jev 맞춤 규칙 선별을 실패해 생성을 멈췄어요: ${error.message}`);
         render();
         return;
     }
     abort(true);
     status(mode === 'swipe' ? '스와이프 답변을 화면에 표시하기 전에 검수할게요…' : mode === 'regenerate' ? '재생성 답변을 화면에 표시하기 전에 검수할게요…' : selectMemory ? '맞춤 규칙 주입을 마쳤어요. 답변을 숨은 초안으로 생성할게요…' : '답변을 화면에 표시하지 않고 숨은 초안으로 생성할게요…'); render();
     // Let SillyTavern finish unwinding the aborted generation first.
-    setTimeout(() => { void runHidden(key, last, selectedContext, mode, selectionStats); }, 300);
+    setTimeout(() => { void runHidden(key, last, selectedContext, mode, selectionStats, job); }, 300);
 };
 
 function closeWand() {
@@ -1809,13 +2026,13 @@ function openWand() {
         header.id = 'hundredlog-wand-header';
         const title = document.createElement('strong');
         title.id = 'hundredlog-wand-title';
-        title.textContent = '💯 100LOG';
+        title.textContent = '100LOG';
         registerDeveloperTitle(title);
         const close = document.createElement('button');
         close.type = 'button';
         close.id = 'hundredlog-wand-close';
         close.className = 'menu_button';
-        close.textContent = '닫기';
+        close.textContent = '×'; close.setAttribute('aria-label', '100LOG 닫기');
         close.addEventListener('click', closeWand);
         header.append(title, close);
         const body = document.createElement('div');
@@ -1839,6 +2056,8 @@ function openWand() {
     }
     if (overlay.hidden) previousFocus = document.activeElement;
     if (!settingsHome) settingsHome = panel.parentElement;
+    // The overlay is attached to documentElement, outside body. Carry the actual theme font with it.
+    overlay.style.fontFamily = getComputedStyle(panel).fontFamily;
     document.getElementById('hundredlog-wand-body').append(panel);
     overlay.hidden = false;
     installWandViewportTracking();
@@ -1895,6 +2114,9 @@ async function main() {
         $id(`tab-${view}`).addEventListener('click', () => showView(view));
     }
     showView(selectedView);
+    for (const button of document.querySelectorAll('#hundredlog-history-filters button')) button.addEventListener('click', () => {
+        historyFilter = button.dataset.filter; render();
+    });
     refreshProfiles();
     for (const [id, key] of [['extraction-profile', 'extractionProfileId'], ['translation-profile', 'translationProfileId']]) {
         $id(id)?.addEventListener('change', (event) => {
@@ -1940,7 +2162,7 @@ async function main() {
             const storage = `${EMBEDDING_KEY_PREFIX}${embeddingProvider()}`;
             if (value) localStorage.setItem(storage, value); else localStorage.removeItem(storage);
             $id('embedding-state').textContent = value ? '키 저장됨 · 연결 확인 필요' : 'API 키를 입력해 주세요';
-        } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 1943 }); status('이 브라우저에 임베딩 키를 저장하지 못했어요.'); }
+        } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 2165 }); status('이 브라우저에 임베딩 키를 저장하지 못했어요.'); }
     });
     $id('embedding-test')?.addEventListener('click', async () => {
         try {
@@ -1956,7 +2178,7 @@ async function main() {
             $id('embedding-state').textContent = `${embeddingLabel()} 연결됨`;
             embeddingError();
             status(facts.length ? `임베딩 연결 완료 · 현재 규칙 ${facts.length}개를 준비했어요.` : '임베딩 연결을 확인했어요. 저장된 현재 규칙은 아직 없어요.');
-        } catch (error) { diagnosticError('기타', error, { site: 1959 });
+        } catch (error) { diagnosticError('기타', error, { site: 2181 });
             $id('embedding-state').textContent = '연결 실패';
             embeddingError(error.message);
             status(error.message);
@@ -1976,7 +2198,7 @@ async function main() {
             $id('embedding-state').textContent = `${embeddingLabel()} 연결됨`;
             embeddingError();
             status(`누락 임베딩 재시도 완료 · ${after.completed}/${after.total}개 성공${after.missing ? ` · ${after.missing}개 미완료` : ''}`);
-        } catch (error) { diagnosticError('기타', error, { site: 1979 });
+        } catch (error) { diagnosticError('기타', error, { site: 2201 });
             $id('embedding-state').textContent = '재시도 실패';
             embeddingError(error.message);
             status(error.message);
@@ -2029,7 +2251,7 @@ async function main() {
             if (value) localStorage.setItem(KEY_STORAGE, value);
             else localStorage.removeItem(KEY_STORAGE);
             $id('server').textContent = value ? '키 저장됨 · 연결 확인 필요' : 'API 키를 입력해 주세요';
-        } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 2032 }); status('이 브라우저에 키를 저장하지 못했어요.'); }
+        } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 2254 }); status('이 브라우저에 키를 저장하지 못했어요.'); }
     });
     $id('test')?.addEventListener('click', async () => {
         try {
@@ -2042,7 +2264,7 @@ async function main() {
             $id('server').textContent = 'Jev 연결됨';
             connectionError();
             status(`Jev에 연결됐어요 (${lastJevTransport}).`);
-        } catch (error) { diagnosticError('기타', error, { site: 2045 });
+        } catch (error) { diagnosticError('기타', error, { site: 2267 });
             $id('server').textContent = '연결 실패';
             connectionError(error.message);
             status(error.message);
@@ -2070,7 +2292,7 @@ async function main() {
             $id('newfact').value = '';
             $id('replaces').value = '';
             await save(); render();
-        } catch (error) { diagnosticError('기타', error, { site: 2073 }); status(error.message); }
+        } catch (error) { diagnosticError('기타', error, { site: 2295 }); status(error.message); }
     });
     $id('endscene')?.addEventListener('click', async () => {
         const value = data();
@@ -2163,8 +2385,8 @@ const initialContext = context();
 const appReady = (initialContext.eventTypes ?? initialContext.event_types)?.APP_READY;
 if (appReady) {
     initialContext.eventSource.on(appReady, () => {
-        void main().catch((error) => diagnosticError('초기화', error, { site: 2166 }));
+        void main().catch((error) => diagnosticError('초기화', error, { site: 2388 }));
     });
 } else {
-    void main().catch((error) => diagnosticError('초기화', error, { site: 2169 }));
+    void main().catch((error) => diagnosticError('초기화', error, { site: 2391 }));
 }

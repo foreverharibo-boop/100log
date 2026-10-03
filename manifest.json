@@ -1,9 +1,9 @@
 {
-  "display_name": "💯 100LOG",
+  "display_name": "100LOG",
   "js": "index.js",
   "css": "style.css",
   "author": "담은",
-    "version": "1.8.7",
+    "version": "1.9.1",
   "minimum_client_version": "1.12.14",
   "generate_interceptor": "hundredlogGenerationInterceptor"
 }
