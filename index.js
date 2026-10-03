@@ -442,6 +442,39 @@ async function requestJev(state, questions, job = null) {
     }
 }
 
+// JEV chooses BOTH the state and its real source. Extractor annotations are hints,
+// never a veto on a state independently established by the source messages.
+function knowledgeReviewOptions(operation, character, rows, contextRows, prior) {
+    const criteria = { unverified: 'No supplied source establishes knowledge or positive ignorance.' };
+    const proofs = {};
+    const norm = (value) => String(value ?? '').replace(/\s+/g, ' ').trim();
+    const messages = [...contextRows.slice(-8), ...rows].filter((row) => Number.isInteger(row.id) && norm(row.text));
+    messages.forEach((row, index) => {
+        for (const status of ['known', 'unknown']) {
+            const choice = `${status}_source_${index}`;
+            criteria[choice] = status === 'known'
+                ? `Known; supporting source: message #${row.id}.`
+                : `Unknown with positive evidence; supporting source: message #${row.id}.`;
+            proofs[choice] = { status, sourceId: row.id, evidence: '', verified: true, manual: false,
+                reason: status === 'known' ? 'JEV가 이 원문에서 해당 사실을 알고 있다는 근거를 확인했어요.' : 'JEV가 이 원문에서 해당 사실을 아직 모른다는 근거를 확인했어요.' };
+        }
+    });
+    const proof = operation.knowledgeEvidence[character];
+    if (proof && ['known', 'unknown'].includes(proof.status) && norm(proof.evidence).length >= 4
+        && messages.some((row) => row.id === proof.sourceId && norm(row.text).includes(norm(proof.evidence)))) {
+        const choice = `${proof.status}_quote`;
+        criteria[choice] = `The proposed exact quote AND its reason correctly establish ${proof.status} for this character. Use this only if both are supported; otherwise choose a source-message option.`;
+        proofs[choice] = { ...proof, verified: true, manual: false };
+    }
+    // A previously verified fact need not be rediscovered verbatim on every update.
+    const old = normalizeKnowledgeEvidence(prior?.knowledgeEvidence, prior?.knowledge)[character];
+    if (prior?.text === operation.text && old?.status === 'known' && old.verified) {
+        criteria.known_previous = 'The identical existing fact already has verified knowledge for this character, and no new evidence invalidates that knowledge.';
+        proofs.known_previous = { ...old };
+    }
+    return { criteria, proofs };
+}
+
 export async function reviewExtractedKnowledge(operations, rows, contextRows = [], currentFacts = []) {
     const reviewed = operations.map((operation) => ({ ...operation, knowledge: normalizeKnowledge(operation.knowledge),
         knowledgeEvidence: normalizeKnowledgeEvidence(operation.knowledgeEvidence, operation.knowledge) }));
@@ -449,8 +482,10 @@ export async function reviewExtractedKnowledge(operations, rows, contextRows = [
     const knowledgeChecks = [];
     reviewed.forEach((operation, operationIndex) => {
         if (!['add', 'update'].includes(operation.action)) return;
+        const prior = currentFacts.find((fact) => fact.id === operation.id);
         for (const [character, proposedStatus] of Object.entries(operation.knowledge)) {
-            knowledgeChecks.push({ kind: 'knowledge', operationIndex, character, proposedStatus, questionId: `k${knowledgeChecks.length}` });
+            knowledgeChecks.push({ kind: 'knowledge', operationIndex, character, proposedStatus, questionId: `k${knowledgeChecks.length}`,
+                ...knowledgeReviewOptions(operation, character, rows, contextRows, prior) });
         }
     });
     const checks = [...factChecks, ...knowledgeChecks];
@@ -489,7 +524,7 @@ export async function reviewExtractedKnowledge(operations, rows, contextRows = [
                 proposed_memory: operation.text,
                 exact_new_evidence: operation.sourceText ?? '',
                 source_message: source ? { id: source.id, role: source.role, name: source.name, text: source.text } : null,
-                previous_memory: prior ? { text: prior.text, knowledge: normalizeKnowledge(prior.knowledge) } : null,
+                previous_memory: prior ? { text: prior.text, knowledge: normalizeKnowledge(prior.knowledge), knowledge_evidence: normalizeKnowledgeEvidence(prior.knowledgeEvidence, prior.knowledge) } : null,
             };
         });
         const questions = {};
@@ -506,17 +541,13 @@ export async function reviewExtractedKnowledge(operations, rows, contextRows = [
                 },
             } : {
                 type: 'choice',
-                instructions: `Decide whether the character in review_checks[${index}] knows EVERY clause of proposed_memory at this exact point in the story. Evaluate only source_message, recent_context, new_messages, exact_new_evidence, and previous_memory. Follow demonstrated INFORMATION FLOW rather than physical scene presence. A character knows information when they directly experienced or witnessed every clause, disclosed it themselves, or received/accessed it through any shown conversation, communication channel, record, observation, monitoring, interception, or other exposure. Successful transmission or shown access counts even when the character is absent from the current scene; do not require a reply or later on-screen reaction unless the story explicitly says the information was unread or inaccessible. Choose unknown only when the story positively supports non-receipt or ignorance, such as a private or concealed exchange with no exposure, an unsent or failed transmission, inaccessible information, or explicit unawareness. Absence, silence, lack of reply, or not participating in the current scene never proves unknown. A name appearing in the memory or knowing only one clause is not enough. If neither complete knowledge nor supported ignorance is established, choose unverified. Do not invent off-screen information transfer.`,
-                criteria: {
-                    known: 'Demonstrated information flow proves the character received, accessed, observed, monitored, intercepted, disclosed, experienced, or witnessed every clause, regardless of current scene presence.',
-                    unknown: 'Positive evidence proves the character did not receive or access at least one clause, the information remained private or concealed from them, transmission failed or was not sent, or they are explicitly unaware.',
-                    unverified: 'The supplied context establishes neither complete knowledge nor supported ignorance; scene absence, silence, and lack of reply belong here.',
-                },
+                instructions: `Decide whether the character in review_checks[${index}] knows EVERY material clause of proposed_memory as of the latest supplied new message, including later evidence of perception or learning. Choose a known/unknown SOURCE option that establishes the status, or unverified. Do NOT require literal wording such as 'knows' or a separate verbal acknowledgement for a consciously performed, perceived or experienced event. A narrated perception or later reaction to that specific event is evidence of awareness. An unconscious or genuinely unperceived event is different. A mutually agreed arrangement establishes knowledge for the shown agreeing parties; one person's private intention merely naming another person does not. Evaluate only source_message, recent_context, new_messages, exact_new_evidence, and previous_memory. Follow demonstrated INFORMATION FLOW rather than physical scene presence. A character knows information when they directly experienced or witnessed every clause, disclosed it themselves, or received/accessed it through any shown conversation, communication channel, record, observation, monitoring, interception, or other exposure. Successful transmission or shown access counts even when the character is absent from the current scene; do not require a reply or later on-screen reaction unless the story explicitly says the information was unread or inaccessible. Choose an unknown source option only when the story positively supports non-receipt or ignorance, such as a private or concealed exchange with no exposure, an unsent or failed transmission, inaccessible information, or explicit unawareness. Absence, silence, lack of reply, or not participating in the current scene never proves unknown. A name appearing in the memory or knowing only one clause is not enough. If neither complete knowledge nor supported ignorance is established, choose unverified. Do not invent off-screen information transfer.`,
+                criteria: check.criteria,
             };
         });
         for (const check of batch) {
-            if (check.kind === 'knowledge') questions[check.questionId].instructions += ' Also verify proposed_knowledge_evidence: its exact quote, source ID and Korean reason must actually support BOTH the proposed status and information flow for this character. If missing, misleading, or incompatible with the status you would choose, choose unverified. The absence of evidence is not evidence of ignorance.';
-            else questions[check.questionId].instructions += ' Compare current_commitments too: reject an add as distorted if it only restates progress or completion of an existing event that should use update/complete on its ID. Do not conflate a new appointment with an older similar one. For updates, verify that planned/underway matches the full proposed text and source.';
+            if (check.kind === 'knowledge') questions[check.questionId].instructions += ' The proposed status and proposed_knowledge_evidence are fallible extractor suggestions. Missing or incorrect suggestions must NOT veto knowledge independently established by the original messages. Prefer the quote option only if its quote AND reason are valid; otherwise choose the matching source-message option. Choose unverified only when the supplied sources themselves are insufficient. Use the latest evidence if a character learned the fact after initially not knowing it. Do not infer extra secret motives or exact unspoken details that are not part of the memory.';
+            else questions[check.questionId].instructions += ' For a knowledge-only update of an unchanged existing fact, new evidence may establish later learning or awareness without repeating the entire original event; validate it together with previous_memory. Compare current_commitments too: reject an add as distorted if it only restates progress or completion of an existing event that should use update/complete on its ID. Do not conflate a new appointment with an older similar one. For updates, verify that planned/underway matches the full proposed text and source.';
         }
         const body = await requestJev({
             recent_context: contextRows.slice(-8),
@@ -538,24 +569,18 @@ export async function reviewExtractedKnowledge(operations, rows, contextRows = [
                 }
                 return;
             }
-            const requiredConfidence = answer?.choice === 'unknown' ? .8 : .65;
-            if (answer?.type !== 'choice' || !['known', 'unknown', 'unverified'].includes(answer.choice)
-                || !Number.isFinite(confidence) || confidence < requiredConfidence) {
+            const proof = Object.hasOwn(check.proofs, answer?.choice) ? check.proofs[answer.choice] : null;
+            const requiredConfidence = proof?.status === 'unknown' ? .8 : .65;
+            if (answer?.type !== 'choice' || !proof || !Number.isFinite(confidence) || confidence < requiredConfidence) {
                 operation.knowledge[check.character] = 'unverified';
-                operation.knowledgeEvidence[check.character] = { status: 'unverified', reason: 'JEV가 지식 상태를 확정하지 못했어요.', verified: false };
+                operation.knowledgeEvidence[check.character] = { status: 'unverified',
+                    reason: '제공된 원문에서 지식 상태를 확정할 근거를 찾지 못했어요. 모른다는 뜻은 아니에요.', verified: false };
                 removed++;
                 return;
             }
-            const proof = operation.knowledgeEvidence[check.character];
-            if (answer.choice === 'unverified' || !proof || proof.status !== answer.choice) {
-                operation.knowledge[check.character] = 'unverified';
-                operation.knowledgeEvidence[check.character] = { status: 'unverified', reason: '알고 있는지, 모르는지 확인할 근거가 충분하지 않아요.', verified: false };
-                removed++;
-                return;
-            }
-            operation.knowledge[check.character] = answer.choice;
-            proof.verified = true;
-            if (answer.choice !== check.proposedStatus) changed++;
+            operation.knowledge[check.character] = proof.status;
+            operation.knowledgeEvidence[check.character] = { ...proof };
+            if (proof.status !== check.proposedStatus) changed++;
         });
     }
     return {
@@ -579,7 +604,7 @@ function compoundSplitRequest(operations, facts, rows, contextRows = []) {
         'Preserve only claims directly supported by NEW_MESSAGES. Evidence must be an exact excerpt from the matching numbered source. CONTEXT is interpretation only. Do not invent off-screen events or knowledge transfer. Do not repeat an already-current memory. For an update, use the existing id only when the atomic output genuinely replaces that same memory; otherwise use add. Protected or paused memories must not be changed.',
         `REJECTED_COMPOUND_OPERATIONS: ${JSON.stringify(operations)}`,
         'EVENT LIFECYCLE: Match an existing commitment by the same intended event, participants and purpose, not just names. For progress on that event, use update with its existing ID and progress planned or underway; rewrite text to describe the current stage while retaining the intended goal. Never add a second fact just to restate arrival or progress for the same event. A visit promise is fulfilled by an evidenced visit; a promise to finish an activity needs evidence of that outcome, not mere arrival. Use complete only when the specific promised goal is fulfilled, cancel for explicit cancellation, and leave ambiguity unchanged. Never move an underway event back to planned without explicit rescheduling. A genuinely new recurring appointment is a separate event. The progress value and changed text must both be supported by new evidence.',
-        'KNOWLEDGE EVIDENCE: For every named knowledge entry include knowledgeEvidence with the same name as key and {status, reason, sourceId, evidence}. reason is a short Korean explanation of HOW information was learned or why ignorance is established, not a guess. evidence is an exact original quote from the numbered NEW_MESSAGES or CONTEXT. Choose known, unknown, or unverified. unverified means neither knowledge nor ignorance is established and imposes NO ignorance constraint. Do not infer ignorance from absence or silence. On update, re-evaluate every previous knowledge entry against the updated full text; explicitly mark unverified when an old boundary is no longer established. Do not inherit old knowledge automatically.',
+        'KNOWLEDGE EVIDENCE: For every named knowledge entry include knowledgeEvidence with the same name as key and {status, reason, sourceId, evidence}. reason is a short Korean explanation of HOW information was learned or why ignorance is established, not a guess. evidence is an exact original quote from the numbered NEW_MESSAGES or CONTEXT. Choose known, unknown, or unverified. unverified means neither knowledge nor ignorance is established and imposes NO ignorance constraint. Do not infer ignorance from absence or silence. On update, re-evaluate every previous knowledge entry against the updated full text; explicitly mark unverified when an old boundary is no longer established. Do not inherit old knowledge automatically. KNOWLEDGE UPDATES: A later perception, reaction, direct disclosure, agreement, delivery or access can establish knowledge of an existing fact. Update that SAME fact ID even when its factual text does not change; do not skip this as duplicate and do not add a second copy. Re-evaluate previously unverified/unknown relevant people using the new evidence. Conscious actors and perceivers do not need to say that they know; conversely, being named in a private plan is not proof of receiving it. Keep facts atomic and do not attach unstated precision or motives to the knowledge claim.',
         `CURRENT_MEMORIES: ${JSON.stringify(current)}`,
         `CONTEXT: ${JSON.stringify(contextRows)}`,
         `NEW_MESSAGES: ${JSON.stringify(rows)}`,
@@ -664,7 +689,7 @@ function ensureCharacterUuid(ctx = context()) {
         character.data.extensions[IDENTITY_FIELD] = payload;
         if (!embedded || embedded !== uuid) {
             Promise.resolve(ctx.writeExtensionField?.(characterId, IDENTITY_FIELD, payload))
-                .catch((error) => diagnosticError('초기화', error, { site: 667 }));
+                .catch((error) => diagnosticError('초기화', error, { site: 692 }));
         }
     }
     if (registryChanged) ctx.saveSettingsDebounced?.();
@@ -738,7 +763,7 @@ function data(create = true) {
         mergeLegacyChatData(value, legacy, sourceChatId(ctx));
         ctx.chatMetadata.hundredlogCharacterStoreMigration = ownerKey;
         ctx.saveSettingsDebounced?.();
-        void Promise.resolve(ctx.saveMetadata?.()).catch((error) => diagnosticError('초기화', error, { site: 741 }));
+        void Promise.resolve(ctx.saveMetadata?.()).catch((error) => diagnosticError('초기화', error, { site: 766 }));
     }
     value.embeddingIndex ??= { provider: '', model: '', entries: {} };
     value.embeddingIndex.entries ??= {};
@@ -773,7 +798,7 @@ function setDeveloperUnlocked(unlocked) {
     try {
         if (unlocked) localStorage.setItem(DEVELOPER_UNLOCK_STORAGE, 'true');
         else localStorage.removeItem(DEVELOPER_UNLOCK_STORAGE);
-    } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 776 }); /* local storage can be unavailable in restricted browser contexts */ }
+    } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 801 }); /* local storage can be unavailable in restricted browser contexts */ }
     render();
 }
 
@@ -854,7 +879,7 @@ function appendOriginal(parent, record) {
 function refreshProfiles() {
     if (!$id('extraction-profile')) return;
     let profiles = [];
-    try { profiles = availableProfiles(context()); } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 857 }); /* Keep saved choices visible for correction. */ }
+    try { profiles = availableProfiles(context()); } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 882 }); /* Keep saved choices visible for correction. */ }
     for (const [id, key] of [['extraction-profile', 'extractionProfileId'], ['translation-profile', 'translationProfileId']]) {
         const select = $id(id);
         const choices = id === 'translation-profile' ? [['@extraction', '사실 추출용 프로필과 동일']] : [];
@@ -907,7 +932,7 @@ export async function translateRecords(mode = 'missing') {
             render();
         }
         status(stopTranslationRequested ? `${done}/${targets.length}개 번역 후 중단했어요. 완료한 번역은 저장됐어요.` : `${done}개를 한국어로 번역했어요. 원문 보기에서 원래 내용을 확인할 수 있어요.`);
-    } catch (error) { diagnosticError('번역', error, { site: 910 }); status(`번역 중단 · ${done}개 저장됨: ${error.message}`); }
+    } catch (error) { diagnosticError('번역', error, { site: 935 }); status(`번역 중단 · ${done}개 저장됨: ${error.message}`); }
     finally { translating = false; render(); if (memoryPending) scheduleMemory(); }
 }
 
@@ -1012,9 +1037,9 @@ function knowledgeEditor(record, persist) {
         const explanation = document.createElement('p'); explanation.className = 'hundredlog-help';
         explanation.textContent = proof?.reason || (selected ? '이전 버전에서 저장된 상태예요. 당시 판단 근거는 기록되어 있지 않아요.' : '인물의 지식 상태와 근거를 직접 기록해요.');
         editor.append(explanation);
-        if (proof?.evidence) {
+        if (proof?.evidence || Number.isInteger(proof?.sourceId)) {
             const quote = document.createElement('div'); quote.className = 'hundredlog-knowledge-proof';
-            quote.textContent = `${Number.isInteger(proof.sourceId) ? `대화 #${proof.sourceId} · ` : ''}${proof.evidence}`;
+            quote.textContent = `${Number.isInteger(proof.sourceId) ? `대화 #${proof.sourceId} · ` : ''}${proof.evidence || '해당 메시지의 원문을 기준으로 판정했어요.'}`;
             editor.append(quote);
         }
         const controls = document.createElement('div'); controls.className = 'hundredlog-knowledge-controls';
@@ -1206,7 +1231,7 @@ function render() {
             try {
                 approveFact(value, restored, current?.active && isCurrent(current) ? current.id : null);
                 await save(); render(); status('현재 기억으로 복원하고 자동 변경 잠금했어요.');
-            } catch (error) { diagnosticError('기타', error, { site: 1209 }); status(error.message); }
+            } catch (error) { diagnosticError('기타', error, { site: 1234 }); status(error.message); }
         }));
         $id('history').append(item);
     }
@@ -1232,7 +1257,7 @@ function render() {
                 approveFact(value, candidate, replacement.value || null);
                 value.candidates = value.candidates.filter((entry) => entry.id !== candidate.id);
                 await save(); render();
-            } catch (error) { diagnosticError('기타', error, { site: 1235 }); status(error.message); }
+            } catch (error) { diagnosticError('기타', error, { site: 1260 }); status(error.message); }
         }));
         actions.append(makeButton('제외', async () => { value.candidates = value.candidates.filter((entry) => entry.id !== candidate.id); await save(); render(); }));
         item.append(actions);
@@ -1492,7 +1517,7 @@ function queueSourceMutation() {
     // that burst to finish so it is handled once instead of as dozens of edits.
     sourceMutationTimer = setTimeout(() => {
         sourceMutationTimer = null;
-        void processSourceMutation().catch((error) => { diagnosticError('규칙 저장', error, { site: 1495 }); status(error.message); });
+        void processSourceMutation().catch((error) => { diagnosticError('규칙 저장', error, { site: 1520 }); status(error.message); });
     }, 900);
 }
 
@@ -1616,7 +1641,7 @@ async function performMemorySync({ rebuildRecent = false, force = false } = {}) 
             status(stopExtractionRequested ? `수집 중단 · 규칙 ${changed}개 반영. 다음에 이어서 수집해요.${factResult}${knowledgeResult}`
                 : `최근 ${RECENT_MESSAGE_LIMIT}개 대화 수집 완료 · 규칙 ${changed}개 반영${uncertain ? ` · 불확실하거나 중복된 제안 ${uncertain}개는 건너뛰었어요` : ''}${factResult}${knowledgeResult}${cleanupText}`);
         }
-    } catch (error) { diagnosticError('규칙 수집', error, { site: 1619 }); if (sameChat()) status(`기억 정리를 멈췄어요: ${error.message} ‘지금 정리’로 다시 시도할 수 있어요.`); }
+    } catch (error) { diagnosticError('규칙 수집', error, { site: 1644 }); if (sameChat()) status(`기억 정리를 멈췄어요: ${error.message} ‘지금 정리’로 다시 시도할 수 있어요.`); }
     finally { extracting = false; render(); }
 }
 
@@ -1631,7 +1656,7 @@ export function installMemoryHooks(ctx = context()) {
                 const result = callback(...args);
                 if (result?.then) return result.catch((error) => { diagnosticError('미처리', error); throw error; });
                 return result;
-            } catch (error) { diagnosticError('기타', error, { site: 1634 }); diagnosticError('미처리', error); throw error; }
+            } catch (error) { diagnosticError('기타', error, { site: 1659 }); diagnosticError('미처리', error); throw error; }
         });
     };
     on('GENERATION_AFTER_COMMANDS', async (type, eventData, dryRun) => {
@@ -1786,7 +1811,7 @@ async function commitReply(text, key, lastMessage, mode = 'normal') {
             await ctx.eventSource.emit((ctx.eventTypes ?? ctx.event_types).CHARACTER_MESSAGE_RENDERED, index);
             await ctx.saveChat();
             return;
-        } catch (error) { diagnosticError('기타', error, { site: 1789 });
+        } catch (error) { diagnosticError('기타', error, { site: 1814 });
             console.error('[100LOG] 오류·진단 기록을 확인해 주세요.');
             throw new Error('스와이프 표시 또는 저장 중 오류가 났어요. 채팅에 답변이 보이는지 확인해 주세요.');
         }
@@ -1802,7 +1827,7 @@ async function commitReply(text, key, lastMessage, mode = 'normal') {
         ctx.addOneMessage(message);
         await ctx.eventSource.emit((ctx.eventTypes ?? ctx.event_types).CHARACTER_MESSAGE_RENDERED, index);
         await ctx.saveChat();
-    } catch (error) { diagnosticError('기타', error, { site: 1805 });
+    } catch (error) { diagnosticError('기타', error, { site: 1830 });
         // Never remove a message after rendering or after another extension has observed it.
         console.error('[100LOG] 오류·진단 기록을 확인해 주세요.');
         throw new Error('답변 표시 또는 저장 중 오류가 났어요. 채팅에 답변이 보이는지 확인해 주세요.');
@@ -1885,7 +1910,7 @@ async function runHidden(key, lastMessage, selectedContext = null, mode = 'norma
             context().saveSettingsDebounced?.();
         }
         try { await traceDiagnostic('답변 표시·저장', () => commitReply(final, key, lastMessage, mode), { mode, chars: final.length }); }
-        catch (error) { diagnosticError('기타', error, { site: 1888 }); if (store) store.lastActivity = previousActivity; throw error; }
+        catch (error) { diagnosticError('기타', error, { site: 1913 }); if (store) store.lastActivity = previousActivity; throw error; }
         updateReport({ status: flagged.length ? 'corrected' : 'passed', stage: '완료', published: true });
         const replyLabel = mode === 'swipe' ? '스와이프 답변을' : mode === 'regenerate' ? '재생성 답변을' : '답변을';
         status(flagged.length ? `충돌 ${flagged.length}곳을 고쳐 ${replyLabel} 게시했어요.` : `설정 충돌 없이 ${replyLabel} 게시했어요.`);
@@ -1894,7 +1919,7 @@ async function runHidden(key, lastMessage, selectedContext = null, mode = 'norma
             updateReport({ stage, status: 'cancelled' });
             status('답변 생성을 중단했어요.');
         } else {
-            diagnosticError(stage, error, { site: 1897 });
+            diagnosticError(stage, error, { site: 1922 });
             const blocked = report.status === 'blocked';
             const upstream = ['메인 AI 초안 생성', '메인 AI 재작성', 'JEV 초안 검수', 'JEV 재검수'].includes(stage) && !blocked;
             updateReport({ stage, status: blocked ? 'blocked' : upstream ? 'external_error' : stage === '답변 표시·저장' ? 'publish_error' : 'failed' });
@@ -1906,7 +1931,7 @@ async function runHidden(key, lastMessage, selectedContext = null, mode = 'norma
         }
     }
     finally {
-        try { await clearLegacyPrompt(); } catch (error) { diagnosticError('기타', error, { site: 1909 }); console.error('[100LOG] 오류·진단 기록을 확인해 주세요.'); }
+        try { await clearLegacyPrompt(); } catch (error) { diagnosticError('기타', error, { site: 1934 }); console.error('[100LOG] 오류·진단 기록을 확인해 주세요.'); }
         if (activeReviewJob === job) activeReviewJob = null;
         busy = false; normalGenerating = false; render(); if (memoryPending) scheduleMemory();
     }
@@ -1951,7 +1976,7 @@ globalThis.hundredlogGenerationInterceptor = async function (promptChat, _size, 
             selectionStats = { candidates: result.candidateCount, selected: result.selected.length };
             selectedContext = memoryInjection(result.selected, recentChat(ctx), config.maxInjectedMemories, true);
         }
-    } catch (error) { diagnosticError('기타', error, { site: 1954 });
+    } catch (error) { diagnosticError('기타', error, { site: 1979 });
         if (activeReviewJob === job) activeReviewJob = null;
         abort(true);
         busy = false;
@@ -2162,7 +2187,7 @@ async function main() {
             const storage = `${EMBEDDING_KEY_PREFIX}${embeddingProvider()}`;
             if (value) localStorage.setItem(storage, value); else localStorage.removeItem(storage);
             $id('embedding-state').textContent = value ? '키 저장됨 · 연결 확인 필요' : 'API 키를 입력해 주세요';
-        } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 2165 }); status('이 브라우저에 임베딩 키를 저장하지 못했어요.'); }
+        } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 2190 }); status('이 브라우저에 임베딩 키를 저장하지 못했어요.'); }
     });
     $id('embedding-test')?.addEventListener('click', async () => {
         try {
@@ -2178,7 +2203,7 @@ async function main() {
             $id('embedding-state').textContent = `${embeddingLabel()} 연결됨`;
             embeddingError();
             status(facts.length ? `임베딩 연결 완료 · 현재 규칙 ${facts.length}개를 준비했어요.` : '임베딩 연결을 확인했어요. 저장된 현재 규칙은 아직 없어요.');
-        } catch (error) { diagnosticError('기타', error, { site: 2181 });
+        } catch (error) { diagnosticError('기타', error, { site: 2206 });
             $id('embedding-state').textContent = '연결 실패';
             embeddingError(error.message);
             status(error.message);
@@ -2198,7 +2223,7 @@ async function main() {
             $id('embedding-state').textContent = `${embeddingLabel()} 연결됨`;
             embeddingError();
             status(`누락 임베딩 재시도 완료 · ${after.completed}/${after.total}개 성공${after.missing ? ` · ${after.missing}개 미완료` : ''}`);
-        } catch (error) { diagnosticError('기타', error, { site: 2201 });
+        } catch (error) { diagnosticError('기타', error, { site: 2226 });
             $id('embedding-state').textContent = '재시도 실패';
             embeddingError(error.message);
             status(error.message);
@@ -2251,7 +2276,7 @@ async function main() {
             if (value) localStorage.setItem(KEY_STORAGE, value);
             else localStorage.removeItem(KEY_STORAGE);
             $id('server').textContent = value ? '키 저장됨 · 연결 확인 필요' : 'API 키를 입력해 주세요';
-        } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 2254 }); status('이 브라우저에 키를 저장하지 못했어요.'); }
+        } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 2279 }); status('이 브라우저에 키를 저장하지 못했어요.'); }
     });
     $id('test')?.addEventListener('click', async () => {
         try {
@@ -2264,7 +2289,7 @@ async function main() {
             $id('server').textContent = 'Jev 연결됨';
             connectionError();
             status(`Jev에 연결됐어요 (${lastJevTransport}).`);
-        } catch (error) { diagnosticError('기타', error, { site: 2267 });
+        } catch (error) { diagnosticError('기타', error, { site: 2292 });
             $id('server').textContent = '연결 실패';
             connectionError(error.message);
             status(error.message);
@@ -2292,7 +2317,7 @@ async function main() {
             $id('newfact').value = '';
             $id('replaces').value = '';
             await save(); render();
-        } catch (error) { diagnosticError('기타', error, { site: 2295 }); status(error.message); }
+        } catch (error) { diagnosticError('기타', error, { site: 2320 }); status(error.message); }
     });
     $id('endscene')?.addEventListener('click', async () => {
         const value = data();
@@ -2385,8 +2410,8 @@ const initialContext = context();
 const appReady = (initialContext.eventTypes ?? initialContext.event_types)?.APP_READY;
 if (appReady) {
     initialContext.eventSource.on(appReady, () => {
-        void main().catch((error) => diagnosticError('초기화', error, { site: 2388 }));
+        void main().catch((error) => diagnosticError('초기화', error, { site: 2413 }));
     });
 } else {
-    void main().catch((error) => diagnosticError('초기화', error, { site: 2391 }));
+    void main().catch((error) => diagnosticError('초기화', error, { site: 2416 }));
 }
