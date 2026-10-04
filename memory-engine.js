@@ -142,6 +142,23 @@ export function appendCollectionExclusions(report, entries = []) {
     report.items.push(...entries.slice(0, room));
 }
 
+export function applyManualKnowledgeDraft(record, draft) {
+    const updated = { ...record, knowledge: { ...record.knowledge }, knowledgeEvidence: { ...record.knowledgeEvidence } };
+    const previous = normalizeKnowledge(record.knowledge);
+    const desired = draft.knowledge || {};
+    // Remove first so replacing names at the 24-person limit works atomically.
+    for (const name of Object.keys(previous)) if (!desired[name]) setKnowledge(updated, name, null);
+    for (const [name, state] of Object.entries(desired)) {
+        if (!state) continue;
+        const oldReason = record.knowledgeEvidence?.[name]?.reason || '';
+        const reason = draft.reasons?.[name] ?? oldReason;
+        if (state !== previous[name] || reason !== oldReason) setKnowledge(updated, name, state, reason);
+    }
+    record.knowledge = updated.knowledge;
+    record.knowledgeEvidence = updated.knowledgeEvidence;
+    record.pinned = true;
+}
+
 export function saveExcludedMemory(value, entry, text, chat = [], sourceChatId = '', manualKnowledge = {}) {
     if (!['add', 'update'].includes(entry?.action)) throw new Error('종료·취소 제안은 현재 규칙의 관리 메뉴에서 확인해 주세요.');
     const summary = String(text ?? '').trim().slice(0, 300);

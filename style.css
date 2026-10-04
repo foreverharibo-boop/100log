@@ -215,3 +215,9 @@
 #hundredlog .hundredlog-manual-knowledge-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(110px, 1fr); align-items: center; gap: 8px; font-size: .85em; }
 #hundredlog .hundredlog-manual-knowledge-row select { margin: 0 !important; height: 32px !important; min-height: 32px !important; padding: 3px 8px !important; }
 #hundredlog .hundredlog-manual-knowledge .hundredlog-row input { flex: 1; min-width: 0; height: 32px; }
+
+#hundredlog .hundredlog-bulk-knowledge-row { grid-template-columns: minmax(0, 1fr) minmax(110px, 1fr) auto; }
+#hundredlog .hundredlog-bulk-knowledge-row > button { padding: 3px 7px; margin: 0; }
+#hundredlog .hundredlog-bulk-proof { grid-column: 1 / -1; font-size: .9em; }
+#hundredlog .hundredlog-bulk-proof summary { cursor: pointer; opacity: .7; }
+#hundredlog .hundredlog-bulk-proof input { width: 100%; box-sizing: border-box; margin-top: 5px; }

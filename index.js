@@ -1,4 +1,4 @@
-import { collectedCharacterNames, sortMemoriesBySource, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js';
+import { applyManualKnowledgeDraft, collectedCharacterNames, sortMemoriesBySource, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js';
 import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, buildReviewSources, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js';
 import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js';
 import { normalizeKnowledgeEvidence, KNOWLEDGE_LABELS, COMMITMENT_LABELS, commitmentState } from './core.js';
@@ -23,6 +23,7 @@ let extracting = false;
 let activeCollectionJob = null;
 let collectionStatusText = '';
 const excludedMemoryDrafts = new WeakMap();
+const knowledgeEditorDrafts = new WeakMap();
 let translating = false;
 let stopTranslationRequested = false;
 let stopExtractionRequested = false;
@@ -184,7 +185,7 @@ function bindDiagnosticPanel() {
 }
 
 function apiKey() {
-    try { return localStorage.getItem(KEY_STORAGE)?.trim() || localStorage.getItem(LEGACY_KEY_STORAGE)?.trim() || ''; } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 187 }); return ''; }
+    try { return localStorage.getItem(KEY_STORAGE)?.trim() || localStorage.getItem(LEGACY_KEY_STORAGE)?.trim() || ''; } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 188 }); return ''; }
 }
 
 function embeddingProvider() {
@@ -192,7 +193,7 @@ function embeddingProvider() {
 }
 
 function embeddingKey(provider = embeddingProvider()) {
-    try { return localStorage.getItem(`${EMBEDDING_KEY_PREFIX}${provider}`)?.trim() || ''; } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 195 }); return ''; }
+    try { return localStorage.getItem(`${EMBEDDING_KEY_PREFIX}${provider}`)?.trim() || ''; } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 196 }); return ''; }
 }
 
 function embeddingLabel(provider = embeddingProvider()) {
@@ -200,7 +201,7 @@ function embeddingLabel(provider = embeddingProvider()) {
 }
 
 function isDeveloperUnlocked() {
-    try { return localStorage.getItem(DEVELOPER_UNLOCK_STORAGE) === 'true'; } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 203 }); return false; }
+    try { return localStorage.getItem(DEVELOPER_UNLOCK_STORAGE) === 'true'; } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 204 }); return false; }
 }
 
 function translationProvider() {
@@ -219,7 +220,7 @@ async function googleTranslateText(value) {
     let response;
     try {
         response = await diagnosticFetch(url.toString(), { credentials: 'omit', referrerPolicy: 'no-referrer', signal: AbortSignal.timeout(30000) });
-    } catch (error) { diagnosticError('기타', error, { site: 222 });
+    } catch (error) { diagnosticError('기타', error, { site: 223 });
         if (error?.name === 'TimeoutError') throw new Error('Google 번역 연결 시간이 초과됐어요.');
         const headers = context().getRequestHeaders?.();
         if (!headers) throw new Error('Google 번역 직접 연결이 차단됐고 실리태번 프록시를 사용할 수 없어요.');
@@ -227,11 +228,11 @@ async function googleTranslateText(value) {
             response = await diagnosticFetch(`/proxy/${encodeURIComponent(url.toString())}`, {
                 headers, credentials: 'same-origin', signal: AbortSignal.timeout(30000)
             });
-        } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 230 }); throw new Error('Google 번역에 연결하지 못했어요. 실리태번 서버의 인터넷 연결을 확인해 주세요.'); }
+        } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 231 }); throw new Error('Google 번역에 연결하지 못했어요. 실리태번 서버의 인터넷 연결을 확인해 주세요.'); }
         if (response.status === 404) throw new Error('실리태번 내장 프록시가 꺼져 있어요. config.yaml에서 enableCorsProxy: true로 바꾸고 서버를 다시 시작해 주세요.');
     }
     let result;
-    try { result = await response.json(); } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 234 }); throw new Error('Google 번역 응답을 읽지 못했어요.'); }
+    try { result = await response.json(); } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 235 }); throw new Error('Google 번역 응답을 읽지 못했어요.'); }
     if (!response.ok) {
         if (response.status === 429) throw new Error('Google 번역 요청이 너무 많아요. 잠시 후 다시 시도해 주세요.');
         throw new Error(`Google 번역 오류 (${response.status})`);
@@ -279,7 +280,7 @@ async function requestGoogleJson(url, key, payload, label) {
             method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders }, body: JSON.stringify(payload),
             credentials: 'omit', referrerPolicy: 'no-referrer', signal: AbortSignal.timeout(45000)
         });
-    } catch (error) { diagnosticError('기타', error, { site: 282 });
+    } catch (error) { diagnosticError('기타', error, { site: 283 });
         if (error?.name === 'TimeoutError') throw new Error(`${label} 임베딩 연결 시간이 초과됐어요.`);
         const headers = context().getRequestHeaders?.();
         if (!headers) throw new Error(`${label} 직접 연결이 차단됐고 실리태번 프록시를 사용할 수 없어요.`);
@@ -288,11 +289,11 @@ async function requestGoogleJson(url, key, payload, label) {
                 method: 'POST', headers: { ...headers, 'Content-Type': 'application/json', ...authHeaders }, body: JSON.stringify(payload),
                 credentials: 'same-origin', signal: AbortSignal.timeout(45000)
             });
-        } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 291 }); throw new Error(`${label}에 연결하지 못했어요. 실리태번 서버의 인터넷 연결을 확인해 주세요.`); }
+        } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 292 }); throw new Error(`${label}에 연결하지 못했어요. 실리태번 서버의 인터넷 연결을 확인해 주세요.`); }
         if (response.status === 404) throw new Error('실리태번 내장 프록시가 꺼져 있어요. config.yaml에서 enableCorsProxy: true로 바꾸고 서버를 다시 시작해 주세요.');
     }
     let result;
-    try { result = await response.json(); } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 295 }); throw new Error(`${label} 임베딩 응답을 읽지 못했어요.`); }
+    try { result = await response.json(); } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 296 }); throw new Error(`${label} 임베딩 응답을 읽지 못했어요.`); }
     if (!response.ok || result?.error) {
         const detail = String(result?.error?.message ?? result?.error ?? '').slice(0, 180);
         if ([400, 401, 403].includes(response.status)) throw new Error(`${label} 키 또는 사용 권한을 확인해 주세요${detail ? `: ${detail}` : ''}`);
@@ -362,7 +363,7 @@ async function readJevResponse(response, transport, questions, job = null) {
     }
     let result;
     try { result = await response.json(); checkReviewJob(job); }
-    catch (diagnosticCaughtError) { checkReviewJob(job); diagnosticError('기타', diagnosticCaughtError, { site: 365 }); throw jevRequestError(`JEV 응답을 읽지 못했어요. [${transport}]`, { retryable: true }); }
+    catch (diagnosticCaughtError) { checkReviewJob(job); diagnosticError('기타', diagnosticCaughtError, { site: 366 }); throw jevRequestError(`JEV 응답을 읽지 못했어요. [${transport}]`, { retryable: true }); }
     if (result?.error) {
         // Some relay servers wrap upstream errors in an HTTP 200 response.
         // Inspect for classification only; never display the raw upstream body.
@@ -419,7 +420,7 @@ async function requestJevOnce(state, questions, key, job = null) {
                 })
             });
         }
-    } catch (diagnosticCaughtError) { checkReviewJob(job); diagnosticError('기타', diagnosticCaughtError, { site: 422 });
+    } catch (diagnosticCaughtError) { checkReviewJob(job); diagnosticError('기타', diagnosticCaughtError, { site: 423 });
         response = null;
     }
     if (response && ![404, 405].includes(response.status)) {
@@ -431,7 +432,7 @@ async function requestJevOnce(state, questions, key, job = null) {
             method: 'POST', signal, headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
             body, credentials: 'omit', referrerPolicy: 'no-referrer'
         });
-    } catch (diagnosticCaughtError) { checkReviewJob(job); diagnosticError('기타', diagnosticCaughtError, { site: 434 });
+    } catch (diagnosticCaughtError) { checkReviewJob(job); diagnosticError('기타', diagnosticCaughtError, { site: 435 });
         const headers = context().getRequestHeaders?.();
         if (!headers) throw jevRequestError('JEV 직접 연결이 실패했고 실리태번 요청 헤더를 가져오지 못했어요.', { retryable: true });
         try {
@@ -440,7 +441,7 @@ async function requestJevOnce(state, questions, key, job = null) {
                 body, credentials: 'same-origin'
             });
             transport = '실리태번 내장 프록시';
-        } catch (diagnosticCaughtError) { checkReviewJob(job); diagnosticError('기타', diagnosticCaughtError, { site: 443 });
+        } catch (diagnosticCaughtError) { checkReviewJob(job); diagnosticError('기타', diagnosticCaughtError, { site: 444 });
             throw jevRequestError('JEV 연결에 실패했어요. 서버 인터넷 연결을 확인해 주세요.', { retryable: true });
         }
         if (response.status === 404) {
@@ -474,7 +475,7 @@ async function requestJev(state, questions, job = null) {
                 if (!sameChat()) throw new Error('대화가 바뀌어 JEV 판정을 적용하지 않았어요.');
                 diagnostic('jevDone', { attempt: attempt + 1, ms: Date.now() - attemptStarted, questions: Object.keys(questions).length });
                 return result;
-            } catch (error) { checkReviewJob(job); diagnosticError('기타', error, { site: 477 });
+            } catch (error) { checkReviewJob(job); diagnosticError('기타', error, { site: 478 });
                 if (!error.retryable) throw error;
                 if (attempt >= retryDelays.length) {
                     throw jevRequestError(`${error.message} 자동 재시도 2회도 실패했어요.`, { status: error.status });
@@ -573,7 +574,7 @@ function ensureCharacterUuid(ctx = context()) {
         character.data.extensions[IDENTITY_FIELD] = payload;
         if (!embedded || embedded !== uuid) {
             Promise.resolve(ctx.writeExtensionField?.(characterId, IDENTITY_FIELD, payload))
-                .catch((error) => diagnosticError('초기화', error, { site: 576 }));
+                .catch((error) => diagnosticError('초기화', error, { site: 577 }));
         }
     }
     if (registryChanged) ctx.saveSettingsDebounced?.();
@@ -647,7 +648,7 @@ function data(create = true) {
         mergeLegacyChatData(value, legacy, sourceChatId(ctx));
         ctx.chatMetadata.hundredlogCharacterStoreMigration = ownerKey;
         ctx.saveSettingsDebounced?.();
-        void Promise.resolve(ctx.saveMetadata?.()).catch((error) => diagnosticError('초기화', error, { site: 650 }));
+        void Promise.resolve(ctx.saveMetadata?.()).catch((error) => diagnosticError('초기화', error, { site: 651 }));
     }
     value.embeddingIndex ??= { provider: '', model: '', entries: {} };
     value.embeddingIndex.entries ??= {};
@@ -686,7 +687,7 @@ function setDeveloperUnlocked(unlocked) {
     try {
         if (unlocked) localStorage.setItem(DEVELOPER_UNLOCK_STORAGE, 'true');
         else localStorage.removeItem(DEVELOPER_UNLOCK_STORAGE);
-    } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 689 }); /* local storage can be unavailable in restricted browser contexts */ }
+    } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 690 }); /* local storage can be unavailable in restricted browser contexts */ }
     render();
 }
 
@@ -767,7 +768,7 @@ function appendOriginal(parent, record) {
 function refreshProfiles() {
     if (!$id('extraction-profile')) return;
     let profiles = [];
-    try { profiles = availableProfiles(context()); } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 770 }); /* Keep saved choices visible for correction. */ }
+    try { profiles = availableProfiles(context()); } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 771 }); /* Keep saved choices visible for correction. */ }
     for (const [id, key] of [['extraction-profile', 'extractionProfileId'], ['translation-profile', 'translationProfileId']]) {
         const select = $id(id);
         const choices = id === 'translation-profile' ? [['@extraction', '사실 추출용 프로필과 동일']] : [];
@@ -820,7 +821,7 @@ export async function translateRecords(mode = 'missing') {
             render();
         }
         status(stopTranslationRequested ? `${done}/${targets.length}개 번역 후 중단했어요. 완료한 번역은 저장됐어요.` : `${done}개를 한국어로 번역했어요. 원문 보기에서 원래 내용을 확인할 수 있어요.`);
-    } catch (error) { diagnosticError('번역', error, { site: 823 }); status(`번역 중단 · ${done}개 저장됨: ${error.message}`); }
+    } catch (error) { diagnosticError('번역', error, { site: 824 }); status(`번역 중단 · ${done}개 저장됨: ${error.message}`); }
     finally { translating = false; render(); if (memoryPending) scheduleMemory(); }
 }
 
@@ -913,18 +914,53 @@ function appendCommitmentHistory(parent, fact) {
     parent.append(details);
 }
 
-function excludedKnowledgeComposer(entry, draft, value, ctx) {
+function captureSettingsScroll() {
+    const root = document.getElementById('hundredlog');
+    if (!root) return () => {};
+    const scope = chatKey(context()), view = selectedView;
+    const positions = [];
+    for (let element = root; element; element = element.parentElement) {
+        if (element.scrollHeight <= element.clientHeight && !element.scrollTop && !element.scrollLeft) continue;
+        positions.push({ element, top: element.scrollTop, left: element.scrollLeft });
+    }
+    // Prefer a surviving visible row when a saved exclusion disappears.
+    const rows = [...root.querySelectorAll('[data-hundredlog-row]')];
+    const anchors = positions.map(({ element }) => {
+        const box = element.getBoundingClientRect();
+        return rows.filter((row) => {
+            const rect = row.getBoundingClientRect();
+            return rect.height > 0 && rect.bottom > box.top && rect.top < box.bottom;
+        }).map((row) => ({ key: row.dataset.hundredlogRow, offset: row.getBoundingClientRect().top - box.top }));
+    });
+    return () => {
+        if (scope !== chatKey(context()) || view !== selectedView) return;
+        const current = [...root.querySelectorAll('[data-hundredlog-row]')];
+        for (let i = 0; i < positions.length; i++) {
+            const { element, top, left } = positions[i];
+            if (!element.isConnected) continue;
+            element.scrollTop = top; element.scrollLeft = left;
+            for (const anchor of anchors[i]) {
+                const row = current.find((node) => node.dataset.hundredlogRow === anchor.key);
+                if (!row) continue;
+                element.scrollTop += row.getBoundingClientRect().top - element.getBoundingClientRect().top - anchor.offset;
+                break;
+            }
+        }
+    };
+}
+
+function excludedKnowledgeComposer(entry, draft, value, ctx, editExisting = false) {
     const panel = document.createElement('div'); panel.className = 'hundredlog-manual-knowledge';
     const label = document.createElement('strong'); label.textContent = '인물별 지식';
     const help = document.createElement('p'); help.className = 'hundredlog-help';
-    help.textContent = '수집된 이름을 미리 표시해요. 상태를 선택한 인물만 함께 저장하며, 미지정은 저장하지 않아요.';
+    help.textContent = editExisting ? '여러 인물의 상태를 바꾼 뒤 한 번에 저장해요. 미지정 또는 ×는 저장할 때 해당 기록을 삭제해요.' : '수집된 이름을 미리 표시해요. 상태를 선택한 인물만 함께 저장하며, 미지정은 저장하지 않아요.';
     const rows = document.createElement('div'); rows.className = 'hundredlog-manual-knowledge-rows';
     const names = new Set();
     const addRow = (name) => {
         name = String(name || '').trim().slice(0, 50);
         if (!name || names.has(name) || ['__proto__', 'constructor', 'prototype'].includes(name)) return;
         names.add(name);
-        const row = document.createElement('label'); row.className = 'hundredlog-manual-knowledge-row';
+        const row = document.createElement('div'); row.className = 'hundredlog-manual-knowledge-row' + (editExisting ? ' hundredlog-bulk-knowledge-row' : '');
         const title = document.createElement('span'); title.textContent = name;
         const select = document.createElement('select'); select.setAttribute('aria-label', `${name} 지식 상태`);
         for (const [state, text] of [['', '미지정'], ...Object.entries(KNOWLEDGE_LABELS)]) {
@@ -935,7 +971,24 @@ function excludedKnowledgeComposer(entry, draft, value, ctx) {
             if (select.value) draft.knowledge[name] = select.value;
             else delete draft.knowledge[name];
         });
-        row.append(title, select); rows.append(row);
+        row.append(title, select);
+        if (editExisting) {
+            const remove = makeButton('×', () => { delete draft.knowledge[name]; select.value = ''; });
+            remove.setAttribute('aria-label', `${name} 지식 기록 삭제`); row.append(remove);
+            const details = document.createElement('details'); details.className = 'hundredlog-bulk-proof';
+            const summary = document.createElement('summary'); summary.textContent = '판단 근거'; details.append(summary);
+            const proof = entry.knowledgeEvidence?.[name];
+            if (proof?.evidence) {
+                const quote = document.createElement('p'); quote.className = 'hundredlog-knowledge-proof'; quote.textContent = proof.evidence; details.append(quote);
+            }
+            const reason = document.createElement('input'); reason.type = 'text'; reason.maxLength = 180;
+            reason.placeholder = '판단 근거 (선택)'; reason.setAttribute('aria-label', `${name} 판단 근거`);
+            reason.value = draft.reasons?.[name] ?? proof?.reason ?? '';
+            reason.disabled = busy || extracting || translating;
+            reason.addEventListener('input', () => { draft.reasons ??= {}; draft.reasons[name] = reason.value; });
+            details.append(reason); row.append(details);
+        }
+        rows.append(row);
     };
     for (const name of collectedCharacterNames(value, ctx.chat, entry)) addRow(name);
     for (const name of Object.keys(draft.knowledge)) addRow(name);
@@ -947,75 +1000,54 @@ function excludedKnowledgeComposer(entry, draft, value, ctx) {
 }
 
 function knowledgeEditor(record, persist) {
+    const owner = data(false), source = sourceChatId();
     const panel = document.createElement('div'); panel.className = 'hundredlog-knowledge';
     const tags = document.createElement('div'); tags.className = 'hundredlog-knowledge-tags';
-    const editor = document.createElement('div'); editor.className = 'hundredlog-knowledge-editor'; editor.hidden = true;
-    const knowledge = normalizeKnowledge(record.knowledge);
-    const evidence = normalizeKnowledgeEvidence(record.knowledgeEvidence, knowledge);
-    const openEditor = (selected = '') => {
-        editor.replaceChildren(); editor.hidden = false;
-        const proof = evidence[selected];
-        const explanation = document.createElement('p'); explanation.className = 'hundredlog-help';
-        explanation.textContent = proof?.reason || (selected ? '이전 버전에서 저장된 상태예요. 당시 판단 근거는 기록되어 있지 않아요.' : '인물의 지식 상태와 근거를 직접 기록해요.');
-        editor.append(explanation);
-        if (proof?.evidence || Number.isInteger(proof?.sourceId)) {
-            const quote = document.createElement('div'); quote.className = 'hundredlog-knowledge-proof';
-            quote.textContent = `${Number.isInteger(proof.sourceId) ? `대화 #${proof.sourceId} · ` : ''}${proof.evidence || '해당 메시지의 원문을 기준으로 판정했어요.'}`;
-            editor.append(quote);
-        }
-        const controls = document.createElement('div'); controls.className = 'hundredlog-knowledge-controls';
-        const name = document.createElement('input'); name.type = 'text'; name.maxLength = 50;
-        name.placeholder = '인물 이름'; name.value = selected; name.setAttribute('aria-label', '인물 이름');
-        const suggestions = document.createElement('div'); suggestions.className = 'hundredlog-name-suggestions';
-        suggestions.setAttribute('aria-label', '수집된 인물 이름 선택');
-        for (const suggested of collectedCharacterNames(data(false), context().chat, record)) {
-            if (selected && suggested !== selected && Object.hasOwn(knowledge, suggested)) continue;
-            const button = makeButton(suggested, () => {
-                if (!selected && Object.hasOwn(knowledge, suggested)) { openEditor(suggested); return; }
-                name.value = suggested;
-            });
-            suggestions.append(button);
-        }
-        editor.append(suggestions);
-        const choice = document.createElement('select'); choice.setAttribute('aria-label', '지식 상태');
-        for (const [state, label] of Object.entries(KNOWLEDGE_LABELS)) {
-            const option = document.createElement('option'); option.value = state; option.textContent = label; choice.append(option);
-        }
-        choice.value = knowledge[selected] || 'unverified';
-        const reason = document.createElement('input'); reason.type = 'text'; reason.maxLength = 180;
-        reason.className = 'hundredlog-knowledge-reason'; reason.placeholder = '판단 근거 (선택)'; reason.value = proof?.reason || '';
-        reason.setAttribute('aria-label', '판단 근거');
-        const saveButton = makeButton('저장', async () => {
-            const nextName = name.value.trim();
-            if (selected && nextName !== selected && Object.hasOwn(record.knowledge || {}, nextName)) {
-                explanation.textContent = '이미 있는 인물 이름이에요. 해당 이름을 눌러 수정해 주세요.'; return;
-            }
-            try {
-                if (busy || extracting || translating) return;
-                // Validate before changing the original entry.
-                const updated = { ...record, knowledge: { ...record.knowledge }, knowledgeEvidence: { ...record.knowledgeEvidence } };
-                if (selected && nextName !== selected) setKnowledge(updated, selected, null);
-                setKnowledge(updated, nextName, choice.value, reason.value);
-                record.knowledge = updated.knowledge; record.knowledgeEvidence = updated.knowledgeEvidence;
-                record.pinned = true;
-                await persist();
-            } catch (error) { explanation.textContent = error.message; }
-        });
-        controls.append(name, choice, saveButton); editor.append(controls, reason);
+    const editor = document.createElement('div'); editor.className = 'hundredlog-knowledge-editor';
+    let draft = knowledgeEditorDrafts.get(record);
+    if (!draft) { draft = { open: false, knowledge: { ...normalizeKnowledge(record.knowledge) }, reasons: {} }; knowledgeEditorDrafts.set(record, draft); }
+    editor.hidden = !draft.open;
+    const sameScope = () => data(false) === owner && sourceChatId() === source;
+    const fillEditor = () => {
+        editor.replaceChildren(); editor.hidden = false; draft.open = true;
+        const composer = excludedKnowledgeComposer(record, draft, owner, context(), true);
+        const feedback = document.createElement('p'); feedback.className = 'hundredlog-help'; feedback.setAttribute('role', 'status');
         const actions = document.createElement('div'); actions.className = 'hundredlog-actions';
-        if (selected) actions.append(makeButton('× 기록 삭제', async () => {
-            if (busy || extracting || translating) return;
-            setKnowledge(record, selected, null); record.pinned = true; await persist();
+        actions.append(makeButton('지식 한 번에 저장', async () => {
+            if (busy || extracting || translating || !sameScope()) return;
+            const restoreScroll = captureSettingsScroll();
+            const before = { knowledge: record.knowledge, evidence: record.knowledgeEvidence, pinned: record.pinned };
+            try {
+                applyManualKnowledgeDraft(record, draft);
+                await persist();
+                // Keep the editor expanded, retaining the same height and place.
+                draft.knowledge = { ...normalizeKnowledge(record.knowledge) }; draft.reasons = {};
+                feedback.textContent = '저장했어요.';
+                restoreScroll();
+            } catch (error) {
+                record.knowledge = before.knowledge; record.knowledgeEvidence = before.evidence; record.pinned = before.pinned;
+                feedback.textContent = error.message;
+                restoreScroll();
+            }
+        }), makeButton('닫기', () => {
+            const restoreScroll = captureSettingsScroll();
+            draft.open = false; draft.knowledge = { ...normalizeKnowledge(record.knowledge) }; draft.reasons = {};
+            editor.hidden = true; restoreScroll();
         }));
-        actions.append(makeButton('닫기', () => { editor.hidden = true; })); editor.append(actions);
+        editor.append(composer, actions, feedback);
     };
-    for (const [name, state] of Object.entries(knowledge)) {
-        const button = makeButton(`${name} · ${KNOWLEDGE_LABELS[state]}`, () => openEditor(name));
-        button.className += ' hundredlog-knowledge-toggle'; button.title = '판단 근거 보기 · 수정';
-        tags.append(button);
+    const openEditor = () => {
+        if (!draft.open) { draft.knowledge = { ...normalizeKnowledge(record.knowledge) }; draft.reasons = {}; }
+        fillEditor();
+    };
+    for (const [name, state] of Object.entries(normalizeKnowledge(record.knowledge))) {
+        const button = makeButton(`${name} · ${KNOWLEDGE_LABELS[state]}`, openEditor);
+        button.className += ' hundredlog-knowledge-toggle'; button.title = '인물별 지식 한 번에 편집'; tags.append(button);
     }
-    const add = makeButton('+ 인물', () => openEditor()); add.className += ' hundredlog-knowledge-toggle';
-    tags.append(add); panel.append(tags, editor); return panel;
+    const add = makeButton('+ 인물', openEditor); add.className += ' hundredlog-knowledge-toggle';
+    tags.append(add); panel.append(tags, editor);
+    if (draft.open) fillEditor();
+    return panel;
 }
 
 function renderCollectionOptions(value, working) {
@@ -1063,7 +1095,7 @@ function renderCollectionExclusions(value, working) {
         list.append(empty); return;
     }
     for (const entry of report.items) {
-        const item = document.createElement('article'); item.className = 'hundredlog-excluded-item';
+        const item = document.createElement('article'); item.className = 'hundredlog-excluded-item'; item.dataset.hundredlogRow = `excluded:${entry.id}`;
         const text = document.createElement('p'); text.className = 'hundredlog-excluded-text';
         text.textContent = entry.text || '(표시할 내용이 없는 제안)';
         const reason = document.createElement('p'); reason.className = 'hundredlog-help';
@@ -1081,8 +1113,10 @@ function renderCollectionExclusions(value, working) {
         note.textContent = '위 인용은 AI가 제안한 근거이며, 출처 검사에 실패했을 수도 있어요. 원문과 내용을 확인해 주세요.';
         detail.append(note);
         if (['add', 'update'].includes(entry.action) && entry.text) {
-            const draft = excludedMemoryDrafts.get(entry) || { text: entry.text, knowledge: {} };
+            const draft = excludedMemoryDrafts.get(entry) || { text: entry.text, knowledge: {}, open: false };
             excludedMemoryDrafts.set(entry, draft);
+            detail.open = Boolean(draft.open);
+            detail.addEventListener('toggle', () => { draft.open = detail.open; });
             const editor = document.createElement('textarea'); editor.rows = 3; editor.maxLength = 300;
             editor.addEventListener('input', () => { draft.text = editor.value; });
             editor.value = draft.text; editor.setAttribute('aria-label', '직접 저장할 기억 내용'); editor.disabled = working;
@@ -1092,20 +1126,21 @@ function renderCollectionExclusions(value, working) {
             const button = makeButton('내용 확인 후 직접 저장', async () => {
                 if (busy || extracting || translating || data(false) !== value || sourceChatId() !== currentChat
                     || chatState(value, context(), false)?.collectionExclusions !== report) return;
+                const restoreScroll = captureSettingsScroll();
                 let savedRecord;
                 const beforeItems = report.items, beforeSaved = report.saved;
                 try {
                     savedRecord = saveExcludedMemory(value, entry, editor.value, context().chat, currentChat, draft.knowledge);
                     removeSavedExclusions(report);
                     await save();
-                    excludedMemoryDrafts.delete(entry); button.blur(); item.remove(); render();
+                    excludedMemoryDrafts.delete(entry); button.blur(); render(); restoreScroll();
                 } catch (failure) {
                     if (savedRecord) {
                         value.facts = value.facts.filter((fact) => fact.id !== savedRecord.id);
                         delete entry.savedId; report.items = beforeItems; report.saved = beforeSaved;
                         context().saveSettingsDebounced?.();
                     }
-                    error.textContent = failure.message;
+                    error.textContent = failure.message; restoreScroll();
                 }
             });
             detail.append(editor, help, excludedKnowledgeComposer(entry, draft, value, ctx), button, error);
@@ -1119,6 +1154,11 @@ function renderCollectionExclusions(value, working) {
 }
 
 function render() {
+    const restoreScroll = captureSettingsScroll();
+    try { renderContent(); } finally { restoreScroll(); }
+}
+
+function renderContent() {
     refreshDiagnosticPanel();
     if (!$id('facts')) return;
     const value = data();
@@ -1210,7 +1250,7 @@ function render() {
     const conflictIds = new Set((value.cleanupConflicts ?? []).flatMap((entry) => entry.ids ?? []));
     const warningIds = new Set((value.cleanupWarnings ?? []).flatMap((entry) => entry.ids ?? []));
     for (const fact of sortMemoriesBySource(currentFacts, sourceChatId())) {
-        const item = document.createElement('div'); item.className = 'hundredlog-item';
+        const item = document.createElement('div'); item.className = 'hundredlog-item'; item.dataset.hundredlogRow = `fact:${fact.id}`;
         const itemHead = document.createElement('div'); itemHead.className = 'hundredlog-item-head';
         const kind = document.createElement('span'); kind.className = 'hundredlog-kind'; kind.textContent = MEMORY_KINDS[fact.kind] || '중요한 사실';
         if (fact.kind === 'commitment') kind.textContent += ` · ${COMMITMENT_LABELS[commitmentState(fact)]}`;
@@ -1275,7 +1315,7 @@ function render() {
             try {
                 approveFact(value, restored, current?.active && isCurrent(current) ? current.id : null);
                 await save(); render(); status('현재 기억으로 복원하고 자동 변경 잠금했어요.');
-            } catch (error) { diagnosticError('기타', error, { site: 1278 }); status(error.message); }
+            } catch (error) { diagnosticError('기타', error, { site: 1318 }); status(error.message); }
         }));
         $id('history').append(item);
     }
@@ -1301,7 +1341,7 @@ function render() {
                 approveFact(value, candidate, replacement.value || null);
                 value.candidates = value.candidates.filter((entry) => entry.id !== candidate.id);
                 await save(); render();
-            } catch (error) { diagnosticError('기타', error, { site: 1304 }); status(error.message); }
+            } catch (error) { diagnosticError('기타', error, { site: 1344 }); status(error.message); }
         }));
         actions.append(makeButton('제외', async () => { value.candidates = value.candidates.filter((entry) => entry.id !== candidate.id); await save(); render(); }));
         item.append(actions);
@@ -1479,7 +1519,7 @@ function queueSourceMutation() {
     // that burst to finish so it is handled once instead of as dozens of edits.
     sourceMutationTimer = setTimeout(() => {
         sourceMutationTimer = null;
-        void processSourceMutation().catch((error) => { diagnosticError('규칙 저장', error, { site: 1482 }); status(error.message); });
+        void processSourceMutation().catch((error) => { diagnosticError('규칙 저장', error, { site: 1522 }); status(error.message); });
     }, 900);
 }
 
@@ -1583,7 +1623,7 @@ async function performMemorySync({ rebuildRecent = false, force = false } = {}) 
         if (job.controller.signal.aborted || error?.hundredlogCancelled) {
             if (sameOrigin()) status(`수집을 중단했어요 · 규칙 ${changed}개 반영. ‘새 대화 갱신’으로 이어서 수집할 수 있어요.`);
         } else {
-            diagnosticError('규칙 수집', error, { site: 1586 });
+            diagnosticError('규칙 수집', error, { site: 1626 });
             if (sameChat()) status(`기억 정리를 멈췄어요: ${error.message} ‘새 대화 갱신’으로 다시 시도할 수 있어요.`);
         }
     }
@@ -1610,7 +1650,7 @@ export function installMemoryHooks(ctx = context()) {
                 const result = callback(...args);
                 if (result?.then) return result.catch((error) => { diagnosticError('미처리', error); throw error; });
                 return result;
-            } catch (error) { diagnosticError('기타', error, { site: 1613 }); diagnosticError('미처리', error); throw error; }
+            } catch (error) { diagnosticError('기타', error, { site: 1653 }); diagnosticError('미처리', error); throw error; }
         });
     };
     on('GENERATION_AFTER_COMMANDS', async (type, eventData, dryRun) => {
@@ -1761,7 +1801,7 @@ async function commitReply(text, key, lastMessage, mode = 'normal') {
             await ctx.eventSource.emit((ctx.eventTypes ?? ctx.event_types).CHARACTER_MESSAGE_RENDERED, index);
             await ctx.saveChat();
             return;
-        } catch (error) { diagnosticError('기타', error, { site: 1764 });
+        } catch (error) { diagnosticError('기타', error, { site: 1804 });
             console.error('[100LOG] 오류·진단 기록을 확인해 주세요.');
             throw new Error('스와이프 표시 또는 저장 중 오류가 났어요. 채팅에 답변이 보이는지 확인해 주세요.');
         }
@@ -1777,7 +1817,7 @@ async function commitReply(text, key, lastMessage, mode = 'normal') {
         ctx.addOneMessage(message);
         await ctx.eventSource.emit((ctx.eventTypes ?? ctx.event_types).CHARACTER_MESSAGE_RENDERED, index);
         await ctx.saveChat();
-    } catch (error) { diagnosticError('기타', error, { site: 1780 });
+    } catch (error) { diagnosticError('기타', error, { site: 1820 });
         // Never remove a message after rendering or after another extension has observed it.
         console.error('[100LOG] 오류·진단 기록을 확인해 주세요.');
         throw new Error('답변 표시 또는 저장 중 오류가 났어요. 채팅에 답변이 보이는지 확인해 주세요.');
@@ -1861,7 +1901,7 @@ async function runHidden(key, lastMessage, selectedContext = null, mode = 'norma
             context().saveSettingsDebounced?.();
         }
         try { await traceDiagnostic('답변 표시·저장', () => commitReply(final, key, lastMessage, mode), { mode, chars: final.length }); }
-        catch (error) { diagnosticError('기타', error, { site: 1864 }); if (store) store.lastActivity = previousActivity; throw error; }
+        catch (error) { diagnosticError('기타', error, { site: 1904 }); if (store) store.lastActivity = previousActivity; throw error; }
         updateReport({ status: flagged.length ? 'corrected' : 'passed', stage: '완료', published: true });
         const replyLabel = mode === 'swipe' ? '스와이프 답변을' : mode === 'regenerate' ? '재생성 답변을' : '답변을';
         status(flagged.length ? `충돌 ${flagged.length}곳을 고쳐 ${replyLabel} 게시했어요.` : `설정 충돌 없이 ${replyLabel} 게시했어요.`);
@@ -1870,7 +1910,7 @@ async function runHidden(key, lastMessage, selectedContext = null, mode = 'norma
             updateReport({ stage, status: 'cancelled' });
             status('답변 생성을 중단했어요.');
         } else {
-            diagnosticError(stage, error, { site: 1873 });
+            diagnosticError(stage, error, { site: 1913 });
             const blocked = report.status === 'blocked';
             const upstream = ['메인 AI 초안 생성', '메인 AI 재작성', 'JEV 초안 검수', 'JEV 재검수'].includes(stage) && !blocked;
             updateReport({ stage, status: blocked ? 'blocked' : upstream ? 'external_error' : stage === '답변 표시·저장' ? 'publish_error' : 'failed' });
@@ -1882,7 +1922,7 @@ async function runHidden(key, lastMessage, selectedContext = null, mode = 'norma
         }
     }
     finally {
-        try { await clearLegacyPrompt(); } catch (error) { diagnosticError('기타', error, { site: 1885 }); console.error('[100LOG] 오류·진단 기록을 확인해 주세요.'); }
+        try { await clearLegacyPrompt(); } catch (error) { diagnosticError('기타', error, { site: 1925 }); console.error('[100LOG] 오류·진단 기록을 확인해 주세요.'); }
         if (activeReviewJob === job) activeReviewJob = null;
         busy = false; normalGenerating = false; render(); if (memoryPending) scheduleMemory();
     }
@@ -1927,7 +1967,7 @@ globalThis.hundredlogGenerationInterceptor = async function (promptChat, _size, 
             selectionStats = { candidates: result.candidateCount, selected: result.selected.length };
             selectedContext = memoryInjection(result.selected, recentChat(ctx), config.maxInjectedMemories, true);
         }
-    } catch (error) { diagnosticError('기타', error, { site: 1930 });
+    } catch (error) { diagnosticError('기타', error, { site: 1970 });
         if (activeReviewJob === job) activeReviewJob = null;
         abort(true);
         busy = false;
@@ -2141,7 +2181,7 @@ async function main() {
             const storage = `${EMBEDDING_KEY_PREFIX}${embeddingProvider()}`;
             if (value) localStorage.setItem(storage, value); else localStorage.removeItem(storage);
             $id('embedding-state').textContent = value ? '키 저장됨 · 연결 확인 필요' : 'API 키를 입력해 주세요';
-        } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 2144 }); status('이 브라우저에 임베딩 키를 저장하지 못했어요.'); }
+        } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 2184 }); status('이 브라우저에 임베딩 키를 저장하지 못했어요.'); }
     });
     $id('embedding-test')?.addEventListener('click', async () => {
         try {
@@ -2157,7 +2197,7 @@ async function main() {
             $id('embedding-state').textContent = `${embeddingLabel()} 연결됨`;
             embeddingError();
             status(facts.length ? `임베딩 연결 완료 · 현재 규칙 ${facts.length}개를 준비했어요.` : '임베딩 연결을 확인했어요. 저장된 현재 규칙은 아직 없어요.');
-        } catch (error) { diagnosticError('기타', error, { site: 2160 });
+        } catch (error) { diagnosticError('기타', error, { site: 2200 });
             $id('embedding-state').textContent = '연결 실패';
             embeddingError(error.message);
             status(error.message);
@@ -2177,7 +2217,7 @@ async function main() {
             $id('embedding-state').textContent = `${embeddingLabel()} 연결됨`;
             embeddingError();
             status(`누락 임베딩 재시도 완료 · ${after.completed}/${after.total}개 성공${after.missing ? ` · ${after.missing}개 미완료` : ''}`);
-        } catch (error) { diagnosticError('기타', error, { site: 2180 });
+        } catch (error) { diagnosticError('기타', error, { site: 2220 });
             $id('embedding-state').textContent = '재시도 실패';
             embeddingError(error.message);
             status(error.message);
@@ -2230,7 +2270,7 @@ async function main() {
             if (value) localStorage.setItem(KEY_STORAGE, value);
             else localStorage.removeItem(KEY_STORAGE);
             $id('server').textContent = value ? '키 저장됨 · 연결 확인 필요' : 'API 키를 입력해 주세요';
-        } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 2233 }); status('이 브라우저에 키를 저장하지 못했어요.'); }
+        } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 2273 }); status('이 브라우저에 키를 저장하지 못했어요.'); }
     });
     $id('test')?.addEventListener('click', async () => {
         try {
@@ -2243,7 +2283,7 @@ async function main() {
             $id('server').textContent = 'Jev 연결됨';
             connectionError();
             status(`Jev에 연결됐어요 (${lastJevTransport}).`);
-        } catch (error) { diagnosticError('기타', error, { site: 2246 });
+        } catch (error) { diagnosticError('기타', error, { site: 2286 });
             $id('server').textContent = '연결 실패';
             connectionError(error.message);
             status(error.message);
@@ -2271,7 +2311,7 @@ async function main() {
             $id('newfact').value = '';
             $id('replaces').value = '';
             await save(); render();
-        } catch (error) { diagnosticError('기타', error, { site: 2274 }); status(error.message); }
+        } catch (error) { diagnosticError('기타', error, { site: 2314 }); status(error.message); }
     });
     $id('endscene')?.addEventListener('click', async () => {
         const value = data();
@@ -2391,8 +2431,8 @@ const initialContext = context();
 const appReady = (initialContext.eventTypes ?? initialContext.event_types)?.APP_READY;
 if (appReady) {
     initialContext.eventSource.on(appReady, () => {
-        void main().catch((error) => diagnosticError('초기화', error, { site: 2394 }));
+        void main().catch((error) => diagnosticError('초기화', error, { site: 2434 }));
     });
 } else {
-    void main().catch((error) => diagnosticError('초기화', error, { site: 2397 }));
+    void main().catch((error) => diagnosticError('초기화', error, { site: 2437 }));
 }
