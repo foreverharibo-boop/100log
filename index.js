@@ -951,16 +951,20 @@ function captureSettingsScroll() {
 
 function excludedKnowledgeComposer(entry, draft, value, ctx, editExisting = false) {
     const panel = document.createElement('div'); panel.className = 'hundredlog-manual-knowledge';
+    const heading = document.createElement('div'); heading.className = 'hundredlog-knowledge-heading';
     const label = document.createElement('strong'); label.textContent = '인물별 지식';
+    const hint = document.createElement('span'); hint.textContent = '한 번에 저장'; heading.append(label, hint);
     const help = document.createElement('p'); help.className = 'hundredlog-help';
-    help.textContent = editExisting ? '여러 인물의 상태를 바꾼 뒤 한 번에 저장해요. 미지정 또는 ×는 저장할 때 해당 기록을 삭제해요.' : '수집된 이름을 미리 표시해요. 상태를 선택한 인물만 함께 저장하며, 미지정은 저장하지 않아요.';
+    help.textContent = editExisting ? '미지정·×는 저장할 때 해당 지식을 삭제해요.' : '상태를 선택한 인물만 함께 저장해요.';
+    const proofs = document.createElement('details'); proofs.className = 'hundredlog-bulk-proof';
+    const proofTitle = document.createElement('summary'); proofTitle.textContent = '판단 근거 보기'; proofs.append(proofTitle);
     const rows = document.createElement('div'); rows.className = 'hundredlog-manual-knowledge-rows';
     const names = new Set();
     const addRow = (name) => {
         name = String(name || '').trim().slice(0, 50);
         if (!name || names.has(name) || ['__proto__', 'constructor', 'prototype'].includes(name)) return;
         names.add(name);
-        const row = document.createElement('div'); row.className = 'hundredlog-manual-knowledge-row' + (editExisting ? ' hundredlog-bulk-knowledge-row' : '');
+        const row = document.createElement('div'); row.className = 'hundredlog-manual-knowledge-row';
         const title = document.createElement('span'); title.textContent = name;
         const select = document.createElement('select'); select.setAttribute('aria-label', `${name} 지식 상태`);
         for (const [state, text] of [['', '미지정'], ...Object.entries(KNOWLEDGE_LABELS)]) {
@@ -971,12 +975,13 @@ function excludedKnowledgeComposer(entry, draft, value, ctx, editExisting = fals
             if (select.value) draft.knowledge[name] = select.value;
             else delete draft.knowledge[name];
         });
-        row.append(title, select);
+        const remove = makeButton('×', () => { delete draft.knowledge[name]; select.value = ''; });
+        remove.className += ' hundredlog-knowledge-clear';
+        remove.setAttribute('aria-label', `${name} 지식 기록 삭제`);
+        row.append(title, select, remove);
         if (editExisting) {
-            const remove = makeButton('×', () => { delete draft.knowledge[name]; select.value = ''; });
-            remove.setAttribute('aria-label', `${name} 지식 기록 삭제`); row.append(remove);
-            const details = document.createElement('details'); details.className = 'hundredlog-bulk-proof';
-            const summary = document.createElement('summary'); summary.textContent = '판단 근거'; details.append(summary);
+            const details = document.createElement('div'); details.className = 'hundredlog-person-proof';
+            const nameLabel = document.createElement('strong'); nameLabel.textContent = name; details.append(nameLabel);
             const proof = entry.knowledgeEvidence?.[name];
             if (proof?.evidence) {
                 const quote = document.createElement('p'); quote.className = 'hundredlog-knowledge-proof'; quote.textContent = proof.evidence; details.append(quote);
@@ -986,17 +991,19 @@ function excludedKnowledgeComposer(entry, draft, value, ctx, editExisting = fals
             reason.value = draft.reasons?.[name] ?? proof?.reason ?? '';
             reason.disabled = busy || extracting || translating;
             reason.addEventListener('input', () => { draft.reasons ??= {}; draft.reasons[name] = reason.value; });
-            details.append(reason); row.append(details);
+            details.append(reason); proofs.append(details);
         }
         rows.append(row);
     };
     for (const name of collectedCharacterNames(value, ctx.chat, entry)) addRow(name);
     for (const name of Object.keys(draft.knowledge)) addRow(name);
-    const controls = document.createElement('div'); controls.className = 'hundredlog-row';
+    const controls = document.createElement('div'); controls.className = 'hundredlog-knowledge-add';
     const input = document.createElement('input'); input.type = 'text'; input.maxLength = 50;
     input.placeholder = '다른 인물 이름'; input.setAttribute('aria-label', '다른 인물 이름'); input.disabled = busy || extracting || translating;
     const button = makeButton('인물 추가', () => { addRow(input.value); input.value = ''; });
-    controls.append(input, button); panel.append(label, help, rows, controls); return panel;
+    controls.append(input, button); panel.append(heading, rows, controls);
+    if (editExisting) panel.append(proofs);
+    panel.append(help); return panel;
 }
 
 function knowledgeEditor(record, persist) {
@@ -1009,16 +1016,17 @@ function knowledgeEditor(record, persist) {
     editor.hidden = !draft.open;
     const sameScope = () => data(false) === owner && sourceChatId() === source;
     const fillEditor = () => {
-        editor.replaceChildren(); editor.hidden = false; draft.open = true;
+        editor.replaceChildren(); editor.hidden = false; tags.hidden = true; draft.open = true;
         const composer = excludedKnowledgeComposer(record, draft, owner, context(), true);
-        const feedback = document.createElement('p'); feedback.className = 'hundredlog-help'; feedback.setAttribute('role', 'status');
-        const actions = document.createElement('div'); actions.className = 'hundredlog-actions';
-        actions.append(makeButton('지식 한 번에 저장', async () => {
+        const feedback = document.createElement('p'); feedback.className = 'hundredlog-help'; feedback.setAttribute('role', 'status'); feedback.textContent = draft.feedback || '';
+        const actions = document.createElement('div'); actions.className = 'hundredlog-actions hundredlog-knowledge-footer';
+        actions.append(makeButton('저장', async () => {
             if (busy || extracting || translating || !sameScope()) return;
             const restoreScroll = captureSettingsScroll();
             const before = { knowledge: record.knowledge, evidence: record.knowledgeEvidence, pinned: record.pinned };
             try {
                 applyManualKnowledgeDraft(record, draft);
+                draft.feedback = '저장했어요.';
                 await persist();
                 // Keep the editor expanded, retaining the same height and place.
                 draft.knowledge = { ...normalizeKnowledge(record.knowledge) }; draft.reasons = {};
@@ -1026,15 +1034,15 @@ function knowledgeEditor(record, persist) {
                 restoreScroll();
             } catch (error) {
                 record.knowledge = before.knowledge; record.knowledgeEvidence = before.evidence; record.pinned = before.pinned;
-                feedback.textContent = error.message;
+                draft.feedback = error.message; feedback.textContent = error.message;
                 restoreScroll();
             }
         }), makeButton('닫기', () => {
             const restoreScroll = captureSettingsScroll();
             draft.open = false; draft.knowledge = { ...normalizeKnowledge(record.knowledge) }; draft.reasons = {};
-            editor.hidden = true; restoreScroll();
+            editor.hidden = true; tags.hidden = false; draft.feedback = ''; restoreScroll();
         }));
-        editor.append(composer, actions, feedback);
+        actions.prepend(feedback); editor.append(composer, actions);
     };
     const openEditor = () => {
         if (!draft.open) { draft.knowledge = { ...normalizeKnowledge(record.knowledge) }; draft.reasons = {}; }
