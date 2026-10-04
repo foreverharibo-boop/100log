@@ -1,3 +1,4 @@
+import { availableSupportingEvidence, normalizeAliases, canonicalName, linkAlias, resolveFactNames, normalizeSupportingEvidence, addRejectedMemory } from './continuity-tools.js';
 import { applyManualKnowledgeDraft, collectedCharacterNames, sortMemoriesBySource, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, omissionReviewRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js';
 import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, buildReviewSources, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js';
 import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js';
@@ -961,7 +962,7 @@ function excludedKnowledgeComposer(entry, draft, value, ctx, editExisting = fals
     const rows = document.createElement('div'); rows.className = 'hundredlog-manual-knowledge-rows';
     const names = new Set();
     const addRow = (name) => {
-        name = String(name || '').trim().slice(0, 50);
+        name = canonicalName(name, value?.nameAliases);
         if (!name || names.has(name) || ['__proto__', 'constructor', 'prototype'].includes(name)) return;
         names.add(name);
         const row = document.createElement('div'); row.className = 'hundredlog-manual-knowledge-row';
@@ -1012,12 +1013,12 @@ function knowledgeEditor(record, persist) {
     const tags = document.createElement('div'); tags.className = 'hundredlog-knowledge-tags';
     const editor = document.createElement('div'); editor.className = 'hundredlog-knowledge-editor';
     let draft = knowledgeEditorDrafts.get(record);
-    if (!draft) { draft = { open: false, knowledge: { ...normalizeKnowledge(record.knowledge) }, reasons: {} }; knowledgeEditorDrafts.set(record, draft); }
+    if (!draft) { draft = { open: false, knowledge: { ...normalizeKnowledge(resolveFactNames(record, owner?.nameAliases).knowledge) }, reasons: {} }; knowledgeEditorDrafts.set(record, draft); }
     editor.hidden = !draft.open;
     const sameScope = () => data(false) === owner && sourceChatId() === source;
     const fillEditor = () => {
         editor.replaceChildren(); editor.hidden = false; tags.hidden = true; draft.open = true;
-        const composer = excludedKnowledgeComposer(record, draft, owner, context(), true);
+        const composer = excludedKnowledgeComposer(resolveFactNames(record, owner?.nameAliases), draft, owner, context(), true);
         const feedback = document.createElement('p'); feedback.className = 'hundredlog-help'; feedback.setAttribute('role', 'status'); feedback.textContent = draft.feedback || '';
         const actions = document.createElement('div'); actions.className = 'hundredlog-actions hundredlog-knowledge-footer';
         actions.append(makeButton('저장', async () => {
@@ -1029,7 +1030,7 @@ function knowledgeEditor(record, persist) {
                 draft.feedback = '저장했어요.';
                 await persist();
                 // Keep the editor expanded, retaining the same height and place.
-                draft.knowledge = { ...normalizeKnowledge(record.knowledge) }; draft.reasons = {};
+                draft.knowledge = { ...normalizeKnowledge(resolveFactNames(record, owner?.nameAliases).knowledge) }; draft.reasons = {};
                 feedback.textContent = '저장했어요.';
                 restoreScroll();
             } catch (error) {
@@ -1039,16 +1040,16 @@ function knowledgeEditor(record, persist) {
             }
         }), makeButton('닫기', () => {
             const restoreScroll = captureSettingsScroll();
-            draft.open = false; draft.knowledge = { ...normalizeKnowledge(record.knowledge) }; draft.reasons = {};
+            draft.open = false; draft.knowledge = { ...normalizeKnowledge(resolveFactNames(record, owner?.nameAliases).knowledge) }; draft.reasons = {};
             editor.hidden = true; tags.hidden = false; draft.feedback = ''; restoreScroll();
         }));
         actions.prepend(feedback); editor.append(composer, actions);
     };
     const openEditor = () => {
-        if (!draft.open) { draft.knowledge = { ...normalizeKnowledge(record.knowledge) }; draft.reasons = {}; }
+        if (!draft.open) { draft.knowledge = { ...normalizeKnowledge(resolveFactNames(record, owner?.nameAliases).knowledge) }; draft.reasons = {}; }
         fillEditor();
     };
-    for (const [name, state] of Object.entries(normalizeKnowledge(record.knowledge))) {
+    for (const [name, state] of Object.entries(normalizeKnowledge(resolveFactNames(record, owner?.nameAliases).knowledge))) {
         const button = makeButton(`${name} · ${KNOWLEDGE_LABELS[state]}`, openEditor);
         button.className += ' hundredlog-knowledge-toggle'; button.title = '인물별 지식 한 번에 편집'; tags.append(button);
     }
@@ -1161,6 +1162,73 @@ function renderCollectionExclusions(value, working) {
     }
 }
 
+function appendSupportHistory(item, fact) {
+    const proofs = availableSupportingEvidence(fact, context().chat, sourceChatId(), recentWindowStart(context().chat), messageSignature);
+    if (!proofs.length) return;
+    const details = document.createElement('details'); details.className = 'hundredlog-support-history';
+    const title = document.createElement('summary'); title.textContent = `추가 근거 ${proofs.length}개 · 최근 #${proofs.at(-1).sourceId}`; details.append(title);
+    for (const proof of proofs) {
+        const row = document.createElement('div'); row.className = 'hundredlog-help';
+        row.textContent = `${proof.sourceChatId === sourceChatId() ? '' : '다른 채팅 · '}대화 #${proof.sourceId} · ${proof.reason}\n${proof.evidence}`; details.append(row);
+    }
+    item.append(details);
+}
+
+function renderContinuityTools(value, working) {
+    const panel = $id('identity-tools'), blocked = $id('rejected-memories');
+    if (!panel || !blocked) return;
+    panel.replaceChildren(); blocked.replaceChildren();
+    if (!value) return;
+    const scope = sourceChatId(), sameScope = () => data(false) === value && sourceChatId() === scope;
+    const available = () => sameScope() && !busy && !extracting && !translating && !normalGenerating;
+    const feedback = document.createElement('p'); feedback.className = 'hundredlog-help'; feedback.setAttribute('role','status');
+    const commitLink = async (alias, canonical) => {
+        if (!available()) return;
+        try {
+            linkAlias(value, alias, canonical);
+            value.aliasSuggestions = (value.aliasSuggestions || []).filter(row => canonicalName(row.alias,value.nameAliases) !== canonicalName(row.canonical,value.nameAliases));
+            // Old drafts may contain a name that now belongs to a connected identity.
+            for (const fact of value.facts) knowledgeEditorDrafts.delete(fact);
+            await save(); render();
+        } catch (error) { feedback.textContent = error.message; }
+    };
+    for (const row of normalizeAliases(value.nameAliases)) {
+        const line = document.createElement('div'); line.className = 'hundredlog-identity-row';
+        const label = document.createElement('span'); label.textContent = `${row.alias} → ${row.canonical}`;
+        const remove = makeButton('연결 해제', async () => {
+            if (!available()) return;
+            value.nameAliases = normalizeAliases(value.nameAliases).filter(entry => entry.alias !== row.alias);
+            for (const fact of value.facts) knowledgeEditorDrafts.delete(fact);
+            await save(); render();
+        }); remove.disabled = working; line.append(label,remove); panel.append(line);
+    }
+    const names = collectedCharacterNames(value, context().chat);
+    const inputs = document.createElement('div'); inputs.className = 'hundredlog-identity-inputs';
+    const datalist = document.createElement('datalist'); datalist.id = 'hundredlog-identity-names';
+    for (const name of names) { const option = document.createElement('option'); option.value=name; datalist.append(option); }
+    const alias = document.createElement('input'), canonical = document.createElement('input');
+    alias.placeholder='별칭·다른 표기'; canonical.placeholder='대표 이름';
+    for (const input of [alias,canonical]) { input.type='text'; input.maxLength=50; input.disabled=working; input.setAttribute('aria-label',input.placeholder); input.setAttribute('list',datalist.id); }
+    const connect=makeButton('연결', () => commitLink(alias.value,canonical.value)); connect.disabled=working;
+    inputs.append(alias,canonical,connect); panel.append(inputs,datalist,feedback);
+    for (const suggestion of value.aliasSuggestions || []) {
+        const line=document.createElement('div'); line.className='hundredlog-identity-suggestion';
+        const title=document.createElement('span'); title.textContent=`연결 후보: ${suggestion.alias} → ${suggestion.canonical}`;
+        const proof=document.createElement('details'), summary=document.createElement('summary'); summary.textContent='후보 근거';
+        const quote=document.createElement('p'); quote.textContent=`${suggestion.reason}\n${suggestion.evidence}`; proof.append(summary,quote);
+        const accept=makeButton('같은 인물 · 연결',()=>commitLink(suggestion.alias,suggestion.canonical)); accept.disabled=working;
+        const dismiss=makeButton('넘기기',async()=>{ if(!available())return; value.aliasSuggestions=value.aliasSuggestions.filter(row=>row!==suggestion); await save(); render(); }); dismiss.disabled=working;
+        line.append(title,accept,dismiss,proof); panel.append(line);
+    }
+    if (!(value.rejectedMemories || []).length) { const empty=document.createElement('p'); empty.className='hundredlog-help'; empty.textContent='재수집에서 제외한 기억이 없어요.'; blocked.append(empty); }
+    for (const record of value.rejectedMemories || []) {
+        const line=document.createElement('div'); line.className='hundredlog-rejected-row';
+        const title=document.createElement('span'); title.textContent=`${record.text} · ${record.sourceChatId === scope ? '' : '다른 채팅 · '}#${record.sourceId}`;
+        const remove=makeButton('제외 해제',async()=>{ if(!available())return; value.rejectedMemories=value.rejectedMemories.filter(row=>row.id!==record.id); await save(); render(); }); remove.disabled=working;
+        line.append(title,remove); blocked.append(line);
+    }
+}
+
 function render() {
     const restoreScroll = captureSettingsScroll();
     try { renderContent(); } finally { restoreScroll(); }
@@ -1175,6 +1243,7 @@ function renderContent() {
     const working = busy || extracting || translating;
     renderCollectionOptions(value, working);
     renderCollectionExclusions(value, working);
+    renderContinuityTools(value, working || normalGenerating);
     $id('auto-memory').checked = settings().autoMemory;
     $id('auto-memory').disabled = busy || translating;
     $id('analysis-interval').value = String(settings().analysisInterval);
@@ -1285,7 +1354,20 @@ function renderContent() {
         actions.append(makeButton(fact.pinned ? '자동 잠금 해제' : '자동 변경 잠금', async () => { if (data(false) !== value) return; fact.pinned = !fact.pinned; await save(); render(); }));
         actions.append(makeButton(fact.active ? '잠시 끄기' : '다시 켜기', async () => { fact.active = !fact.active; await save(); render(); }));
         actions.append(makeButton(fact.scope === 'scene' ? '지속 기억으로' : '임시 기억으로', async () => { fact.scope = fact.scope === 'scene' ? 'always' : 'scene'; await save(); render(); }));
-        actions.append(makeButton('삭제', async () => { if (data(false) !== value) return; removeFact(value, fact.id); await save(); render(); }));
+        actions.append(makeButton('삭제', () => {
+            if (data(false) !== value) return;
+            const choice = document.createElement('div'); choice.className = 'hundredlog-delete-choice';
+            const feedback = document.createElement('span'); feedback.className = 'hundredlog-help';
+            const remove = async (reject) => {
+                if (busy || extracting || translating || normalGenerating || data(false) !== value) return;
+                try {
+                    if (reject) addRejectedMemory(value, fact);
+                    removeFact(value, fact.id); await save(); render();
+                } catch (error) { feedback.textContent = error.message; }
+            };
+            choice.append(makeButton('지금 필요 없음 · 삭제', () => remove(false)), makeButton('잘못 수집됨 · 재수집 제외', () => remove(true)), makeButton('취소', () => choice.remove()), feedback);
+            item.querySelector('.hundredlog-delete-choice')?.remove(); item.append(choice);
+        }));
         const actionMenu = document.createElement('div'); actionMenu.className = 'hundredlog-action-menu';
         const actionSummary = document.createElement('button'); actionSummary.type = 'button'; actionSummary.className = 'hundredlog-action-toggle'; actionSummary.textContent = '⋯'; actionSummary.setAttribute('aria-label', '규칙 관리'); actionSummary.setAttribute('aria-expanded', 'false');
         actions.hidden = true;
@@ -1300,6 +1382,9 @@ function renderContent() {
         itemHead.append(actionMenu);
         item.append(itemHead, title, meta); $id('facts').append(item);
         appendOriginal(item, fact);
+        appendSupportHistory(item, fact);
+        const identityConflicts = resolveFactNames(fact, value.nameAliases).aliasConflicts;
+        if (identityConflicts.length) { const note = document.createElement("p"); note.className = "hundredlog-help"; note.textContent = `이름 연결 후 지식 확인 필요: ${identityConflicts.join(", ")}`; item.append(note); }
         item.append(knowledgeEditor(fact, async () => { if (data(false) !== value) return; await save(); render(); }));
         appendCommitmentHistory(item, fact);
     }
@@ -1407,7 +1492,7 @@ async function runAutomaticCleanup(value, ctx, profileId, sameChat, job = null) 
     if (value.lastCleanupSignature === signature) return { merged: 0, archived: 0, conflicts: value.cleanupConflicts?.length ?? 0, changes: [], skipped: true };
     const rows = recentCleanupRows(ctx);
     status(`규칙 ${active.length}개에서 중복·종료·충돌을 자동 청소 중이에요…`);
-    const raw = await traceDiagnostic('규칙 청소', () => collectUtility(ctx, cleanupRequest(value.facts, rows), profileId, job), { rules: active.length });
+    const raw = await traceDiagnostic('규칙 청소', () => collectUtility(ctx, cleanupRequest(value.facts.map(fact => resolveFactNames(fact, value.nameAliases)), rows), profileId, job), { rules: active.length });
     if (!sameChat()) return null;
     const actions = await traceDiagnostic('청소 파싱', () => parseCleanupActions(raw, value, rows));
     // The collector owns cleanup; deterministic guards in parseCleanupActions
@@ -1590,23 +1675,29 @@ async function performMemorySync({ rebuildRecent = false, force = false, reviewO
             let parsed = { operations: [], rejected: 0 };
             if (rows.length) {
                 const request = reviewOnly ? omissionReviewRequest : memoryRequest;
-                const raw = await traceDiagnostic(reviewOnly ? '누락 확인' : '규칙 수집', () => collectUtility(ctx, request(value.facts, rows, contextRows, settings().collectionIntensity, value.collectionPreferences), profileId, job), { count: rows.length });
+                const raw = await traceDiagnostic(reviewOnly ? '누락 확인' : '규칙 수집', () => collectUtility(ctx, request(value.facts.map(fact => ({ ...fact, supportingEvidence: availableSupportingEvidence(fact, ctx.chat, currentSourceChatId, recentWindowStart(ctx.chat), messageSignature) })), rows, contextRows, settings().collectionIntensity, value.collectionPreferences, { nameAliases:value.nameAliases, rejectedMemories:value.rejectedMemories, sourceChatId:currentSourceChatId }), profileId, job), { count: rows.length });
                 if (!sameChat()) return;
                 if (tracked.some(({ id, signature }) => messageSignature(context().chat[id]) !== signature)) {
                     memoryPending = true;
                     status('대화가 수정되어 바뀐 내용으로 다시 정리할게요.');
                     return;
                 }
-                parsed = await traceDiagnostic('규칙 파싱', () => parseMemoryOperations(raw, rows, value.facts, currentSourceChatId, contextRows, { collectorOnly: true }));
+                parsed = await traceDiagnostic('규칙 파싱', () => parseMemoryOperations(raw, rows, value.facts.map(fact => resolveFactNames(fact, value.nameAliases)), currentSourceChatId, contextRows, { collectorOnly: true }));
                 proposedCount += parsed.proposed || 0; structuralRejected += parsed.rejected;
 
             }
             if (!sameChat()) return;
             // Apply only after the request and source checks succeed.
-            const staged = { facts: JSON.parse(JSON.stringify(value.facts)) };
+            const staged = { facts: JSON.parse(JSON.stringify(value.facts)), nameAliases:value.nameAliases, rejectedMemories:value.rejectedMemories };
             const result = applyMemoryOperations(staged, parsed.operations, currentSourceChatId);
             if (!sameChat()) return;
             value.facts = staged.facts;
+            value.aliasSuggestions ??= [];
+            for (const suggestion of parsed.aliasSuggestions || []) {
+                if (canonicalName(suggestion.alias, value.nameAliases) === canonicalName(suggestion.canonical, value.nameAliases)) continue;
+                if (!value.aliasSuggestions.some(row => row.alias === suggestion.alias && row.canonical === suggestion.canonical)) value.aliasSuggestions.push(suggestion);
+            }
+            value.aliasSuggestions = value.aliasSuggestions.slice(-24);
             if (rows.length) {
                 appendCollectionExclusions(exclusionReport, [...(parsed.exclusions || []), ...(result.exclusions || [])]);
                 state.collectionExclusions = exclusionReport;
@@ -1863,7 +1954,8 @@ async function runHidden(key, lastMessage, selectedContext = null, mode = 'norma
         checkReviewJob(job);
         const ctx = context();
         if (!stillSameChat(key, lastMessage, mode)) throw reviewCancelledError();
-        const facts = data(false)?.facts.filter((item) => item.active && isCurrent(item)).map((item) => ({ ...item })) ?? [];
+        const owner = data(false);
+        const facts = owner?.facts.filter((item) => item.active && isCurrent(item)).map(item => ({ ...resolveFactNames(item, owner.nameAliases), supportingEvidence: availableSupportingEvidence(item, ctx.chat, sourceChatId(ctx), recentWindowStart(ctx.chat), messageSignature) })) ?? [];
         updateReport({ rules: facts.length });
         if (!apiKey()) throw new Error('확장 설정에 Jev API 키를 먼저 입력해 주세요.');
         const recent = recentChat(ctx, mode !== 'normal');
@@ -1987,7 +2079,7 @@ globalThis.hundredlogGenerationInterceptor = async function (promptChat, _size, 
             const result = await reviewStep(job, () => selectInjectionFactsByEmbedding(confirmed, ctx, job));
             if (chatKey(context()) !== key) throw new Error('대화가 바뀌어 맞춤 규칙 주입을 중단했어요.');
             selectionStats = { candidates: result.candidateCount, selected: result.selected.length };
-            selectedContext = memoryInjection(result.selected, recentChat(ctx), config.maxInjectedMemories, true);
+            selectedContext = memoryInjection(result.selected.map(fact => ({ ...resolveFactNames(fact, data(false)?.nameAliases), supportingEvidence: availableSupportingEvidence(fact, ctx.chat, sourceChatId(ctx), recentWindowStart(ctx.chat), messageSignature) })), recentChat(ctx), config.maxInjectedMemories, true);
         }
     } catch (error) { diagnosticError('기타', error, { site: 1970 });
         if (activeReviewJob === job) activeReviewJob = null;

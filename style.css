@@ -239,3 +239,15 @@
     #hundredlog .hundredlog-knowledge-add button.menu_button,
     #hundredlog .hundredlog-knowledge-footer button.menu_button { min-height: 32px; }
 }
+
+/* Compact identity and evidence tools; inherit SillyTavern colors. */
+#hundredlog .hundredlog-identity-row, #hundredlog .hundredlog-rejected-row { display:flex; align-items:center; gap:8px; padding:6px 0; }
+#hundredlog .hundredlog-identity-row > span, #hundredlog .hundredlog-rejected-row > span { flex:1; min-width:0; overflow-wrap:anywhere; }
+#hundredlog .hundredlog-identity-inputs { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto; align-items:center; gap:6px; }
+#hundredlog .hundredlog-identity-inputs input { min-width:0; width:100%; height:30px !important; min-height:30px !important; margin:0; padding:3px 7px !important; }
+#hundredlog .hundredlog-identity-inputs .menu_button, #hundredlog .hundredlog-identity-row .menu_button, #hundredlog .hundredlog-rejected-row .menu_button { margin:0; padding:4px 7px; font-size:12px; flex-shrink:0; }
+#hundredlog .hundredlog-identity-suggestion { padding:8px 0; font-size:13px; }
+#hundredlog .hundredlog-identity-suggestion > span { display:block; }
+#hundredlog .hundredlog-support-history { margin:8px 0; font-size:12px; opacity:.85; }
+#hundredlog .hundredlog-support-history .hundredlog-help, #hundredlog .hundredlog-identity-suggestion p { white-space:pre-wrap; overflow-wrap:anywhere; }
+#hundredlog .hundredlog-delete-choice { display:flex; gap:6px; flex-wrap:wrap; margin-top:8px; }
