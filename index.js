@@ -1,4 +1,4 @@
-import { MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js';
+import { COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js';
 import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, buildReviewSources, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js';
 import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js';
 import { normalizeKnowledgeEvidence, KNOWLEDGE_LABELS, COMMITMENT_LABELS, commitmentState } from './core.js';
@@ -973,6 +973,93 @@ function knowledgeEditor(record, persist) {
     tags.append(add); panel.append(tags, editor); return panel;
 }
 
+function renderCollectionOptions(value, working) {
+    const options = $id('collection-focus');
+    const custom = $id('collection-custom');
+    if (!options || !custom) return;
+    if (!options.children.length) {
+        for (const [key, choice] of Object.entries(COLLECTION_FOCUS)) {
+            const label = document.createElement('label');
+            const input = document.createElement('input'); input.type = 'checkbox'; input.value = key;
+            const text = document.createElement('span'); text.textContent = choice.label;
+            label.append(input, text); options.append(label);
+        }
+    }
+    const preferences = normalizeCollectionPreferences(value?.collectionPreferences);
+    for (const input of options.querySelectorAll('input')) {
+        input.checked = preferences.focus.includes(input.value); input.disabled = working || !value;
+    }
+    if (document.activeElement !== custom || custom.dataset.owner !== String(value?.uuid || '')) custom.value = preferences.custom;
+    custom.dataset.owner = String(value?.uuid || '');
+    custom.disabled = working || !value;
+    $id('collection-preferences-reset').disabled = working || !value;
+}
+
+function renderCollectionExclusions(value, working) {
+    const list = $id('collection-exclusions');
+    if (!list) return;
+    const ctx = context();
+    const currentChat = sourceChatId(ctx);
+    const report = value ? chatState(value, ctx, false)?.collectionExclusions : null;
+    const sameScope = list.dataset.chat === currentChat && list.dataset.owner === String(value?.uuid || '');
+    // Preserve an in-progress manual edit on incidental chat rendering.
+    if (sameScope && list.contains(document.activeElement)) return;
+    list.dataset.chat = currentChat; list.dataset.owner = String(value?.uuid || '');
+    list.replaceChildren();
+    const summary = $id('collection-exclusions-summary');
+    summary.textContent = report
+        ? `최근 수집에서 제외 ${report.total}개${report.total > report.items.length ? ` · ${report.items.length}개 표시` : ''}`
+        : '업데이트 후 수집하면 이 채팅의 제외 내역이 표시돼요.';
+    $id('collection-exclusions-clear').disabled = working || !report;
+    if (!report?.items?.length) {
+        const empty = document.createElement('p'); empty.className = 'hundredlog-help';
+        empty.textContent = report ? '이번 수집에서 코드 검사로 제외된 제안이 없어요.' : '아직 기록된 제외 항목이 없어요.';
+        list.append(empty); return;
+    }
+    for (const entry of report.items) {
+        const item = document.createElement('article'); item.className = 'hundredlog-excluded-item';
+        const text = document.createElement('p'); text.className = 'hundredlog-excluded-text';
+        text.textContent = entry.text || '(표시할 내용이 없는 제안)';
+        const reason = document.createElement('p'); reason.className = 'hundredlog-help';
+        reason.textContent = EXCLUSION_REASONS[entry.code] || '저장 조건을 충족하지 못했어요.';
+        const source = document.createElement('p'); source.className = 'hundredlog-meta';
+        const action = {add:'추가',update:'갱신',complete:'완료',cancel:'취소',archive:'보관'}[entry.action] || '형식 오류';
+        source.textContent = `${action} 제안${Number.isInteger(entry.sourceId) ? ` · 대화 #${entry.sourceId}` : ''}`;
+        const detail = document.createElement('details');
+        const title = document.createElement('summary'); title.textContent = '인용 확인 · 직접 저장'; detail.append(title);
+        if (entry.sourceText) {
+            const quote = document.createElement('blockquote'); quote.textContent = entry.sourceText;
+            detail.append(quote);
+        }
+        const note = document.createElement('p'); note.className = 'hundredlog-help';
+        note.textContent = '위 인용은 AI가 제안한 근거이며, 출처 검사에 실패했을 수도 있어요. 원문과 내용을 확인해 주세요.';
+        detail.append(note);
+        if (entry.savedId) {
+            const saved = document.createElement('p'); saved.className = 'hundredlog-help'; saved.textContent = '직접 저장했어요.'; detail.append(saved);
+        } else if (['add', 'update'].includes(entry.action) && entry.text) {
+            const editor = document.createElement('textarea'); editor.rows = 3; editor.maxLength = 300;
+            editor.value = entry.text; editor.setAttribute('aria-label', '직접 저장할 기억 내용'); editor.disabled = working;
+            const help = document.createElement('p'); help.className = 'hundredlog-help';
+            help.textContent = '새 수동 규칙으로 저장해요. 기존 규칙은 덮어쓰지 않으며, 인물별 지식은 저장 후 직접 지정해 주세요. 40개 한도는 유지돼요.';
+            const error = document.createElement('p'); error.className = 'hundredlog-help'; error.setAttribute('role', 'status');
+            const button = makeButton('내용 확인 후 직접 저장', async () => {
+                if (busy || extracting || translating || data(false) !== value || sourceChatId() !== currentChat
+                    || chatState(value, context(), false)?.collectionExclusions !== report) return;
+                try {
+                    saveExcludedMemory(value, entry, editor.value, context().chat, currentChat);
+                    await save(); button.blur(); render();
+                } catch (failure) { error.textContent = failure.message; }
+            });
+            detail.append(editor, help, button, error);
+        } else {
+            const help = document.createElement('p'); help.className = 'hundredlog-help';
+            help.textContent = '종료·취소·형식 오류 제안은 직접 저장하지 않아요. 현재 규칙의 관리 메뉴에서 확인해 주세요.';
+            detail.append(help);
+        }
+        item.append(text, reason, source, detail); list.append(item);
+    }
+}
+
 function render() {
     refreshDiagnosticPanel();
     if (!$id('facts')) return;
@@ -980,6 +1067,8 @@ function render() {
     renderReviewReport();
     const currentFacts = value?.facts.filter(isCurrent) ?? [];
     const working = busy || extracting || translating;
+    renderCollectionOptions(value, working);
+    renderCollectionExclusions(value, working);
     $id('auto-memory').checked = settings().autoMemory;
     $id('auto-memory').disabled = busy || translating;
     $id('analysis-interval').value = String(settings().analysisInterval);
@@ -1128,7 +1217,7 @@ function render() {
             try {
                 approveFact(value, restored, current?.active && isCurrent(current) ? current.id : null);
                 await save(); render(); status('현재 기억으로 복원하고 자동 변경 잠금했어요.');
-            } catch (error) { diagnosticError('기타', error, { site: 1131 }); status(error.message); }
+            } catch (error) { diagnosticError('기타', error, { site: 1220 }); status(error.message); }
         }));
         $id('history').append(item);
     }
@@ -1154,7 +1243,7 @@ function render() {
                 approveFact(value, candidate, replacement.value || null);
                 value.candidates = value.candidates.filter((entry) => entry.id !== candidate.id);
                 await save(); render();
-            } catch (error) { diagnosticError('기타', error, { site: 1157 }); status(error.message); }
+            } catch (error) { diagnosticError('기타', error, { site: 1246 }); status(error.message); }
         }));
         actions.append(makeButton('제외', async () => { value.candidates = value.candidates.filter((entry) => entry.id !== candidate.id); await save(); render(); }));
         item.append(actions);
@@ -1332,7 +1421,7 @@ function queueSourceMutation() {
     // that burst to finish so it is handled once instead of as dozens of edits.
     sourceMutationTimer = setTimeout(() => {
         sourceMutationTimer = null;
-        void processSourceMutation().catch((error) => { diagnosticError('규칙 저장', error, { site: 1335 }); status(error.message); });
+        void processSourceMutation().catch((error) => { diagnosticError('규칙 저장', error, { site: 1424 }); status(error.message); });
     }, 900);
 }
 
@@ -1358,6 +1447,7 @@ async function performMemorySync({ rebuildRecent = false, force = false } = {}) 
     let changed = 0, added = 0, updated = 0, archived = 0, uncertain = 0;
     const analyzedAssistantIds = new Set();
     let proposedCount = 0, structuralRejected = 0, storeSkipped = 0;
+    const exclusionReport = { createdAt: Date.now(), total: 0, items: [] };
     let cleanupResult = { merged: 0, archived: 0, conflicts: 0, changes: [], skipped: true };
     try {
         if (rebuildRecent) resetRecentWindow(value, state, ctx.chat, currentSourceChatId);
@@ -1388,7 +1478,7 @@ async function performMemorySync({ rebuildRecent = false, force = false } = {}) 
             status(`최근 ${RECENT_MESSAGE_LIMIT}개 대화 수집 중 · ${progress.completed}/${progress.total} · 규칙 ${changed}개 반영`);
             let parsed = { operations: [], rejected: 0 };
             if (rows.length) {
-                const raw = await traceDiagnostic('규칙 수집', () => collectUtility(ctx, memoryRequest(value.facts, rows, contextRows, settings().collectionIntensity), profileId, job), { count: rows.length });
+                const raw = await traceDiagnostic('규칙 수집', () => collectUtility(ctx, memoryRequest(value.facts, rows, contextRows, settings().collectionIntensity, value.collectionPreferences), profileId, job), { count: rows.length });
                 if (!sameChat()) return;
                 if (tracked.some(({ id, signature }) => messageSignature(context().chat[id]) !== signature)) {
                     memoryPending = true;
@@ -1401,6 +1491,10 @@ async function performMemorySync({ rebuildRecent = false, force = false } = {}) 
             }
             if (!sameChat()) return;
             const result = applyMemoryOperations(value, parsed.operations, currentSourceChatId);
+            if (rows.length) {
+                appendCollectionExclusions(exclusionReport, [...(parsed.exclusions || []), ...(result.exclusions || [])]);
+                state.collectionExclusions = exclusionReport;
+            }
             recordMemoryBatch(state, { rows: tracked, start, offset, nextCursor: batch.nextCursor, nextOffset: batch.nextOffset, changes: result.changes });
             storeSkipped += result.skipped;
             changed += result.added + result.updated + result.archived;
@@ -1431,7 +1525,7 @@ async function performMemorySync({ rebuildRecent = false, force = false } = {}) 
         if (job.controller.signal.aborted || error?.hundredlogCancelled) {
             if (sameOrigin()) status(`수집을 중단했어요 · 규칙 ${changed}개 반영. ‘새 대화 갱신’으로 이어서 수집할 수 있어요.`);
         } else {
-            diagnosticError('규칙 수집', error, { site: 1434 });
+            diagnosticError('규칙 수집', error, { site: 1528 });
             if (sameChat()) status(`기억 정리를 멈췄어요: ${error.message} ‘새 대화 갱신’으로 다시 시도할 수 있어요.`);
         }
     }
@@ -1458,7 +1552,7 @@ export function installMemoryHooks(ctx = context()) {
                 const result = callback(...args);
                 if (result?.then) return result.catch((error) => { diagnosticError('미처리', error); throw error; });
                 return result;
-            } catch (error) { diagnosticError('기타', error, { site: 1461 }); diagnosticError('미처리', error); throw error; }
+            } catch (error) { diagnosticError('기타', error, { site: 1555 }); diagnosticError('미처리', error); throw error; }
         });
     };
     on('GENERATION_AFTER_COMMANDS', async (type, eventData, dryRun) => {
@@ -1609,7 +1703,7 @@ async function commitReply(text, key, lastMessage, mode = 'normal') {
             await ctx.eventSource.emit((ctx.eventTypes ?? ctx.event_types).CHARACTER_MESSAGE_RENDERED, index);
             await ctx.saveChat();
             return;
-        } catch (error) { diagnosticError('기타', error, { site: 1612 });
+        } catch (error) { diagnosticError('기타', error, { site: 1706 });
             console.error('[100LOG] 오류·진단 기록을 확인해 주세요.');
             throw new Error('스와이프 표시 또는 저장 중 오류가 났어요. 채팅에 답변이 보이는지 확인해 주세요.');
         }
@@ -1625,7 +1719,7 @@ async function commitReply(text, key, lastMessage, mode = 'normal') {
         ctx.addOneMessage(message);
         await ctx.eventSource.emit((ctx.eventTypes ?? ctx.event_types).CHARACTER_MESSAGE_RENDERED, index);
         await ctx.saveChat();
-    } catch (error) { diagnosticError('기타', error, { site: 1628 });
+    } catch (error) { diagnosticError('기타', error, { site: 1722 });
         // Never remove a message after rendering or after another extension has observed it.
         console.error('[100LOG] 오류·진단 기록을 확인해 주세요.');
         throw new Error('답변 표시 또는 저장 중 오류가 났어요. 채팅에 답변이 보이는지 확인해 주세요.');
@@ -1709,7 +1803,7 @@ async function runHidden(key, lastMessage, selectedContext = null, mode = 'norma
             context().saveSettingsDebounced?.();
         }
         try { await traceDiagnostic('답변 표시·저장', () => commitReply(final, key, lastMessage, mode), { mode, chars: final.length }); }
-        catch (error) { diagnosticError('기타', error, { site: 1712 }); if (store) store.lastActivity = previousActivity; throw error; }
+        catch (error) { diagnosticError('기타', error, { site: 1806 }); if (store) store.lastActivity = previousActivity; throw error; }
         updateReport({ status: flagged.length ? 'corrected' : 'passed', stage: '완료', published: true });
         const replyLabel = mode === 'swipe' ? '스와이프 답변을' : mode === 'regenerate' ? '재생성 답변을' : '답변을';
         status(flagged.length ? `충돌 ${flagged.length}곳을 고쳐 ${replyLabel} 게시했어요.` : `설정 충돌 없이 ${replyLabel} 게시했어요.`);
@@ -1718,7 +1812,7 @@ async function runHidden(key, lastMessage, selectedContext = null, mode = 'norma
             updateReport({ stage, status: 'cancelled' });
             status('답변 생성을 중단했어요.');
         } else {
-            diagnosticError(stage, error, { site: 1721 });
+            diagnosticError(stage, error, { site: 1815 });
             const blocked = report.status === 'blocked';
             const upstream = ['메인 AI 초안 생성', '메인 AI 재작성', 'JEV 초안 검수', 'JEV 재검수'].includes(stage) && !blocked;
             updateReport({ stage, status: blocked ? 'blocked' : upstream ? 'external_error' : stage === '답변 표시·저장' ? 'publish_error' : 'failed' });
@@ -1730,7 +1824,7 @@ async function runHidden(key, lastMessage, selectedContext = null, mode = 'norma
         }
     }
     finally {
-        try { await clearLegacyPrompt(); } catch (error) { diagnosticError('기타', error, { site: 1733 }); console.error('[100LOG] 오류·진단 기록을 확인해 주세요.'); }
+        try { await clearLegacyPrompt(); } catch (error) { diagnosticError('기타', error, { site: 1827 }); console.error('[100LOG] 오류·진단 기록을 확인해 주세요.'); }
         if (activeReviewJob === job) activeReviewJob = null;
         busy = false; normalGenerating = false; render(); if (memoryPending) scheduleMemory();
     }
@@ -1775,7 +1869,7 @@ globalThis.hundredlogGenerationInterceptor = async function (promptChat, _size, 
             selectionStats = { candidates: result.candidateCount, selected: result.selected.length };
             selectedContext = memoryInjection(result.selected, recentChat(ctx), config.maxInjectedMemories, true);
         }
-    } catch (error) { diagnosticError('기타', error, { site: 1778 });
+    } catch (error) { diagnosticError('기타', error, { site: 1872 });
         if (activeReviewJob === job) activeReviewJob = null;
         abort(true);
         busy = false;
@@ -1989,7 +2083,7 @@ async function main() {
             const storage = `${EMBEDDING_KEY_PREFIX}${embeddingProvider()}`;
             if (value) localStorage.setItem(storage, value); else localStorage.removeItem(storage);
             $id('embedding-state').textContent = value ? '키 저장됨 · 연결 확인 필요' : 'API 키를 입력해 주세요';
-        } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 1992 }); status('이 브라우저에 임베딩 키를 저장하지 못했어요.'); }
+        } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 2086 }); status('이 브라우저에 임베딩 키를 저장하지 못했어요.'); }
     });
     $id('embedding-test')?.addEventListener('click', async () => {
         try {
@@ -2005,7 +2099,7 @@ async function main() {
             $id('embedding-state').textContent = `${embeddingLabel()} 연결됨`;
             embeddingError();
             status(facts.length ? `임베딩 연결 완료 · 현재 규칙 ${facts.length}개를 준비했어요.` : '임베딩 연결을 확인했어요. 저장된 현재 규칙은 아직 없어요.');
-        } catch (error) { diagnosticError('기타', error, { site: 2008 });
+        } catch (error) { diagnosticError('기타', error, { site: 2102 });
             $id('embedding-state').textContent = '연결 실패';
             embeddingError(error.message);
             status(error.message);
@@ -2025,7 +2119,7 @@ async function main() {
             $id('embedding-state').textContent = `${embeddingLabel()} 연결됨`;
             embeddingError();
             status(`누락 임베딩 재시도 완료 · ${after.completed}/${after.total}개 성공${after.missing ? ` · ${after.missing}개 미완료` : ''}`);
-        } catch (error) { diagnosticError('기타', error, { site: 2028 });
+        } catch (error) { diagnosticError('기타', error, { site: 2122 });
             $id('embedding-state').textContent = '재시도 실패';
             embeddingError(error.message);
             status(error.message);
@@ -2078,7 +2172,7 @@ async function main() {
             if (value) localStorage.setItem(KEY_STORAGE, value);
             else localStorage.removeItem(KEY_STORAGE);
             $id('server').textContent = value ? '키 저장됨 · 연결 확인 필요' : 'API 키를 입력해 주세요';
-        } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 2081 }); status('이 브라우저에 키를 저장하지 못했어요.'); }
+        } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 2175 }); status('이 브라우저에 키를 저장하지 못했어요.'); }
     });
     $id('test')?.addEventListener('click', async () => {
         try {
@@ -2091,7 +2185,7 @@ async function main() {
             $id('server').textContent = 'Jev 연결됨';
             connectionError();
             status(`Jev에 연결됐어요 (${lastJevTransport}).`);
-        } catch (error) { diagnosticError('기타', error, { site: 2094 });
+        } catch (error) { diagnosticError('기타', error, { site: 2188 });
             $id('server').textContent = '연결 실패';
             connectionError(error.message);
             status(error.message);
@@ -2119,7 +2213,7 @@ async function main() {
             $id('newfact').value = '';
             $id('replaces').value = '';
             await save(); render();
-        } catch (error) { diagnosticError('기타', error, { site: 2122 }); status(error.message); }
+        } catch (error) { diagnosticError('기타', error, { site: 2216 }); status(error.message); }
     });
     $id('endscene')?.addEventListener('click', async () => {
         const value = data();
@@ -2165,6 +2259,30 @@ async function main() {
         context().saveSettingsDebounced();
         render();
         status(event.target.checked ? `규칙이 ${settings().cleanupThreshold}개 이상이면 수집을 마친 뒤 중복·종료·충돌을 자동 청소해요.` : '수집 후 규칙 자동 청소를 껐어요.');
+    });
+    const saveCollectionPreferences = async () => {
+        if (busy || extracting || translating) return;
+        const value = data(); if (!value) return;
+        value.collectionPreferences = normalizeCollectionPreferences({
+            focus: [...$id('collection-focus').querySelectorAll('input:checked')].map((input) => input.value),
+            custom: $id('collection-custom').value,
+        });
+        await save();
+    };
+    const preferencesChanged = () => { void saveCollectionPreferences().catch((error) => diagnosticError('규칙 저장', error)); };
+    $id('collection-focus')?.addEventListener('change', preferencesChanged);
+    $id('collection-custom')?.addEventListener('input', preferencesChanged);
+    $id('collection-preferences-reset')?.addEventListener('click', async () => {
+        if (busy || extracting || translating) return;
+        const value = data(); if (!value) return;
+        value.collectionPreferences = normalizeCollectionPreferences();
+        $id('collection-custom').value = '';
+        await save(); render();
+    });
+    $id('collection-exclusions-clear')?.addEventListener('click', async () => {
+        if (busy || extracting || translating) return;
+        const value = data(); const state = chatState(value, context(), false); if (!state) return;
+        delete state.collectionExclusions; await save(); render();
     });
     $id('collection-intensity')?.addEventListener('change', (event) => {
         settings().collectionIntensity = ['detailed', 'balanced', 'meaningful'].includes(event.target.value) ? event.target.value : 'balanced';
@@ -2215,8 +2333,8 @@ const initialContext = context();
 const appReady = (initialContext.eventTypes ?? initialContext.event_types)?.APP_READY;
 if (appReady) {
     initialContext.eventSource.on(appReady, () => {
-        void main().catch((error) => diagnosticError('초기화', error, { site: 2218 }));
+        void main().catch((error) => diagnosticError('초기화', error, { site: 2336 }));
     });
 } else {
-    void main().catch((error) => diagnosticError('초기화', error, { site: 2221 }));
+    void main().catch((error) => diagnosticError('초기화', error, { site: 2339 }));
 }

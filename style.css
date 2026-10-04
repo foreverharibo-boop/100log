@@ -195,3 +195,14 @@
 #hundredlog-wand-popup { position: relative !important; inset: auto !important; align-self: center !important; justify-self: center !important; transform: none !important; width: min(520px, 100%) !important; max-height: min(660px, 100%) !important; }
 #hundredlog-wand-overlay, #hundredlog-wand-popup { translate: none !important; rotate: none !important; scale: none !important; animation: none !important; transition: none !important; }
 #hundredlog-collection-status, #hundredlog-collection-settings-status { margin: 5px 0 12px !important; overflow-wrap: anywhere; }
+
+/* Collection preferences and latest skipped proposals, scoped to 100LOG. */
+#hundredlog .hundredlog-focus-options { display: flex; flex-wrap: wrap; gap: 8px 14px; margin: 10px 0 14px; }
+#hundredlog .hundredlog-focus-options label { display: inline-flex; align-items: center; gap: 6px; font-size: .85em; cursor: pointer; }
+#hundredlog .hundredlog-focus-options input { width: auto !important; margin: 0 !important; flex: 0 0 auto; }
+#hundredlog #hundredlog-collection-custom { width: 100%; box-sizing: border-box; min-height: 64px; padding: 8px 10px; }
+#hundredlog .hundredlog-excluded-item { padding: 12px 0; border-top: 1px solid var(--SmartThemeBorderColor); overflow-wrap: anywhere; }
+#hundredlog .hundredlog-excluded-text { margin: 0 0 5px; }
+#hundredlog .hundredlog-excluded-item summary { cursor: pointer; font-size: .8em; padding: 4px 0; }
+#hundredlog .hundredlog-excluded-item blockquote { margin: 8px 0; padding: 4px 10px; border-left: 2px solid var(--SmartThemeBorderColor); font-size: .85em; white-space: pre-wrap; }
+#hundredlog .hundredlog-excluded-item textarea { width: 100%; box-sizing: border-box; padding: 8px 10px; }

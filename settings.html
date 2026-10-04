@@ -56,6 +56,20 @@
         <p class="hundredlog-help">5~40개부터 정리 AI가 청소해요. 원문 인용·잠금·병합 조건을 코드로 검사한 뒤 적용하며 직접 추가·잠금한 규칙은 유지해요.</p>
         <p id="hundredlog-cleanup-summary" class="hundredlog-help" aria-live="polite"></p>
       </section>
+      <section class="hundredlog-settings-block">
+        <div class="hundredlog-section-title"><strong>집중해서 수집할 항목</strong><button type="button" id="hundredlog-collection-preferences-reset" class="menu_button">기본으로</button></div>
+        <p class="hundredlog-help">여러 개를 선택할 수 있어요. 선택한 항목은 작은 내용도 더 주의해서 수집해요. 선택하지 않은 항목도 기존 수집 기준에 따라 모아요.</p>
+        <div id="hundredlog-collection-focus" class="hundredlog-focus-options" role="group" aria-label="집중해서 수집할 항목"></div>
+        <label for="hundredlog-collection-custom" class="hundredlog-label">추가 수집 기준 · 선택 사항</label>
+        <textarea id="hundredlog-collection-custom" rows="3" maxlength="1000" placeholder="예: 사소한 약속과 새로 알게 된 취향도 자세히 기억해 주세요."></textarea>
+        <p class="hundredlog-help">입력·선택하면 자동 저장돼요. 같은 캐릭터의 채팅끼리 공유하며 다음 수집부터 적용돼요. 기존 기억은 자동으로 다시 수집하지 않아요. 아무것도 선택하거나 적지 않으면 기존 방식으로 작동해요.</p>
+      </section>
+      <section class="hundredlog-settings-block">
+        <div class="hundredlog-section-title"><strong>수집에서 제외된 항목</strong><button type="button" id="hundredlog-collection-exclusions-clear" class="menu_button">내역 지우기</button></div>
+        <p id="hundredlog-collection-exclusions-summary" class="hundredlog-help" aria-live="polite"></p>
+        <p class="hundredlog-help">이 채팅의 최근 수집 1회에서 코드 검사로 빠진 제안만 최대 64개 표시해요. AI가 처음부터 제안하지 않은 내용이나 자동 청소 내역은 포함되지 않아요. 내용·인용은 이 설정에만 보관하며 오류 기록에는 넣지 않아요.</p>
+        <div id="hundredlog-collection-exclusions"></div>
+      </section>
       <section class="hundredlog-settings-block"><div class="hundredlog-fold-title"><strong>JEV 연결</strong></div>
         <p class="hundredlog-help">일반·재생성·스와이프 답변을 공개 전에 검수해요. 충돌 시 한 번 재작성하고 다시 검사해요.</p>
         <label for="hundredlog-key" class="hundredlog-label">Jev API 키</label><input id="hundredlog-key" type="password" autocomplete="off" spellcheck="false" placeholder="TypeSafe API 키">

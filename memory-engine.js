@@ -1,4 +1,4 @@
-import { MAX_FACTS, RECENT_MESSAGE_LIMIT, newId, normalizeKnowledge, normalizeKnowledgeEvidence, advanceCommitment, commitmentState, pickFacts, recentWindowStart, isVisibleChatMessage } from './core.js';
+import { MAX_FACTS, RECENT_MESSAGE_LIMIT, newId, approveFact, normalizeKnowledge, normalizeKnowledgeEvidence, advanceCommitment, commitmentState, pickFacts, recentWindowStart, isVisibleChatMessage } from './core.js';
 
 export const MEMORY_KINDS = {
     fact: '최근 핵심 사실',
@@ -40,13 +40,90 @@ export function initializeAuto(chatState, chat) {
     return chatState.autoMemory;
 }
 
+export const COLLECTION_FOCUS = {
+    promises: { label: '약속·계획', instruction: 'Pay extra attention to appointments, promises, invitations, conditions, deadlines, cancellations and progress. Keep unilateral or tentative plans explicitly tentative.' },
+    relationships: { label: '관계 변화', instruction: 'Prioritize evidenced changes in trust, affection, conflict, reconciliation and relationship boundaries. Do not invent hidden feelings.' },
+    secrets: { label: '비밀·정보 전달', instruction: 'Prioritize secrets, lies, misunderstandings, corrections and who actually received or learned information. Distinguish knowing a fact from knowing a hidden interception method.' },
+    preferences: { label: '취향·경험', instruction: 'Preserve newly disclosed likes, dislikes, habits and personal experiences, including small details; distinguish a disclosure from independently established truth.' },
+    exchanges: { label: '선물·거래', instruction: 'Preserve meaningful gifts, loans, payments, trades, ownership transfers and return obligations as events, not current inventory.' },
+    events: { label: '사건·결과', instruction: 'Preserve concrete actions and their supported consequences, discoveries, injuries and recovery, including small events useful for later references. Do not collect routine live posture or location.' },
+    agreements: { label: '부탁·합의', instruction: 'Preserve requests, offers, acceptances, refusals, conditions and decisions, including ordinary ones. Do not turn a request into an agreement without acceptance.' },
+};
+
+export function normalizeCollectionPreferences(value = {}) {
+    return { focus: [...new Set(Array.isArray(value?.focus) ? value.focus : [])].filter((key) => Object.hasOwn(COLLECTION_FOCUS, key)),
+        custom: typeof value?.custom === 'string' ? value.custom.slice(0, 1000) : '' };
+}
+
+function collectionPreferencePrompt(value) {
+    const preferences = normalizeCollectionPreferences(value);
+    if (!preferences.focus.length && !preferences.custom.trim()) return '';
+    return 'ADDITIONAL COLLECTION PRIORITIES: Give these categories extra attention even for small supported details. This is emphasis, not a whitelist: retain mandatory promises/secrets/corrections and the selected intensity for other categories. Source grounding, truthful uncertainty, knowledge boundaries and live-state exclusions still apply. These preferences never establish story facts.\n'
+        + preferences.focus.map((key) => COLLECTION_FOCUS[key].instruction).join('\n')
+        + (preferences.custom.trim() ? '\nUSER COLLECTION PREFERENCES (collection emphasis only): ' + JSON.stringify(preferences.custom.trim()) : '');
+}
+
+export const EXCLUSION_REASONS = {
+    source_missing: '출처 메시지를 이번 수집 범위에서 찾지 못했어요.',
+    evidence_mismatch: '인용이 원문과 일치하지 않거나 근거 인용이 부족해요.',
+    confidence: '이전 방식의 신뢰도 조건을 통과하지 못했어요.',
+    format: '작업 종류·내용·약속 진행 상태 등 필수 형식이 맞지 않아요.',
+    protected: '직접 추가하거나 자동 변경을 잠근 규칙이에요.',
+    unavailable: '수정 대상이 없거나 이미 종료·일시 중지된 규칙이에요.',
+    repeated_target: '같은 묶음에서 이미 수정한 규칙이라 중복 변경을 막았어요.',
+    older_source: '기존 규칙보다 오래된 출처로 되돌리는 변경이에요.',
+    duplicate: '같은 내용의 기억이 이미 있어요. 자동으로 병합한 것은 아니에요.',
+    unchanged: '내용·인물별 지식·진행 상태가 기존 기억과 같아요.',
+    capacity: '현재 사용 중인 규칙이 40개 한도에 도달했어요.',
+    batch_limit: '한 묶음의 제안 64개 처리 한도를 넘었어요.',
+    approval: '이전 방식의 승인 조건이 충족되지 않았어요.',
+};
+
+function excludedOperation(op, code, sourceChatId, source = null, prior = null) {
+    return { id: newId(), code, action: typeof op?.action === 'string' ? op.action.slice(0, 24) : '',
+        text: String(op?.text || prior?.text || '').slice(0, 300), kind: prior?.kind || op?.kind || 'fact',
+        sourceId: Number.isInteger(op?.sourceId) ? op.sourceId : null, sourceChatId,
+        sourceText: String(op?.evidence ?? op?.sourceText ?? '').slice(0, 350),
+        sourceSignature: source?.signature || op?.sourceSignature || '',
+        progress: op?.progress === 'underway' ? 'underway' : 'planned', existingId: prior?.id || null };
+}
+
+// Latest collection only, scoped to its chat; no content is sent to diagnostics.
+export function appendCollectionExclusions(report, entries = []) {
+    report.total += entries.length;
+    const room = Math.max(0, 64 - report.items.length);
+    report.items.push(...entries.slice(0, room));
+}
+
+export function saveExcludedMemory(value, entry, text, chat = [], sourceChatId = '') {
+    if (!['add', 'update'].includes(entry?.action)) throw new Error('종료·취소 제안은 현재 규칙의 관리 메뉴에서 확인해 주세요.');
+    const summary = String(text ?? '').trim().slice(0, 300);
+    if (!summary) throw new Error('저장할 내용을 입력해 주세요.');
+    if (entry.savedId) throw new Error('이미 직접 저장한 항목이에요.');
+    if (value.facts.some((fact) => isCurrent(fact) && compact(fact.text).toLowerCase() === compact(summary).toLowerCase())) throw new Error('같은 내용의 현재 기억이 이미 있어요. 기존 규칙을 확인해 주세요.');
+    const kind = Object.hasOwn(MEMORY_KINDS, entry.kind) ? entry.kind : 'fact';
+    const record = { id: newId(), text: summary, kind, scope: ['state', 'temporary'].includes(kind) ? 'scene' : 'always',
+        origin: 'manual', pinned: true, knowledge: {}, knowledgeEvidence: {}, createdAt: Date.now(),
+        retention: memoryRetention(kind, summary), reason: '제외된 제안을 사용자가 확인하고 직접 저장했어요.' };
+    const source = Number.isInteger(entry.sourceId) ? chat[entry.sourceId] : null;
+    if (entry.sourceChatId === sourceChatId && isVisibleChatMessage(source)
+        && messageSignature(source) === entry.sourceSignature && compact(entry.sourceText)
+        && compact(source.mes).includes(compact(entry.sourceText))) {
+        Object.assign(record, { sourceChatId, sourceId: entry.sourceId, sourceText: entry.sourceText, sourceSignature: entry.sourceSignature });
+    }
+    if (kind === 'commitment') record.commitment = { status: entry.progress === 'underway' ? 'underway' : 'planned', originalText: summary, history: [] };
+    const saved = approveFact(value, record);
+    entry.savedId = saved.id;
+    return saved;
+}
+
 const COLLECTION_INTENSITIES = {
     detailed: 'DETAILED — HIGH RECALL: Preserve concrete, independently useful details from EVERY supplied exchange, not just highlights or facts whose future importance is already obvious. Small, ordinary, low-stakes, newly disclosed or short-lived information is eligible; do not require lasting impact, dramatic stakes, or proof it will affect a later reply. Collect requests and their answers, offers, invitations, accepted or declined proposals, personal intentions, explicit or conditional promises, vague-date plans, recurring arrangements, conditions, deadlines, cancellations and rescheduling. Also collect disclosed likes/dislikes and personal experiences, admissions, reasons for decisions, misunderstandings and corrections, new trust or conflict, experienced injuries and other consequential bodily changes, meaningful gifts or transfers, newly learned information, and concrete actions with their outcomes. Preserve who did or said what, to whom, and relevant terms. A newly revealed preference or past experience is eligible as a reported disclosure; do not copy static character-card lore. A short-lived but supported detail may use kind temporary and retention recent. Apply the separate live-state exclusion, but an injury event, agreement, transfer or discovery is not merely clothing/location/posture/inventory. One event with its participants, purpose, time, place and conditions remains one fact when the knowledge boundary is shared. Update duplicates by ID; do not merge distinct requests or plans because the people are the same. Never invent mutual agreement from a unilateral invitation, and label intentions, claims and conditional plans accurately. Re-read the supplied messages before returning: check each request, reply, future-tense action, promise and schedule reference for an add/update/complete/cancel operation or an already represented unchanged fact. Do not force a target count or discard evidenced candidates merely because a smaller set seems sufficient. Up to 64 operations may be submitted for independent verification; storage limits are enforced by the extension, not by silently under-collecting. Knowledge changes use updates.',
     balanced: 'BALANCED: Collect promises, knowledge boundaries, corrections, unresolved threads, and concrete events likely to matter in the next replies. Skip decorative details and ordinary reactions with no continuity value. Aim for 15-30 current memories. Add up to 6 distinct atomic memories per normal exchange and up to 12 when NEW_MESSAGES contains multiple exchanges.',
     meaningful: 'MEANINGFUL ONLY: Apart from mandatory memories, collect only major relationship changes, consequential decisions, important discoveries, serious conflicts, and events whose omission would noticeably break the RP. Skip minor reactions and routine details. Aim for 8-18 current memories. Add up to 3 distinct atomic memories per normal exchange and up to 8 when NEW_MESSAGES contains multiple exchanges.',
 };
 
-export function memoryRequest(facts, rows, contextRows = [], intensity = 'balanced') {
+export function memoryRequest(facts, rows, contextRows = [], intensity = 'balanced', preferences = {}) {
     const current = facts.filter(isCurrent).map(({ id, text, kind, sourceId, knowledge, knowledgeEvidence, commitment, pinned, active, retention, summaryCarryover }) => ({ id, text, commitment: commitment ? { status: commitment.status, originalText: commitment.originalText } : undefined, knowledgeEvidence, kind: kind || 'fact', sourceId, knowledge, pinned: Boolean(pinned), paused: !active, retention: memoryRetention(kind || 'fact', text, '', retention), summaryCarryover: Boolean(summaryCarryover) }));
     const pendingCommitments = current.filter((memory) => memory.kind === 'commitment' && !memory.paused);
     const intensityInstruction = COLLECTION_INTENSITIES[intensity] ?? COLLECTION_INTENSITIES.balanced;
@@ -55,6 +132,7 @@ export function memoryRequest(facts, rows, contextRows = [], intensity = 'balanc
         'MANDATORY COLLECTION AT EVERY INTENSITY: Always save an explicit promise or agreed future action even if no date, time or place was specified; an explicit future appointment whose date, time, or place is stated; an action that participants explicitly agreed to do together; an explicit promise, refusal, cancellation, or fulfillment; a user correction; a secret or supported character knowledge boundary; and an important unresolved plan. Do not omit these because they seem ordinary or because other memories were already saved. You are responsible for source-grounded collection and knowledge attribution; there is no second model approving collection. Report confidence honestly, but do not omit a directly evidenced fact merely because of an arbitrary confidence cutoff. Store a future appointment or agreed action as kind commitment and keep it pending until the messages directly show fulfillment or explicit cancellation. A short acceptance can confirm a proposal in CONTEXT: cite the new acceptance and use the proposal only to resolve what was accepted; do not demand that all terms be repeated. In detailed mode also collect unilateral invitations, conditions and tentative intentions as such, never as a mutual agreement. These use kind commitment, progress planned and the appropriate intention or explicit_statement evidence type.',
         'EVENT LIFECYCLE: Match an existing commitment by the same intended event, participants and purpose, not just names. For progress on that event, use update with its existing ID and progress planned or underway; rewrite text to describe the current stage while retaining the intended goal. Never add a second fact just to restate arrival or progress for the same event. A visit promise is fulfilled by an evidenced visit; a promise to finish an activity needs evidence of that outcome, not mere arrival. Use complete only when the specific promised goal is fulfilled, cancel for explicit cancellation, and leave ambiguity unchanged. Never move an underway event back to planned without explicit rescheduling. A genuinely new recurring appointment is a separate event. The progress value and changed text must both be supported by new evidence.',
         `COLLECTION INTENSITY: ${intensityInstruction}`,
+        collectionPreferencePrompt(preferences),
         'GENERAL CONTINUITY GUIDANCE (in detailed mode, apply the broader high-recall eligibility above; future importance is not a prerequisite): Keep continuity facts that may prevent mistakes in the next replies: unresolved promises, plans, goals, questions and conflicts; who learned or still does not know a secret; lies, misunderstandings and concealed facts; explicit user corrections; concrete recent events and their causes or consequences; explicit requests, refusals, agreements, decisions, discoveries and admissions; and meaningful recent emotional or relationship changes. Save a supported event when forgetting it would make a later reaction, decision, reference or causal transition confusing. Another extension manages live scene state. NEVER save the live scene\'s current date, clock time, weather, location, clothing, posture, spatial position, or held/worn objects. This live-state exclusion does NOT apply when a date, time, or place is part of a future appointment or agreed plan; preserve those details in the commitment. Do not save permanent world lore merely because it appears in the window. Do not force a quota, but do not omit a supported continuity fact merely because other facts from the same exchange were already saved. Update existing IDs instead of duplicating paraphrases. Use archive only for an explicitly resolved or superseded temporary memory; never retire a promise merely because time passed or it was not mentioned. Keep uncertainty, hearsay and plans explicitly labeled. Speech may be a lie; a claim is not automatically an objective fact. Do not turn intentions or promises into completed events. Use complete only when NEW_MESSAGES demonstrate actual fulfillment, cancel only for explicit cancellation. An ambiguous outcome leaves the memory unchanged. Never change a pinned or paused memory.',
         'Each memory must be atomic: describe ONE event, claim, promise, or knowledge change only. Separate concealed means or intention from the observable action, and separate a biographical relationship from an encounter if their knowledge boundaries differ. A single shared encounter with its openly perceived participants and place is one event, not multiple unrelated facts. Split details into separate operations whenever different characters know different clauses. Never combine a public event with a private conversation, reaction, advice request, secret, or later plan in one memory. The knowledge object is not a cast list. Determine knowledge from demonstrated INFORMATION FLOW, not physical scene presence: mark known when the character directly experienced or witnessed every clause, disclosed it themselves, or received/accessed it through any shown communication, record, observation, monitoring, interception, or other exposure. A character may know remotely while absent from the current scene. A name appearing in the memory, being related to the event, or knowing only one clause is not enough. Mark unknown only when the story positively supports non-receipt or ignorance, such as information remaining private, concealed, unsent, inaccessible, failed to deliver, or explicitly unknown. Absence, silence, lack of reply, or not participating in the current scene never proves unknown. When neither complete knowledge nor supported ignorance is established, use unverified for a relevant character; do not invent cast members.',
         'Before output, check information boundaries: separate an observable event or agreement from a concealed method, private intention, lie or consequence that the other participants may not have perceived. Knowing a communicated fact never implies knowing a hidden observer intercepted it. Knowing what one deliberately did does not automatically establish awareness of every resulting detail. Do not combine these into one all-or-nothing knowledge label. This applies to all characters and settings, not named examples.',
@@ -340,6 +418,7 @@ export function parseMemoryOperations(raw, rows, facts, sourceChatId = '', conte
     const byId = new Map(facts.map((fact) => [fact.id, fact]));
     const used = new Set();
     const valid = [];
+    const exclusions = [];
     let rejected = 0;
     for (const op of result.operations.slice(0, 64)) {
         const source = sources.get(op?.sourceId);
@@ -365,7 +444,17 @@ export function parseMemoryOperations(raw, rows, facts, sourceChatId = '', conte
         if (action === 'complete') allowed &&= kind === 'commitment' && type === 'occurred';
         if (action === 'cancel') allowed &&= kind === 'commitment' && type === 'explicit_cancellation';
         if (action === 'archive') allowed &&= ['state', 'temporary'].includes(kind) && ['occurred', 'explicit_statement'].includes(type);
-        if (!allowed) { rejected++; continue; }
+        if (!allowed) {
+            let code = !source ? 'source_missing' : !hasEvidence ? 'evidence_mismatch' : !supported ? 'confidence' : 'format';
+            if (action !== 'add' && prior) {
+                if (prior.pinned || prior.origin === 'manual') code = 'protected';
+                else if (!isCurrent(prior) || !prior.active) code = 'unavailable';
+                else if (used.has(prior.id)) code = 'repeated_target';
+                else if (prior.sourceChatId === sourceChatId && Number.isInteger(prior.sourceId) && source?.id < prior.sourceId) code = 'older_source';
+            } else if (action !== 'add' && !prior && ['update', 'complete', 'cancel', 'archive'].includes(action)) code = 'unavailable';
+            exclusions.push(excludedOperation(op, code, sourceChatId, source, prior));
+            rejected++; continue;
+        }
         if (prior) used.add(prior.id);
         const reason = String(op.reason ?? '').slice(0, 150);
         const knowledge = normalizeKnowledge(op.knowledge);
@@ -381,22 +470,28 @@ export function parseMemoryOperations(raw, rows, facts, sourceChatId = '', conte
             progress: kind === 'commitment' && ['planned', 'underway'].includes(op.progress) ? op.progress : undefined,
             retention: memoryRetention(kind, text || prior?.text, reason, op.retention || prior?.retention), knowledge, knowledgeEvidence, importance: Math.max(1, Math.min(5, Number(op.importance) || 3)), reason });
     }
-    return { operations: valid, proposed: result.operations.length, rejected: rejected + Math.max(0, result.operations.length - 64) };
+    for (const op of result.operations.slice(64)) exclusions.push(excludedOperation(op, 'batch_limit', sourceChatId, sources.get(op?.sourceId), byId.get(op?.id)));
+    return { operations: valid, proposed: result.operations.length, rejected: rejected + Math.max(0, result.operations.length - 64), exclusions };
 }
 
 export function applyMemoryOperations(value, operations, sourceChatId = '') {
     const before = new Map(value.facts.map((fact) => [fact.id, copy(fact)]));
     let added = 0, updated = 0, archived = 0, skipped = 0;
+    const exclusions = [];
+    const skip = (op, code, prior = null) => { skipped++; exclusions.push(excludedOperation(op, code, sourceChatId, null, prior)); };
     for (const op of operations) {
-        if (op.needsJevValidation && !op.jevValidated) { skipped++; continue; }
+        if (op.needsJevValidation && !op.jevValidated) { skip(op, 'approval'); continue; }
         const prior = value.facts.find((fact) => fact.id === op.id);
-        if (op.action !== 'add' && (!prior || !isCurrent(prior) || !prior.active || prior.pinned || prior.origin === 'manual')) { skipped++; continue; }
+        if (op.action !== 'add' && (!prior || !isCurrent(prior) || !prior.active || prior.pinned || prior.origin === 'manual')) { skip(op, prior?.pinned || prior?.origin === 'manual' ? 'protected' : 'unavailable', prior); continue; }
         if (['add', 'update'].includes(op.action)) {
-            if (op.action === 'add' && (value.facts.some((fact) => compact(fact.text).toLowerCase() === compact(op.text).toLowerCase())
-                || value.facts.filter((fact) => isCurrent(fact) && fact.active).length >= MAX_FACTS)) { skipped++; continue; }
+            if (op.action === 'add') {
+                const duplicate = value.facts.find((fact) => compact(fact.text).toLowerCase() === compact(op.text).toLowerCase());
+                if (duplicate) { skip(op, 'duplicate', duplicate); continue; }
+                if (value.facts.filter((fact) => isCurrent(fact) && fact.active).length >= MAX_FACTS) { skip(op, 'capacity'); continue; }
+            }
             if (prior && prior.text === op.text && JSON.stringify(prior.knowledge ?? {}) === JSON.stringify(op.knowledge)
                 && JSON.stringify(prior.knowledgeEvidence ?? {}) === JSON.stringify(op.knowledgeEvidence ?? {})
-                && (!op.progress || op.progress === commitmentState(prior))) { skipped++; continue; }
+                && (!op.progress || op.progress === commitmentState(prior))) { skip(op, 'unchanged', prior); continue; }
             const next = { id: newId(), text: op.text, kind: op.kind, scope: ['state', 'temporary'].includes(op.kind) ? 'scene' : 'always', active: true, origin: 'auto', retention: op.retention || memoryRetention(op.kind, op.text, op.reason),
                 sourceChatId, sourceId: op.sourceId, sourceText: op.sourceText, sourceSignature: op.sourceSignature, importance: op.importance,
                 knowledge: normalizeKnowledge(op.knowledge), knowledgeEvidence: normalizeKnowledgeEvidence(op.knowledgeEvidence, op.knowledge), reason: op.reason, createdAt: Date.now() };
@@ -454,7 +549,7 @@ export function applyMemoryOperations(value, operations, sourceChatId = '') {
         const old = before.get(fact.id) ?? null;
         if (JSON.stringify(old) !== JSON.stringify(fact)) changes.push({ id: fact.id, before: old, after: copy(fact) });
     }
-    return { added, updated, archived, skipped, changes };
+    return { added, updated, archived, skipped, changes, exclusions };
 }
 
 export function recordMemoryBatch(chatState, { rows, start, offset, nextCursor, nextOffset, changes }) {
