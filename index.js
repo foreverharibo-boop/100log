@@ -1,8 +1,8 @@
-import { availableSupportingEvidence, normalizeAliases, canonicalName, linkAlias, resolveFactNames, normalizeSupportingEvidence, addRejectedMemory } from './continuity-tools.js';
-import { applyManualKnowledgeDraft, collectedCharacterNames, sortMemoriesBySource, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, omissionReviewRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js';
-import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js';
-import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js';
-import { normalizeKnowledgeEvidence, KNOWLEDGE_LABELS, COMMITMENT_LABELS, commitmentState } from './core.js';
+import { availableSupportingEvidence, normalizeAliases, canonicalName, linkAlias, resolveFactNames, normalizeSupportingEvidence, addRejectedMemory } from './continuity-tools.js?v=1.9.20';
+import { applyManualKnowledgeDraft, collectedCharacterNames, sortMemoriesBySource, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, omissionReviewRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js?v=1.9.20';
+import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js?v=1.9.20';
+import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js?v=1.9.20';
+import { normalizeKnowledgeEvidence, KNOWLEDGE_LABELS, COMMITMENT_LABELS, commitmentState } from './core.js?v=1.9.20';
 
 const NAME = 'hundredlog';
 const LEGACY_NAME = 'memorybean';
@@ -365,6 +365,9 @@ async function readJevResponse(response, transport, questions, job = null) {
     let result;
     try { result = await response.json(); checkReviewJob(job); }
     catch (diagnosticCaughtError) { checkReviewJob(job); diagnosticError('기타', diagnosticCaughtError, { site: 366 }); throw jevRequestError(`JEV 응답을 읽지 못했어요. [${transport}]`, { retryable: true }); }
+    if (result?.detail?.error_type === 'max_tokens_exceeded') {
+        throw jevRequestError('JEV 토큰 한도를 초과했어요.', { status: 413 });
+    }
     if (result?.error) {
         // Some relay servers wrap upstream errors in an HTTP 200 response.
         // Inspect for classification only; never display the raw upstream body.
@@ -372,7 +375,7 @@ async function readJevResponse(response, transport, questions, job = null) {
         const rawCode = result.error?.status ?? result.error?.code ?? result.status;
         const code = Number(rawCode) || Number(detail.match(/\b(400|401|403|408|413|422|429|5\d\d)\b/)?.[1]) || 0;
         const auth = [401, 403].includes(code) || /unauthori|invalid.?api.?key|forbidden|permission.denied|unauthenticated/i.test(`${rawCode} ${detail}`);
-        const invalid = [400, 413, 422].includes(code) || /invalid.argument|context.length|too.large/i.test(`${rawCode} ${detail}`);
+        const invalid = [400, 413, 422].includes(code) || /invalid.argument|context.length|too.large|max_tokens_exceeded|token.*limit/i.test(`${rawCode} ${detail} ${JSON.stringify(result.error ?? '')}`);
         const rateLimit = code === 429 || /resource.exhausted|rate.limit|quota/i.test(`${rawCode} ${detail}`);
         throw jevRequestError(
             auth ? 'JEV가 인증을 거절했어요. API 키와 권한을 확인해 주세요.'
@@ -865,6 +868,8 @@ function renderReviewReport() {
         running: `${report.stage} 중…`,
         passed: `기억 ${report.checked}개 확인 · ${report.uncertain ? '명확한 충돌 없음' : '모순 없음'}`,
         corrected: `충돌 ${report.issues?.length || 0}개 수정 · 재검수 후 표시`,
+        background_skipped: '수집·번역 중 · 이번 답변은 실리태번 기본 생성으로 진행',
+        review_skipped: `${report.skippedStage || '검수'} 미완료 · 받은 답변 표시`,
         conflicts_remaining: `충돌 ${report.remaining || 0}개 남음 · 재작성 답변 표시`,
         blocked: `재검수 실패 · 충돌 ${report.remaining || 0}개가 남아 표시하지 않음`,
         failed: `${report.stage} 실패 · 답변 표시 안 됨`,
@@ -892,7 +897,7 @@ function renderReviewReport() {
         const pending = document.createElement('p'); pending.className = 'hundredlog-help';
         pending.textContent = `재검수에서 남은 충돌: ${report.remainingRules.join(' / ')}`; details.append(pending);
     }
-    if (report.status === 'failed' || report.status === 'publish_error' || report.status === 'external_error') {
+    if (report.status === 'review_skipped' || report.status === 'failed' || report.status === 'publish_error' || report.status === 'external_error') {
         const note = document.createElement('p'); note.className = 'hundredlog-help';
         note.textContent = '자세한 오류는 설정의 마지막 오류에서 확인해 주세요.'; details.append(note);
     }
@@ -1803,15 +1808,37 @@ async function judge(draft, facts, speaker, job = null) {
     const batches = buildChecks(draft, facts, '', speaker);
     const found = [];
     found.uncertain = 0;
-    for (const batch of batches) {
-        const body = await requestJev(batch.state, batch.questions, job);
-        found.push(...readContradictions(batch, body.answers));
-        found.uncertain += batch.tasks.filter((_task, index) => {
-            const answer = body.answers?.[`q${index}`];
-            return answer?.choice === 'unclear' || (['contradiction', 'knowledge_leak'].includes(answer?.choice) && Number(answer?.confidence) < .78);
-        }).length;
+    if (!batches.length) return found;
+    checkReviewJob(job);
+    // Scope the deadline to JEV only: never cancel the parent reply or its fallback.
+    const controller = new AbortController();
+    const child = { controller };
+    const stopped = () => controller.abort(reviewCancelledError());
+    job?.controller.signal.addEventListener('abort', stopped, { once: true });
+    let rejectStopped;
+    const interrupted = new Promise((_resolve, reject) => { rejectStopped = reject; });
+    const onAbort = () => rejectStopped(controller.signal.reason);
+    controller.signal.addEventListener('abort', onAbort, { once: true });
+    const timer = setTimeout(() => controller.abort(Object.assign(
+        new Error('JEV 검수 대기 시간이 60초를 초과했어요.'), { name: 'TimeoutError' })), 60000);
+    try {
+        return await Promise.race([interrupted, (async () => {
+            for (const batch of batches) {
+                const body = await requestJev(batch.state, batch.questions, child);
+                checkReviewJob(child);
+                found.push(...readContradictions(batch, body.answers));
+                found.uncertain += batch.tasks.filter((_task, index) => {
+                    const answer = body.answers?.[`q${index}`];
+                    return answer?.choice === 'unclear' || (['contradiction', 'knowledge_leak'].includes(answer?.choice) && Number(answer?.confidence) < .78);
+                }).length;
+            }
+            return found;
+        })()]);
+    } finally {
+        clearTimeout(timer);
+        job?.controller.signal.removeEventListener('abort', stopped);
+        controller.signal.removeEventListener('abort', onAbort);
     }
-    return found;
 }
 
 async function ensureFactEmbeddings(facts, { announce = true } = {}) {
@@ -1950,6 +1977,19 @@ async function runHidden(key, lastMessage, selectedContext = null, mode = 'norma
         context().saveSettingsDebounced?.();
         renderReviewReport();
     };
+    const recoverReply = (error) => {
+        checkReviewJob(job);
+        if (!stillSameChat(key, lastMessage, mode)) throw reviewCancelledError();
+        diagnosticError(stage, error, { site: 1914 });
+        updateReport({ reviewIncomplete: true, skippedStage: stage });
+    };
+    const reviewOrSkip = async (text, facts, speaker) => {
+        try { return await traceDiagnostic(stage, () => reviewStep(job, () => judge(text, facts, speaker, job)), { rules: facts.length, chars: text.length }); }
+        catch (error) {
+            recoverReply(error);
+            const result = []; result.incomplete = true; return result;
+        }
+    };
     try {
         checkReviewJob(job);
         const ctx = context();
@@ -1972,8 +2012,8 @@ async function runHidden(key, lastMessage, selectedContext = null, mode = 'norma
         stage = 'JEV 초안 검수';
         updateReport({ stage });
         status(`Jev가 연속성 규칙 ${facts.length}개와 초안을 한 번에 검수 중이에요…`);
-        const flagged = await traceDiagnostic(stage, () => reviewStep(job, () => judge(draft, facts, ctx.name2, job)), { rules: facts.length, chars: draft.length });
-        updateReport({ checked: facts.length, uncertain: flagged.uncertain || 0,
+        const flagged = await reviewOrSkip(draft, facts, ctx.name2);
+        updateReport({ checked: flagged.incomplete ? 0 : facts.length, uncertain: flagged.uncertain || 0,
             issues: flagged.map((item) => ({ ruleId: item.fact.id, rule: item.fact.text,
                 kind: item.kind, sourceId: item.fact.sourceId,
                 instruction: item.kind === 'knowledge_leak' ? '이 인물이 아직 모르는 정보를 행동이나 대사에 사용하지 않도록 재작성 요청'
@@ -1984,17 +2024,20 @@ async function runHidden(key, lastMessage, selectedContext = null, mode = 'norma
             stage = '메인 AI 재작성';
             updateReport({ stage, rewriteRequested: true });
             status(`설정 충돌 ${flagged.length}곳을 발견했어요. 메인 AI에게 수정 요청 중이에요…`);
-            final = await traceGeneration(stage, () => reviewStep(job, () => ctx.generateQuietPrompt({ quietPrompt: correctionPrompt(draft, flagged, activeContext) })), { mode, rules: facts.length });
-            if (!final) throw new Error('수정 답변이 비어 있어 게시하지 않았어요.');
-            if (!stillSameChat(key, lastMessage, mode)) throw reviewCancelledError();
-            stage = 'JEV 재검수';
-            updateReport({ stage });
-            status('수정 답변을 한 번 더 확인하고 있어요…');
-            const again = await traceDiagnostic(stage, () => reviewStep(job, () => judge(final, facts, ctx.name2, job)), { rules: facts.length, chars: final.length });
-            // Remaining semantic conflicts are report details, not generation failures.
-            // Publish only after the normal cancellation/chat guards below still pass.
-            updateReport({ uncertain: again.uncertain || 0, remaining: again.length,
-                remainingRules: again.map((item) => item.fact.text) });
+            try {
+                const rewritten = await traceGeneration(stage, () => reviewStep(job, () => ctx.generateQuietPrompt({ quietPrompt: correctionPrompt(draft, flagged, activeContext) })), { mode, rules: facts.length });
+                if (!rewritten?.trim()) throw new Error('수정 답변이 비어 있어 게시하지 않았어요.');
+                final = rewritten;
+                if (!stillSameChat(key, lastMessage, mode)) throw reviewCancelledError();
+                stage = 'JEV 재검수';
+                updateReport({ stage });
+                status('수정 답변을 한 번 더 확인하고 있어요…');
+                const again = await reviewOrSkip(final, facts, ctx.name2);
+                // Remaining semantic conflicts are report details, not generation failures.
+                // Publish only after the normal cancellation/chat guards below still pass.
+                updateReport({ uncertain: again.uncertain || 0, remaining: again.length,
+                    remainingRules: again.map((item) => item.fact.text) });
+            } catch (error) { recoverReply(error); }
         }
         if (!final) throw new Error('최종 답변이 비어 있어 게시하지 않았어요.');
         checkReviewJob(job);
@@ -2007,16 +2050,16 @@ async function runHidden(key, lastMessage, selectedContext = null, mode = 'norma
         if (store) {
             const injected = selectedContext === null ? facts.length : (selectionStats?.selected ?? 0);
             store.lastActivity = {
-                text: `${mode === 'swipe' ? '스와이프 · ' : mode === 'regenerate' ? '재생성 · ' : ''}관련 규칙 ${injected}개 주입 · 전체 규칙 ${facts.length}개 검수 · ${report.remaining ? `한 번 재작성 · 충돌 ${report.remaining}개 남음` : flagged.length ? `충돌 ${flagged.length}개 수정` : '충돌 없음'}`,
+                text: `${mode === 'swipe' ? '스와이프 · ' : mode === 'regenerate' ? '재생성 · ' : ''}관련 규칙 ${injected}개 주입 · 검수 대상 ${facts.length}개 · ${report.reviewIncomplete ? '검수 미완료 · 받은 답변 표시' : report.remaining ? `한 번 재작성 · 충돌 ${report.remaining}개 남음` : flagged.length ? `충돌 ${flagged.length}개 수정` : '충돌 없음'}`,
                 at: Date.now(), type: 'review',
             };
             context().saveSettingsDebounced?.();
         }
         try { await traceDiagnostic('답변 표시·저장', () => commitReply(final, key, lastMessage, mode), { mode, chars: final.length }); }
         catch (error) { diagnosticError('기타', error, { site: 1904 }); if (store) store.lastActivity = previousActivity; throw error; }
-        updateReport({ status: report.remaining ? 'conflicts_remaining' : flagged.length ? 'corrected' : 'passed', stage: '완료', published: true });
+        updateReport({ status: report.reviewIncomplete ? 'review_skipped' : report.remaining ? 'conflicts_remaining' : flagged.length ? 'corrected' : 'passed', stage: '완료', published: true });
         const replyLabel = mode === 'swipe' ? '스와이프 답변을' : mode === 'regenerate' ? '재생성 답변을' : '답변을';
-        status(report.remaining ? `충돌 ${report.remaining}곳이 남아 있지만 재작성한 ${replyLabel} 게시했어요. 검수 결과에서 확인할 수 있어요.` : flagged.length ? `충돌 ${flagged.length}곳을 고쳐 ${replyLabel} 게시했어요.` : `설정 충돌 없이 ${replyLabel} 게시했어요.`);
+        status(report.reviewIncomplete ? `검수를 마치지 못해 받아둔 ${replyLabel} 게시했어요.` : report.remaining ? `충돌 ${report.remaining}곳이 남아 있지만 재작성한 ${replyLabel} 게시했어요. 검수 결과에서 확인할 수 있어요.` : flagged.length ? `충돌 ${flagged.length}곳을 고쳐 ${replyLabel} 게시했어요.` : `설정 충돌 없이 ${replyLabel} 게시했어요.`);
     } catch (error) {
         if (job.controller.signal.aborted || error?.hundredlogCancelled === true) {
             updateReport({ stage, status: 'cancelled' });
@@ -2056,7 +2099,13 @@ globalThis.hundredlogGenerationInterceptor = async function (promptChat, _size, 
         status('Jev API 키가 없어 공개 전 검수를 실행하지 못했어요.'); return;
     }
     if (selectMemory && mode === 'normal' && !embeddingKey()) { abort(true); status(`${embeddingLabel()} 임베딩 키가 없어 맞춤 규칙 주입을 실행하지 못했어요.`); return; }
-    if (extracting || translating) { abort(true); status('연속성 규칙 갱신 또는 번역을 마친 뒤 답변을 생성해 주세요.'); return; }
+    if (extracting || translating) {
+        // Background memory work must not swallow the user's send action.
+        const state = chatState(data(false));
+        if (state) state.lastReview = { at: Date.now(), mode, status: 'background_skipped', stage: '수집·번역 중', checked: 0, issues: [] };
+        context().saveSettingsDebounced?.(); renderReviewReport();
+        return;
+    }
     if (busy) { abort(true); status('이미 규칙 선별 또는 공개 전 검수를 진행하고 있어요. 잠시 기다려 주세요.'); return; }
     const last = ctx.chat.at(-1);
     if (mode === 'normal' && !last?.is_user) { abort(true); status('마지막 메시지가 사용자 메시지가 아니라 공개 전 검수 생성을 멈췄어요.'); return; }
@@ -2230,7 +2279,7 @@ async function main() {
     const ctx = context();
     installMemoryHooks(ctx);
     if ($id('key')) { registerDeveloperTitle($id('title')); addWandButton(); return; }
-    const response = await diagnosticFetch(new URL('./settings.html', import.meta.url), { credentials: 'same-origin' });
+    const response = await diagnosticFetch(new URL('./settings.html?v=1.9.20', import.meta.url), { credentials: 'same-origin' });
     if (!response.ok) throw new Error(`설정 화면 파일을 읽지 못했어요 (${response.status}).`);
     const html = await response.text();
     // Keep the panel mounted for event bindings, but expose it only through the wand.

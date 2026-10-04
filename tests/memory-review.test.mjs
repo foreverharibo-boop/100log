@@ -64,3 +64,14 @@ test('collector still receives original text and preserved evidence', () => {
 test('review excludes archived, superseded and paused memories', () => {
     assert.deepEqual(buildChecks('new reply', [{ ...fact(), active: false }, { ...fact(), archived: 'completed' }, { ...fact(), supersededBy: 'other' }]), []);
 });
+
+ test('40 memories share one policy without dropping any questions or truncating reply',()=>{
+ const facts=Array.from({length:40},(_,i)=>({...fact(),id:`f${i}`}));
+ const batch=buildChecks('FULL_REPLY',facts)[0];
+ assert.equal(batch.tasks.length,40);assert.equal(Object.keys(batch.questions).length,40);
+ assert.equal(batch.state.established_facts.length,40);
+ assert.equal(batch.state.unpublished_reply,'FULL_REPLY');
+ assert.match(batch.state.review_policy,/A new detail absent from memory is NOT an error/);
+ assert.equal(JSON.stringify(batch).split('A new detail absent from memory is NOT an error').length-1,1);
+ for(const q of Object.values(batch.questions)) assert.match(q.instructions,/state.review_policy/);
+ });

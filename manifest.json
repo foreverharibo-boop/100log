@@ -3,7 +3,7 @@
   "js": "index.js",
   "css": "style.css",
   "author": "담은",
-    "version": "1.9.19",
+    "version": "1.9.20",
   "minimum_client_version": "1.12.14",
   "generate_interceptor": "hundredlogGenerationInterceptor"
 }

@@ -32,7 +32,7 @@ test('report distinguishes correction, remaining conflicts, and transport failur
  const blocked=harness(()=>reply(200,answer('contradiction'))); await blocked.run();
  assert.equal(blocked.sandbox.data().chatState.lastReview.status,'conflicts_remaining'); assert.equal(blocked.published.length,1);
  const failed=harness(()=>reply(401)); await failed.run();
- assert.equal(failed.sandbox.data().chatState.lastReview.status,'external_error');
+ assert.equal(failed.sandbox.data().chatState.lastReview.status,'review_skipped');
 });
 test('uncertain JEV result is not reported as an unequivocal pass', async () => {
  const h=harness(()=>reply(200,answer('unclear'))); await h.run();
@@ -58,7 +58,7 @@ function harness(handler) {
             requests.push({ url, options });
             return handler(url, options, requests.length);
         },
-        setTimeout(fn, ms) { const id = ++sequence; if (ms === 30000) timers.set(id, fn); else { sleeps.push(ms); queueMicrotask(fn); } return id; },
+        setTimeout(fn, ms) { const id = ++sequence; if (ms === 30000 || (ms === 60000 && sandbox.activeReviewJob)) timers.set(id, fn); else { sleeps.push(ms); queueMicrotask(fn); } return id; },
         clearTimeout(id) { timers.delete(id); },
         toastr: { info: (...args) => notices.push(args), error: (...args) => errors.push(args) },
         console: { error() {} },
@@ -198,14 +198,14 @@ test('rewritten answer is rechecked; retry does not generate another rewrite', a
     assert.equal(h.published.length, 1);
 });
 
-test('JEV exhaustion publishes nothing and labels failed stage', async () => {
+test('JEV exhaustion publishes the existing draft and labels incomplete review', async () => {
     const h = harness(() => reply(500));
     await h.run();
     assert.equal(h.generationCount(), 1);
     assert.equal(h.requests.length, 3);
-    assert.equal(h.published.length, 0);
+    assert.equal(h.published.length, 1);
     assert.equal(h.errors.length, 0);
-    assert.equal(h.sandbox.data().chatState.lastReview.status, 'external_error');
+    assert.equal(h.sandbox.data().chatState.lastReview.status, 'review_skipped');
     assert.equal(h.sandbox.busy, false);
 });
 
@@ -256,7 +256,7 @@ for(const phase of ['headers','body']) test(`stop during JEV ${phase} suppresses
 });
 test('stop during JEV retry backoff ends waiting and makes no extra call',async()=>{
  const h=cancellableHarness(()=>reply(429));let entered;const ready=new Promise(r=>entered=r);
- h.sandbox.setTimeout=(fn,ms)=>{if(ms===30000){h.timers.set(1,fn);return 1;}h.timers.set(2,fn);entered();return 2;};
+ h.sandbox.setTimeout=(fn,ms)=>{if(ms===60000){h.timers.set(3,fn);return 3;}if(ms===30000){h.timers.set(1,fn);return 1;}h.timers.set(2,fn);entered();return 2;};
  const run=h.run();await ready;h.stop();await run;
  assert.equal(h.requests.length,1);assert.equal(h.sandbox.data().chatState.lastReview.status,'cancelled');assert.equal(h.errors.length,0);
  assert.equal(h.timers.size,0);assert.match(h.lastError(),/429/); // Real earlier HTTP error is retained.
@@ -327,11 +327,48 @@ for (const mode of ['normal', 'swipe', 'regenerate']) {
  for (const stop of [true,false]) test(`${mode}: ${stop?'cancel':'changed chat'} during final conflicting review prevents publishing`, async()=>{
   const h=cancellableHarness((_u,_o,n)=>{if(n===2){if(stop)h.stop();else h.ctx.chatId='chat-b';}return reply(200,answer('contradiction'));});
   await h.run(mode);assert.equal(h.published.length,0);assert.equal(h.errors.length,0);
-  assert.equal(h.sandbox.data().chatState.lastReview.status,stop?'cancelled':'external_error');
+  assert.equal(h.sandbox.data().chatState.lastReview.status,'cancelled');
  });
 }
-test('second review transport failure is not a remaining-conflict success',async()=>{
+test('second review transport failure shows the rewrite as incomplete, not passed',async()=>{
  const h=harness((_u,_o,n)=>reply(n===1?200:500,answer('contradiction')));await h.run();
- assert.equal(h.published.length,0);assert.equal(h.errors.length,0);
- assert.equal(h.sandbox.data().chatState.lastReview.status,'external_error');
+ assert.equal(h.published.length,1);assert.equal(h.errors.length,0);
+ assert.equal(h.sandbox.data().chatState.lastReview.status,'review_skipped');
+});
+
+for (const mode of ['normal','swipe','regenerate']) {
+ test(`${mode}: token rejection publishes draft without another main generation`,async()=>{
+  const h=harness(()=>reply(400,{detail:{error_type:'max_tokens_exceeded'}}));await h.run(mode);
+  assert.equal(h.requests.length,1);assert.equal(h.generationCount(),1);assert.equal(h.published.length,1);
+  assert.equal(h.sandbox.data().chatState.lastReview.status,'review_skipped');assert.equal(h.errors.length,0);
+ });
+ for (const empty of [false,true]) test(`${mode}: failed/empty rewrite preserves original draft (${empty})`,async()=>{
+  const h=harness(()=>reply(200,answer('contradiction')));let n=0;
+  h.ctx.generateQuietPrompt=async()=>{if(++n===1)return 'ORIGINAL';if(empty)return '';throw Error('rewrite error');};
+  await h.run(mode);assert.deepEqual(h.published,['ORIGINAL']);assert.equal(n,2);assert.equal(h.requests.length,1);
+  assert.equal(h.sandbox.data().chatState.lastReview.status,'review_skipped');assert.equal(h.errors.length,0);
+ });
+ for (const phase of [1,2]) test(`${mode}: hanging JEV phase ${phase} times out and late result cannot publish twice`,async()=>{
+  let enter,finish;const ready=new Promise(r=>enter=r);const pending=new Promise(r=>finish=r);
+  const h=cancellableHarness((_u,_o,n)=>{if(n===phase){enter();return pending;}return reply(200,answer('contradiction'));});
+  let n=0;h.ctx.generateQuietPrompt=async()=>++n===1?'DRAFT':'REWRITE';
+  const task=h.run(mode);await ready;
+  // The per-review deadline is scheduled before the 30-second slow notice.
+  const deadline=[...h.timers.values()][0];deadline();await task;
+  assert.deepEqual(h.published,[phase===1?'DRAFT':'REWRITE']);assert.equal(h.sandbox.busy,false);
+  assert.equal(h.sandbox.data().chatState.lastReview.status,'review_skipped');assert.equal(h.errors.length,0);
+  finish(reply(200,answer('contradiction')));await new Promise(r=>setImmediate(r));
+  assert.equal(h.published.length,1);assert.equal(h.requests.length,phase);assert.equal(h.timers.size,0);
+ });
+}
+for(const payload of [{detail:{error_type:'max_tokens_exceeded'}},{error:{error_type:'max_tokens_exceeded'}}])test('HTTP 200 token error does not retry',async()=>{
+ const h=harness(()=>reply(200,payload));await h.run();assert.equal(h.requests.length,1);assert.equal(h.published.length,1);
+});
+for(const kind of ['extracting','translating'])test(`${kind}: interceptor does not abort user send`,async()=>{
+ const h=cancellableHarness();h.sandbox.busy=false;h.sandbox[kind]=true;
+ Object.assign(h.sandbox,{settings:()=>({autoMemory:true,developerMemorySelection:false})});h.ctx.chat=[{is_user:true,mes:'hello'}];
+ vm.runInContext(source.slice(source.indexOf('globalThis.hundredlogGenerationInterceptor'),source.indexOf('function closeWand(')),h.sandbox);
+ let aborted=0;await h.sandbox.hundredlogGenerationInterceptor([],1000,()=>{aborted++;},'normal');
+ assert.equal(aborted,0);assert.equal(h.requests.length,0);assert.equal(h.sandbox.busy,false);
+ assert.equal(h.sandbox.data().chatState.lastReview.status,'background_skipped');
 });
