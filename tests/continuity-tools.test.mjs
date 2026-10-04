@@ -100,3 +100,14 @@ test('collector receives aliases and relevant exclusions in both standard and om
   assert.match(prompt,/APPROVED_NAME_ALIASES/);assert.match(prompt,/rejected-/);assert.match(prompt,/action confirm/);assert.match(prompt,/without user approval/);
  }
 });
+
+
+test('newest collected memories display first regardless of source, with stable edits and no storage mutation',()=>{
+ const a={id:'old',sourceId:500,sourceChatId:'current'},b={id:'middle',sourceId:2,sourceChatId:'other'},c={id:'new',sourceId:1,sourceChatId:'current'};
+ const stored=[a,b,c];
+ assert.deepEqual(m.sortMemoriesByCollection(stored).map(f=>f.id),['new','middle','old']);
+ a.knowledge={Person:'known'};b.commitment={status:'underway'};
+ assert.deepEqual(m.sortMemoriesByCollection(stored).map(f=>f.id),['new','middle','old']);
+ assert.deepEqual(stored.map(f=>f.id),['old','middle','new']);
+ stored.push({id:'manual'});assert.equal(m.sortMemoriesByCollection(stored)[0].id,'manual');
+});

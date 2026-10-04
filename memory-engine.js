@@ -1,5 +1,5 @@
-import { canonicalName, resolveFactNames, normalizeAliases, normalizeSupportingEvidence, appendSupportingEvidence, rejectedMemoryMatch, aliasSuggestions } from './continuity-tools.js?v=1.9.22';
-import { MAX_FACTS, RECENT_MESSAGE_LIMIT, newId, approveFact, setKnowledge, normalizeKnowledge, normalizeKnowledgeEvidence, advanceCommitment, commitmentState, pickFacts, recentWindowStart, isVisibleChatMessage } from './core.js?v=1.9.22';
+import { canonicalName, resolveFactNames, normalizeAliases, normalizeSupportingEvidence, appendSupportingEvidence, rejectedMemoryMatch, aliasSuggestions } from './continuity-tools.js?v=1.9.23';
+import { MAX_FACTS, RECENT_MESSAGE_LIMIT, newId, approveFact, setKnowledge, normalizeKnowledge, normalizeKnowledgeEvidence, advanceCommitment, commitmentState, pickFacts, recentWindowStart, isVisibleChatMessage } from './core.js?v=1.9.23';
 
 export const MEMORY_KINDS = {
     fact: '최근 핵심 사실',
@@ -100,24 +100,10 @@ export function collectedCharacterNames(value, chat = [], extra = {}) {
     return [...names];
 }
 
-// Message IDs belong to a chat. Sort within chat groups, never compare IDs across chats.
-export function sortMemoriesBySource(facts, currentChatId = '') {
-    const source = (fact) => ({ chatId: fact.sourceChatId || fact.collectedFrom?.chatId || '',
-        id: Number.isInteger(fact.sourceId) ? fact.sourceId : fact.collectedFrom?.messageId });
-    const groups = new Map();
-    for (const fact of facts) { const id = source(fact).chatId; if (!groups.has(id)) groups.set(id, groups.size); }
-    return [...facts].sort((a, b) => {
-        const x = source(a), y = source(b);
-        if (x.chatId !== y.chatId) {
-            if (x.chatId === currentChatId) return -1;
-            if (y.chatId === currentChatId) return 1;
-            return groups.get(x.chatId) - groups.get(y.chatId);
-        }
-        const ai = Number.isInteger(x.id) && x.id >= 0 ? x.id : Infinity;
-        const bi = Number.isInteger(y.id) && y.id >= 0 ? y.id : Infinity;
-        if (ai !== bi) return ai < bi ? -1 : 1;
-        return (Number(a.createdAt) || 0) - (Number(b.createdAt) || 0);
-    });
+// Facts are appended when collected/saved. Reverse a copy for newest-first
+// display; edits to existing knowledge/progress retain the original position.
+export function sortMemoriesByCollection(facts) {
+    return [...facts].reverse();
 }
 
 export function removeSavedExclusions(report) {
