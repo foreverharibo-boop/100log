@@ -111,3 +111,51 @@ test('newest collected memories display first regardless of source, with stable 
  assert.deepEqual(stored.map(f=>f.id),['old','middle','new']);
  stored.push({id:'manual'});assert.equal(m.sortMemoriesByCollection(stored)[0].id,'manual');
 });
+
+test('separate later learners for the same carried memory both apply without resetting its lifetime',()=>{
+ const original={...fact(),summaryCarryover:true,carryoverStartId:1,carriedAt:123,knowledge:{A:'known',B:'unknown',C:'unverified'}};
+ const value={facts:[structuredClone(original)]};
+ const sourceRows=[{id:8,text:'A showed the scar to B and C.',signature:'s8'}];
+ const operation=name=>({action:'knowledge',id:'f',sourceId:8,evidence:sourceRows[0].text,evidenceType:'occurred',knowledge:{[name]:'known'},knowledgeEvidence:{[name]:{status:'known',sourceId:8,evidence:sourceRows[0].text,reason:'상처를 직접 보여 줌'}}});
+ const parsed=parse(value,[operation('B'),operation('C')],sourceRows);
+ assert.equal(parsed.rejected,0);assert.equal(parsed.operations.length,2);
+ const applied=m.applyMemoryOperations(value,parsed.operations,'c');
+ assert.equal(applied.updated,2);assert.equal(value.facts.length,1);
+ assert.deepEqual(value.facts[0].knowledge,{A:'known',B:'known',C:'known'});
+ for(const key of ['id','text','sourceId','sourceText','sourceSignature','summaryCarryover','carryoverStartId','carriedAt','retention']) assert.deepEqual(value.facts[0][key],original[key]);
+ // A later replay of older collection evidence cannot roll back a learner.
+ const older=[{id:6,text:'B had not seen the scar yet.',signature:'s6'}];
+ const old={...operation('B'),sourceId:6,evidence:older[0].text,knowledge:{B:'unknown'},knowledgeEvidence:{B:{status:'unknown',sourceId:6,evidence:older[0].text,reason:'당시에는 아직 보지 못함'}}};
+ m.applyMemoryOperations(value,parse(value,[old],older).operations,'c');assert.equal(value.facts[0].knowledge.B,'known');
+});
+test('same-text update patches knowledge while preserving other people and manual corrections',()=>{
+ const original={...fact(),summaryCarryover:true,carryoverStartId:1,knowledge:{A:'known',B:'unknown',C:'unknown'},knowledgeEvidence:{C:{status:'unknown',manual:true,reason:'사용자 지정'}}};
+ const value={facts:[structuredClone(original)]};
+ const op=confirm({action:'update',text:original.text,knowledge:{B:'known',C:'known'},knowledgeEvidence:{B:{status:'known',sourceId:5,evidence:rows[0].text,reason:'직접 봄'},C:{status:'known',sourceId:5,evidence:rows[0].text,reason:'자동 제안'}}});
+ const parsed=parse(value,[op]);assert.equal(parsed.operations[0].action,'knowledge');
+ m.applyMemoryOperations(value,parsed.operations,'c');
+ assert.deepEqual(value.facts[0].knowledge,{A:'known',B:'known',C:'unknown'});
+ assert.equal(value.facts[0].knowledgeEvidence.C.manual,true);assert.equal(value.facts[0].knowledgeEvidence.C.reason,original.knowledgeEvidence.C.reason);
+ assert.equal(value.facts[0].sourceId,0);assert.equal(value.facts[0].carryoverStartId,1);assert.equal(value.facts[0].summaryCarryover,true);
+});
+test('invalid learner evidence does not consume the target or bypass protection',()=>{
+ const good=confirm({action:'knowledge',knowledge:{B:'known'},knowledgeEvidence:{B:{status:'known',sourceId:5,evidence:rows[0].text,reason:'직접 봄'}}});
+ const invalid={...good,knowledgeEvidence:{B:{status:'known',sourceId:5,evidence:'not in original',reason:'unsupported'}}};
+ const value={facts:[fact()]};const parsed=parse(value,[invalid,good]);assert.equal(parsed.operations.length,1);assert.equal(parsed.rejected,1);
+ for(const protection of [{pinned:true},{active:false},{origin:'manual'},{archived:'completed'}]) assert.equal(parse({facts:[{...fact(),...protection}]},[good,good]).operations.length,0);
+});
+test('repeated factual mutation is still rejected and later patches cannot attach to a changed claim',()=>{
+ const value={facts:[fact()]};
+ const update=confirm({action:'update',text:'A는 흉터를 치료받았다.',knowledge:{A:'known'}});
+ assert.equal(parse(value,[update,update]).operations.length,1);
+ const knowledge=confirm({action:'knowledge',knowledge:{B:'known'},knowledgeEvidence:{B:{status:'known',sourceId:5,evidence:rows[0].text,reason:'원래 흉터를 봄'}}});
+ assert.equal(parse(value,[update,knowledge]).operations.length,1);
+});
+test('collector checklist includes carried unknown recipients without treating the list as evidence',()=>{
+ const f={...fact(),summaryCarryover:true,knowledge:{A:'unknown',B:'unverified',C:'known'}};
+ const prompt=m.memoryRequest([f],rows);
+ const checklist=JSON.parse(prompt.split('KNOWLEDGE_RECHECK_TARGETS: ')[1].split('\n\n')[0]);
+ assert.deepEqual(checklist,[{id:'f',summaryCarryover:true,recheck:['A','B']}]);
+ assert.match(prompt,/NOT proof of learning/);assert.match(prompt,/original messages are hidden/);
+ assert.match(m.omissionReviewRequest([f],rows),/KNOWLEDGE_RECHECK_TARGETS:/);
+});

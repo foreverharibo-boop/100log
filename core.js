@@ -1,4 +1,4 @@
-import { canonicalName, normalizeSupportingEvidence } from './continuity-tools.js?v=1.9.23';
+import { canonicalName, normalizeSupportingEvidence } from './continuity-tools.js?v=1.9.24';
 export const RECENT_MESSAGE_LIMIT = 100;
 export const MAX_FACTS = 40;
 export const MAX_HISTORY = 200;

@@ -1,5 +1,5 @@
-import { canonicalName, resolveFactNames, normalizeAliases, normalizeSupportingEvidence, appendSupportingEvidence, rejectedMemoryMatch, aliasSuggestions } from './continuity-tools.js?v=1.9.23';
-import { MAX_FACTS, RECENT_MESSAGE_LIMIT, newId, approveFact, setKnowledge, normalizeKnowledge, normalizeKnowledgeEvidence, advanceCommitment, commitmentState, pickFacts, recentWindowStart, isVisibleChatMessage } from './core.js?v=1.9.23';
+import { canonicalName, resolveFactNames, normalizeAliases, normalizeSupportingEvidence, appendSupportingEvidence, rejectedMemoryMatch, aliasSuggestions } from './continuity-tools.js?v=1.9.24';
+import { MAX_FACTS, RECENT_MESSAGE_LIMIT, newId, approveFact, setKnowledge, normalizeKnowledge, normalizeKnowledgeEvidence, advanceCommitment, commitmentState, pickFacts, recentWindowStart, isVisibleChatMessage } from './core.js?v=1.9.24';
 
 export const MEMORY_KINDS = {
     fact: '최근 핵심 사실',
@@ -186,6 +186,7 @@ const COLLECTION_INTENSITIES = {
 export function memoryRequest(facts, rows, contextRows = [], intensity = 'balanced', preferences = {}, identity = {}) {
     facts = facts.map(fact => resolveFactNames(fact, identity.nameAliases));
     const current = facts.filter(isCurrent).map(({ id, text, kind, sourceId, knowledge, knowledgeEvidence, supportingEvidence, commitment, pinned, active, retention, summaryCarryover }) => ({ id, text, commitment: commitment ? { status: commitment.status, originalText: commitment.originalText } : undefined, knowledgeEvidence, supportingEvidence: normalizeSupportingEvidence(supportingEvidence), kind: kind || 'fact', sourceId, knowledge, pinned: Boolean(pinned), paused: !active, retention: memoryRetention(kind || 'fact', text, '', retention), summaryCarryover: Boolean(summaryCarryover) }));
+    const knowledgeTargets = current.filter(memory => !memory.pinned && !memory.paused).map(memory => ({ id: memory.id, summaryCarryover: memory.summaryCarryover, recheck: Object.entries(normalizeKnowledge(memory.knowledge)).filter(([, state]) => state !== 'known').map(([name]) => name) }));
     const pendingCommitments = current.filter((memory) => memory.kind === 'commitment' && !memory.paused);
     const intensityInstruction = COLLECTION_INTENSITIES[intensity] ?? COLLECTION_INTENSITIES.balanced;
     return [
@@ -205,6 +206,8 @@ export function memoryRequest(facts, rows, contextRows = [], intensity = 'balanc
         'KNOWLEDGE EVIDENCE: When a precise supporting quote is available, include knowledgeEvidence using the same name as key and {status, reason, sourceId, evidence}. If you cannot supply an exact knowledge quote, omit that evidence entry but still submit the independently evidenced fact and proposed knowledge state; Use the supplied original context to decide knowledge independently of quote availability. Do not omit a fact merely because its knowledge annotation is incomplete. reason is a short Korean explanation of HOW information was learned or why ignorance is established, not a guess. evidence is an exact original quote from the numbered NEW_MESSAGES or CONTEXT. Choose known, unknown, or unverified. unverified means neither knowledge nor ignorance is established and imposes NO ignorance constraint. Do not infer ignorance from absence or silence. On update, re-evaluate every previous knowledge entry against the updated full text; explicitly mark unverified when an old boundary is no longer established. Do not inherit old knowledge automatically. KNOWLEDGE UPDATES: A later perception, reaction, direct disclosure, agreement, delivery or access can establish knowledge of an existing fact. Update that SAME fact ID even when its factual text does not change; do not skip this as duplicate and do not add a second copy. Re-evaluate previously unverified/unknown relevant people using the new evidence. Conscious actors and perceivers do not need to say that they know; conversely, being named in a private plan is not proof of receiving it. Keep facts atomic and do not attach unstated precision or motives to the knowledge claim.',
         'CLAUSE-LEVEL KNOWLEDGE: Before writing each memory, identify the independently supported claims and who learned EACH claim. If those sets differ, split the claims into separate atomic operations with their own exact evidence and knowledge map. In particular, keep an observable agreement or act separate from a concealed motive, deception or secret observation. Do not mechanically split all clauses: shared public terms of one agreement stay together. Never invent private motives to create a split. Preserve attribution: a reported claim is not necessarily objective truth.',
         'KNOWLEDGE-ONLY PASS AT EVERY INTENSITY: Check NEW_MESSAGES against every current memory for new disclosure, receipt, access, witnessing or explicit ignorance, even if no new factual event needs adding. Use action knowledge with the SAME existing id when only who knows changes. Do not rewrite text, progress, source, retention or event identity. Supply only the changed people in knowledge, each with a matching knowledgeEvidence status, reason, sourceId and exact quote from NEW_MESSAGES. Omitted people retain their prior state and evidence. Preserve manual knowledge entries. Mere silence, absence, mention or missing evidence is not a reason to downgrade someone who already knows. New recipients learn only what was actually conveyed, never an unstated motive or the existence of a hidden observer. For a factual update that changes the claim, continue to use update and reassess knowledge for the changed claim. Never modify pinned, paused or manual memories.',
+        'KNOWLEDGE RECONCILIATION CHECKLIST: Before adding new events, compare NEW_MESSAGES with every ID in KNOWLEDGE_RECHECK_TARGETS and its full claim in CURRENT_MEMORIES. These are candidates to recheck, NOT proof of learning. Include summaryCarryover memories even when their original messages are hidden. Their old unknown/unverified labels describe earlier knowledge, not a permanent prohibition. When new dialogue, receipt, observation or a reaction demonstrates learning the SAME claim, emit action knowledge for that existing ID with only the changed people and exact per-person evidence. Do not require the original event to occur again or an explicit phrase saying that the character now knows. A related new memory does not update old memories automatically: return a patch for EACH independently supported existing ID. Do not spread knowledge to other private details merely because they concern the same people. If there is no learning evidence, leave the old state unchanged. New knowledgeable recipients not yet listed are eligible too. Combine changed people for one ID into one knowledge operation when possible.',
+        `KNOWLEDGE_RECHECK_TARGETS: ${JSON.stringify(knowledgeTargets)}`,
         'LATER SUPPORT: Use action confirm with the existing id, exact NEW_MESSAGES evidence, evidenceType and a short reason when a later perception or event supports the SAME claim, even if knowledge is unchanged. Do not rewrite the memory or extend its lifetime. Mere repetition, belief, hearsay or an earlier AI error is not independent confirmation of objective truth. A confirm operation may include individually evidenced knowledge changes. Use update/complete/cancel for actual changes, not confirm.',
         'IDENTITY LINKS: Use APPROVED_NAME_ALIASES as user-confirmed identities. Do not infer identity from similar names. You may suggest likely aliases separately as aliasSuggestions:[{alias,canonical,sourceId,evidence,reason}], using an exact quote from NEW_MESSAGES that supports the identity. Suggestions never apply without user approval.',
         `APPROVED_NAME_ALIASES: ${JSON.stringify(normalizeAliases(identity.nameAliases))}`,
@@ -490,7 +493,7 @@ export function parseMemoryOperations(raw, rows, facts, sourceChatId = '', conte
     if (!Array.isArray(result?.operations)) throw new Error('기억 정리 응답에 operations 목록이 없어요.');
     const sources = new Map(rows.map((row) => [row.id, row]));
     const byId = new Map(facts.map((fact) => [fact.id, fact]));
-    const used = new Set();
+    const used = new Map();
     const valid = [];
     const exclusions = [];
     let rejected = 0;
@@ -498,9 +501,14 @@ export function parseMemoryOperations(raw, rows, facts, sourceChatId = '', conte
         const source = sources.get(op?.sourceId);
         const prior = byId.get(op?.id);
         const evidence = compact(op?.evidence);
-        const action = op?.action;
+        let action = op?.action;
         const kind = prior?.kind || op?.kind || 'fact';
         const text = typeof op?.text === 'string' ? op.text.trim().slice(0, 300) : '';
+        // Unchanged claims are knowledge patches, not new events or lifetime resets.
+        if (action === 'update' && prior && text === prior.text
+            && (!op.progress || op.progress === commitmentState(prior))) action = 'knowledge';
+        const patchOnly = ['knowledge', 'confirm'].includes(action);
+        const repeatedTarget = prior && used.has(prior.id) && !(patchOnly && used.get(prior.id) === 'patch');
         // A whole short reply can confirm a proposal in context. Short fragments
         // from longer text remain invalid. The collector can use the preceding proposal.
         const sourceQuote = source ? compact(source.text) : '';
@@ -511,7 +519,7 @@ export function parseMemoryOperations(raw, rows, facts, sourceChatId = '', conte
         let allowed = hasEvidence && supported && ['add', 'update', 'knowledge', 'confirm', 'complete', 'cancel', 'archive'].includes(action)
             && ['occurred', 'explicit_statement', 'promise', 'intention', 'explicit_cancellation'].includes(type);
         if (action === 'add') allowed &&= Boolean(text && MEMORY_KINDS[kind] && (!['promise', 'intention'].includes(type) || kind === 'commitment'));
-        else allowed &&= Boolean(prior && isCurrent(prior) && prior.active && !prior.pinned && prior.origin !== 'manual' && !used.has(prior.id)
+        else allowed &&= Boolean(prior && isCurrent(prior) && prior.active && !prior.pinned && prior.origin !== 'manual' && !repeatedTarget
             && (prior.sourceChatId !== sourceChatId || !Number.isInteger(prior.sourceId) || source?.id >= prior.sourceId));
         if (action === 'update') allowed &&= Boolean(text && (!['promise', 'intention'].includes(type) || kind === 'commitment'));
         if (kind === 'commitment' && ['add', 'update'].includes(action)) allowed &&= ['planned', 'underway'].includes(op.progress);
@@ -524,13 +532,12 @@ export function parseMemoryOperations(raw, rows, facts, sourceChatId = '', conte
             if (action !== 'add' && prior) {
                 if (prior.pinned || prior.origin === 'manual') code = 'protected';
                 else if (!isCurrent(prior) || !prior.active) code = 'unavailable';
-                else if (used.has(prior.id)) code = 'repeated_target';
+                else if (repeatedTarget) code = 'repeated_target';
                 else if (prior.sourceChatId === sourceChatId && Number.isInteger(prior.sourceId) && source?.id < prior.sourceId) code = 'older_source';
             } else if (action !== 'add' && !prior && ['update', 'complete', 'cancel', 'archive'].includes(action)) code = 'unavailable';
             exclusions.push(excludedOperation(op, code, sourceChatId, source, prior));
             rejected++; continue;
         }
-        if (prior) used.add(prior.id);
         const reason = String(op.reason ?? '').slice(0, 150);
         const knowledge = normalizeKnowledge(op.knowledge);
         const knowledgeEvidence = normalizeKnowledgeEvidence(op.knowledgeEvidence, knowledge);
@@ -551,11 +558,11 @@ export function parseMemoryOperations(raw, rows, facts, sourceChatId = '', conte
                 }
             }
             if (action === 'knowledge' && !Object.keys(knowledge).length) {
-                used.delete(prior.id);
                 exclusions.push(excludedOperation(op, 'evidence_mismatch', sourceChatId, source, prior));
                 rejected++; continue;
             }
         }
+        if (prior) used.set(prior.id, patchOnly ? 'patch' : 'mutation');
         valid.push({ rejectedMatchId: typeof op.rejectedMatchId === 'string' ? op.rejectedMatchId : '', needsJevValidation: !collectorOnly && deferConfidenceToJev, action, id: prior?.id, text, kind, evidenceType: type, sourceId: source.id, sourceText: String(op.evidence).trim().slice(0, 350), sourceSignature: source.signature,
             progress: kind === 'commitment' && ['planned', 'underway'].includes(op.progress) ? op.progress : undefined,
             retention: memoryRetention(kind, text || prior?.text, reason, op.retention || prior?.retention), knowledge, knowledgeEvidence, importance: Math.max(1, Math.min(5, Number(op.importance) || 3)), reason });
