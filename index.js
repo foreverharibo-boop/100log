@@ -516,7 +516,6 @@ function settings() {
     config.autoMemory ??= legacyJevEnabled;
     config.enabled = Boolean(config.autoMemory);
     config.autoCleanup ??= true;
-    config.collectionOmissionCheck ??= false;
     config.collectionIntensity = ['detailed', 'balanced', 'meaningful'].includes(config.collectionIntensity) ? config.collectionIntensity : 'balanced';
     config.cleanupThreshold = cleanupThreshold(config.cleanupThreshold, 20);
     config.extractionProfileId ??= '';
@@ -1180,7 +1179,6 @@ function renderContent() {
     $id('auto-memory').disabled = busy || translating;
     $id('analysis-interval').value = String(settings().analysisInterval);
     $id('collection-intensity').value = settings().collectionIntensity;
-    $id('omission-check').checked = Boolean(settings().collectionOmissionCheck);
     $id('cleanup-threshold').value = String(settings().cleanupThreshold);
     $id('auto-cleanup').checked = Boolean(settings().autoCleanup);
     $id('auto-cleanup').disabled = working;
@@ -1188,6 +1186,7 @@ function renderContent() {
     if (intervalWarning) intervalWarning.hidden = settings().analysisInterval < 50;
     if ($id('activity')) $id('activity').textContent = value?.lastActivity?.text || '아직 기록된 작업이 없어요.';
     $id('sync-now').disabled = working || !value || !settings().autoMemory;
+    $id('review-omissions').disabled = working || normalGenerating || !value || !settings().autoMemory;
     const state = chatState(value, context(), false);
     $id('undo-last').disabled = working || !value || !state?.autoMemory?.journal?.some((entry) => entry.changes?.length && !entry.undoneAt);
     refreshProfiles();
@@ -1205,7 +1204,7 @@ function renderContent() {
     $id('translate-missing').disabled = working || !missing;
     $id('translate-stop').disabled = !translating;
     $id('translate-stop').hidden = !translating;
-    for (const id of ['extraction-profile', 'translation-profile', 'profiles-refresh', 'analysis-interval', 'collection-intensity', 'omission-check', 'cleanup-threshold']) $id(id).disabled = working;
+    for (const id of ['extraction-profile', 'translation-profile', 'profiles-refresh', 'analysis-interval', 'collection-intensity', 'cleanup-threshold']) $id(id).disabled = working;
     $id('key').disabled = working;
     $id('test').disabled = working;
     $id('clearkey').disabled = working;
@@ -1533,7 +1532,7 @@ function queueSourceMutation() {
     }, 900);
 }
 
-async function performMemorySync({ rebuildRecent = false, force = false } = {}) {
+async function performMemorySync({ rebuildRecent = false, force = false, reviewOnly = false } = {}) {
     const ctx = context();
     const key = chatKey(ctx);
     const value = data();
@@ -1551,26 +1550,30 @@ async function performMemorySync({ rebuildRecent = false, force = false } = {}) 
     activeCollectionJob = job;
     const progressTimer = setInterval(refreshCollectionStatus, 1000);
     render();
-    status('최근 대화 수집을 시작하고 있어요…');
+    status(reviewOnly ? '저장된 기억과 최근 대화를 비교해 누락을 확인해요…' : '최근 대화 수집을 시작하고 있어요…');
     let changed = 0, added = 0, updated = 0, archived = 0, uncertain = 0;
     const analyzedAssistantIds = new Set();
-    let proposedCount = 0, structuralRejected = 0, storeSkipped = 0, omissionChecks = 0, omissionChanges = 0;
+    let proposedCount = 0, structuralRejected = 0, storeSkipped = 0;
     const exclusionReport = { createdAt: Date.now(), total: 0, items: [] };
     let cleanupResult = { merged: 0, archived: 0, conflicts: 0, changes: [], skipped: true };
     try {
-        if (rebuildRecent) resetRecentWindow(value, state, ctx.chat, currentSourceChatId);
-        else pruneToRecentWindow(value, state, ctx.chat, currentSourceChatId);
+        if (!reviewOnly) {
+            if (rebuildRecent) resetRecentWindow(value, state, ctx.chat, currentSourceChatId);
+            else pruneToRecentWindow(value, state, ctx.chat, currentSourceChatId);
+        }
         auto = initializeAuto(state, ctx.chat);
-        const compacted = rebuildRecent ? { applied: false } : applyDetectedSummaryCompaction(value, state, ctx);
-        if (compacted.applied || reconcileMemory(value, state, ctx.chat)) await save();
+        const compacted = (rebuildRecent || reviewOnly) ? { applied: false } : applyDetectedSummaryCompaction(value, state, ctx);
+        if (!reviewOnly && (compacted.applied || reconcileMemory(value, state, ctx.chat))) await save();
         auto = initializeAuto(state, ctx.chat);
         // A user message alone is not a completed RP exchange.
         let end = ctx.chat.length;
         while (end > 0 && (ctx.chat[end - 1]?.is_user || ctx.chat[end - 1]?.is_system || ctx.chat[end - 1]?.is_hidden || ctx.chat[end - 1]?.hidden || !String(ctx.chat[end - 1]?.mes ?? '').trim())) end--;
         const profileId = settings().extractionProfileId || '';
-        while (auto.cursor < end && !stopExtractionRequested) {
+        // Manual review scans the recent window independently of collection progress.
+        let reviewCursor = recentWindowStart(ctx.chat), reviewOffset = 0;
+        while ((reviewOnly ? reviewCursor : auto.cursor) < end && !stopExtractionRequested) {
             if (!sameChat()) return;
-            const start = auto.cursor, offset = auto.offset;
+            const start = reviewOnly ? reviewCursor : auto.cursor, offset = reviewOnly ? reviewOffset : auto.offset;
             const batch = sourceRows(ctx, start, offset, end, settings().collectionIntensity);
             const rows = batch.rows.filter((row) => !/^\s*(?:\(OOC\s*:[^()]*\)|\[OOC\s*:[^\[\]]*\])\s*$/i.test(row.text))
                 .map((row) => ({ ...row, role: ctx.chat[row.id].is_user ? 'user' : 'character', signature: messageSignature(ctx.chat[row.id]) }));
@@ -1583,10 +1586,11 @@ async function performMemorySync({ rebuildRecent = false, force = false } = {}) 
                 .map(({ message, id }) => ({ id, signature: messageSignature(message), name: message.name, text: String(message.mes ?? '').slice(-1800) }));
             for (const row of contextRows) if (!tracked.some((item) => item.id === row.id)) tracked.push({ id: row.id, signature: row.signature });
             const progress = recentWindowProgress(ctx.chat.slice(0, end), start);
-            status(`최근 ${RECENT_MESSAGE_LIMIT}개 대화 수집 중 · ${progress.completed}/${progress.total} · 규칙 ${changed}개 반영`);
+            status(`최근 ${RECENT_MESSAGE_LIMIT}개 대화 ${reviewOnly ? '누락 재확인' : '수집'} 중 · ${progress.completed}/${progress.total} · 규칙 ${changed}개 반영`);
             let parsed = { operations: [], rejected: 0 };
             if (rows.length) {
-                const raw = await traceDiagnostic('규칙 수집', () => collectUtility(ctx, memoryRequest(value.facts, rows, contextRows, settings().collectionIntensity, value.collectionPreferences), profileId, job), { count: rows.length });
+                const request = reviewOnly ? omissionReviewRequest : memoryRequest;
+                const raw = await traceDiagnostic(reviewOnly ? '누락 확인' : '규칙 수집', () => collectUtility(ctx, request(value.facts, rows, contextRows, settings().collectionIntensity, value.collectionPreferences), profileId, job), { count: rows.length });
                 if (!sameChat()) return;
                 if (tracked.some(({ id, signature }) => messageSignature(context().chat[id]) !== signature)) {
                     memoryPending = true;
@@ -1598,41 +1602,19 @@ async function performMemorySync({ rebuildRecent = false, force = false } = {}) 
 
             }
             if (!sameChat()) return;
-            // Stage both passes before advancing the cursor or changing saved memory.
-            // Failure, cancellation or source mutation leaves this batch retryable.
+            // Apply only after the request and source checks succeed.
             const staged = { facts: JSON.parse(JSON.stringify(value.facts)) };
             const result = applyMemoryOperations(staged, parsed.operations, currentSourceChatId);
-            if (rows.length && settings().collectionOmissionCheck) {
-                status(`최근 대화 누락 확인 중 · ${progress.completed}/${progress.total}`);
-                const rawReview = await traceDiagnostic('누락 확인', () => collectUtility(ctx,
-                    omissionReviewRequest(staged.facts, rows, contextRows, settings().collectionIntensity, value.collectionPreferences), profileId, job), { count: rows.length });
-                if (!sameChat()) return;
-                if (tracked.some(({ id, signature }) => messageSignature(context().chat[id]) !== signature)) {
-                    memoryPending = true; status('대화가 수정되어 바뀐 내용으로 다시 정리할게요.'); return;
-                }
-                const reviewed = parseMemoryOperations(rawReview, rows, staged.facts, currentSourceChatId, contextRows, { collectorOnly: true });
-                const extra = applyMemoryOperations(staged, reviewed.operations, currentSourceChatId);
-                proposedCount += reviewed.proposed || 0; structuralRejected += reviewed.rejected;
-                parsed.rejected += reviewed.rejected;
-                parsed.exclusions = [...(parsed.exclusions || []), ...(reviewed.exclusions || [])];
-                omissionChecks++; omissionChanges += extra.added + extra.updated + extra.archived;
-                for (const metric of ['added', 'updated', 'archived', 'skipped']) result[metric] += extra[metric];
-                result.exclusions.push(...extra.exclusions);
-                // One rollback entry per memory, spanning both collection passes.
-                const changes = new Map(result.changes.map((change) => [change.id, change]));
-                for (const change of extra.changes) {
-                    const first = changes.get(change.id);
-                    changes.set(change.id, first ? { ...change, before: first.before } : change);
-                }
-                result.changes = [...changes.values()];
-            }
             if (!sameChat()) return;
             value.facts = staged.facts;
             if (rows.length) {
                 appendCollectionExclusions(exclusionReport, [...(parsed.exclusions || []), ...(result.exclusions || [])]);
                 state.collectionExclusions = exclusionReport;
             }
-            recordMemoryBatch(state, { rows: tracked, start, offset, nextCursor: batch.nextCursor, nextOffset: batch.nextOffset, changes: result.changes });
+            recordMemoryBatch(state, { rows: tracked, start, offset,
+                nextCursor: reviewOnly ? auto.cursor : batch.nextCursor,
+                nextOffset: reviewOnly ? auto.offset : batch.nextOffset, changes: result.changes });
+            if (reviewOnly) { reviewCursor = batch.nextCursor; reviewOffset = batch.nextOffset; }
             storeSkipped += result.skipped;
             changed += result.added + result.updated + result.archived;
             added += result.added; updated += result.updated; archived += result.archived;
@@ -1640,7 +1622,7 @@ async function performMemorySync({ rebuildRecent = false, force = false } = {}) 
             state.extractionCursor = auto.cursor; state.extractionOffset = auto.offset;
             await save(); render();
         }
-        if (sameChat() && !stopExtractionRequested) {
+        if (!reviewOnly && sameChat() && !stopExtractionRequested) {
             cleanupResult = await collectionStep(job, () => runAutomaticCleanup(value, ctx, profileId, sameChat, job)) ?? cleanupResult;
             if (!sameChat()) return;
             if (!cleanupResult.skipped) { await save(); render(); }
@@ -1650,21 +1632,21 @@ async function performMemorySync({ rebuildRecent = false, force = false } = {}) 
             if (!stopExtractionRequested && (analyzedAssistantIds.size || !cleanupResult.skipped)) {
                 const activity = [`${analyzedAssistantIds.size}개 답변 분석`, `규칙 ${added}개 추가`, `${updated}개 갱신`];
                 if (archived) activity.push(`${archived}개 종료`);
-                if (omissionChecks) activity.push(`누락 확인 ${omissionChecks}회 · ${omissionChanges}개 추가 반영`);
+                if (reviewOnly) activity.unshift('수동 누락 재확인');
                 activity.push(`AI 제안 ${proposedCount}개 · 형식·출처 제외 ${structuralRejected}개 · 중복·한도 등 저장 생략 ${storeSkipped}개`);
                 if (!cleanupResult.skipped) activity.push(`AI 자동 청소 · ${cleanupResult.merged + cleanupResult.archived}개 정리${cleanupResult.conflicts ? ` · 충돌 확인 필요 ${cleanupResult.conflicts}쌍` : ''}`);
-                value.lastActivity = { text: activity.join(' · '), at: Date.now(), type: 'collection' };
+                value.lastActivity = { text: activity.join(' · '), at: Date.now(), type: reviewOnly ? 'omission-review' : 'collection' };
                 await save(); render();
             }
             status(stopExtractionRequested ? `수집 중단 · 규칙 ${changed}개 반영. 다음에 이어서 수집해요.`
-                : `최근 ${RECENT_MESSAGE_LIMIT}개 대화 수집 완료 · 규칙 ${changed}개 반영${uncertain ? ` · 형식·출처·중복·한도 검사로 ${uncertain}개는 건너뛰었어요` : ''}${omissionChecks ? ` · 누락 확인 ${omissionChecks}회, ${omissionChanges}개 추가 반영` : ''}${cleanupText}`);
+                : `최근 ${RECENT_MESSAGE_LIMIT}개 대화 ${reviewOnly ? '누락 재확인' : '수집'} 완료 · 규칙 ${changed}개 반영${uncertain ? ` · 형식·출처·중복·한도 검사로 ${uncertain}개는 건너뛰었어요` : ''}${cleanupText}`);
         }
     } catch (error) {
         if (job.controller.signal.aborted || error?.hundredlogCancelled) {
-            if (sameOrigin()) status(`수집을 중단했어요 · 규칙 ${changed}개 반영. ‘새 대화 갱신’으로 이어서 수집할 수 있어요.`);
+            if (sameOrigin()) status(`${reviewOnly ? '누락 재확인을' : '수집을'} 중단했어요 · 규칙 ${changed}개 반영. ‘${reviewOnly ? '누락 재확인' : '새 대화 갱신'}’으로 다시 시도할 수 있어요.`);
         } else {
             diagnosticError('규칙 수집', error, { site: 1626 });
-            if (sameChat()) status(`기억 정리를 멈췄어요: ${error.message} ‘새 대화 갱신’으로 다시 시도할 수 있어요.`);
+            if (sameChat()) status(`기억 정리를 멈췄어요: ${error.message} ‘${reviewOnly ? '누락 재확인' : '새 대화 갱신'}’으로 다시 시도할 수 있어요.`);
         }
     }
     finally {
@@ -2366,6 +2348,10 @@ async function main() {
     });
     $id('extract')?.addEventListener('click', () => { void collectHistory(); });
     $id('sync-now')?.addEventListener('click', () => { void syncMemories({ force: true }); });
+    $id('review-omissions')?.addEventListener('click', () => {
+        if (normalGenerating) return;
+        void syncMemories({ reviewOnly: true, force: true });
+    });
     $id('undo-last')?.addEventListener('click', async () => {
         const value = data(false);
         if (!value) return;
@@ -2424,10 +2410,6 @@ async function main() {
         if (busy || extracting || translating) return;
         const value = data(); const state = chatState(value, context(), false); if (!state) return;
         delete state.collectionExclusions; await save(); render();
-    });
-    $id('omission-check')?.addEventListener('change', (event) => {
-        settings().collectionOmissionCheck = event.target.checked;
-        context().saveSettingsDebounced();
     });
     $id('collection-intensity')?.addEventListener('change', (event) => {
         settings().collectionIntensity = ['detailed', 'balanced', 'meaningful'].includes(event.target.value) ? event.target.value : 'balanced';

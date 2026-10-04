@@ -224,7 +224,7 @@ export function memoryRequest(facts, rows, contextRows = [], intensity = 'balanc
 
 export function omissionReviewRequest(facts, rows, contextRows = [], intensity = 'balanced', preferences = {}) {
     return memoryRequest(facts, rows, contextRows, intensity, preferences) + '\n\n' +
-        'OMISSION REVIEW — SECOND AND FINAL PASS: CURRENT_MEMORIES already includes the accepted first-pass results for these exact NEW_MESSAGES. Re-read each new message for missed promises, accepted/refused invitations, disclosures, corrections, relationship changes and knowledge-only changes. Return ONLY supported additions or changes not already represented. Split claims with different knowledge boundaries. Do not restate existing memories, force a count, reverse a supported first-pass update, or create a third review pass. Return {"operations":[]} if nothing was missed. The same grounding, protection, intensity and live-state exclusions apply.';
+        'OMISSION REVIEW — USER-REQUESTED RECHECK: CURRENT_MEMORIES contains the currently saved memories. Compare these against the supplied recent messages, even if those messages were previously collected. Re-read each new message for missed promises, accepted/refused invitations, disclosures, corrections, relationship changes and knowledge-only changes. Return ONLY supported additions or changes not already represented. Split claims with different knowledge boundaries. Do not restate existing memories, force a count, reverse a later supported development, or request another review pass. Return {"operations":[]} if nothing was missed. The same grounding, protection, intensity and live-state exclusions apply.';
 }
 
 export function compoundSplitRequest(operations, facts, rows, contextRows = []) {

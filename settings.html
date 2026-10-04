@@ -21,7 +21,7 @@
     <div id="hundredlog-view-memory" class="hundredlog-view" role="region" aria-labelledby="hundredlog-tab-memory">
       <section id="hundredlog-review-report" class="hundredlog-review-report" aria-label="이번 답변에서 한 일" aria-live="polite"></section>
       <div class="hundredlog-section-title"><strong>현재 규칙</strong><span id="hundredlog-count"></span></div>
-      <div class="hundredlog-row hundredlog-quick-actions"><button type="button" id="hundredlog-sync-now" class="menu_button">새 대화 갱신</button><button type="button" id="hundredlog-undo-last" class="menu_button">최근 갱신 취소</button></div>
+      <div class="hundredlog-row hundredlog-quick-actions"><button type="button" id="hundredlog-sync-now" class="menu_button">새 대화 갱신</button><button type="button" id="hundredlog-review-omissions" class="menu_button" title="기존 기억을 유지하고 최근 100개 대화에서 빠진 내용을 다시 확인합니다. AI 호출이 발생합니다.">누락 재확인</button><button type="button" id="hundredlog-undo-last" class="menu_button">최근 갱신 취소</button></div>
       <p id="hundredlog-collection-status" class="hundredlog-help" role="status" aria-live="polite" hidden></p>
       <div id="hundredlog-facts" class="hundredlog-list"></div>
       <details class="hundredlog-fold hundredlog-compose"><summary>+ 규칙 직접 추가 · 갱신</summary>
@@ -52,8 +52,6 @@
         </div>
         <p class="hundredlog-help">약속·비밀·정정은 모든 강도에서 수집해요. 세세하게는 작은 부탁·제안·취향·경험·변화까지 넓게 모으며, 미확정 계획은 미확정으로 기록해요. 규칙이 많아지면 검수량도 늘어요. 갱신 주기는 AI 답변 수 기준이에요.</p>
         <p id="hundredlog-interval-warning" class="hundredlog-help hundredlog-warning" hidden>갱신 주기가 50 이상이면 정리되기 전에 오래된 메시지가 최근 100개 범위에서 빠질 수 있어요.</p>
-        <label class="hundredlog-toggle hundredlog-setting-toggle"><input id="hundredlog-omission-check" type="checkbox"><span>수집 후 누락 한 번 더 확인</span></label>
-        <p class="hundredlog-help">기본은 꺼짐이에요. 켜면 수집 묶음마다 정리 AI를 한 번 더 호출해 빠진 기억과 새로 알게 된 인물을 확인해요. 수집 시간과 API 사용량이 늘어나며, 다시 확인해도 누락이 남을 수 있어요.</p>
         <label class="hundredlog-toggle hundredlog-setting-toggle"><input id="hundredlog-auto-cleanup" type="checkbox"><span>수집 후 규칙 자동 청소</span></label>
         <p class="hundredlog-help">5~40개부터 정리 AI가 청소해요. 원문 인용·잠금·병합 조건을 코드로 검사한 뒤 적용하며 직접 추가·잠금한 규칙은 유지해요.</p>
         <p id="hundredlog-cleanup-summary" class="hundredlog-help" aria-live="polite"></p>
