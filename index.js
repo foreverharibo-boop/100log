@@ -1,4 +1,4 @@
-import { applyManualKnowledgeDraft, collectedCharacterNames, sortMemoriesBySource, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js';
+import { applyManualKnowledgeDraft, collectedCharacterNames, sortMemoriesBySource, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, omissionReviewRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js';
 import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, buildReviewSources, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js';
 import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js';
 import { normalizeKnowledgeEvidence, KNOWLEDGE_LABELS, COMMITMENT_LABELS, commitmentState } from './core.js';
@@ -516,6 +516,7 @@ function settings() {
     config.autoMemory ??= legacyJevEnabled;
     config.enabled = Boolean(config.autoMemory);
     config.autoCleanup ??= true;
+    config.collectionOmissionCheck ??= false;
     config.collectionIntensity = ['detailed', 'balanced', 'meaningful'].includes(config.collectionIntensity) ? config.collectionIntensity : 'balanced';
     config.cleanupThreshold = cleanupThreshold(config.cleanupThreshold, 20);
     config.extractionProfileId ??= '';
@@ -1109,7 +1110,7 @@ function renderCollectionExclusions(value, working) {
         const reason = document.createElement('p'); reason.className = 'hundredlog-help';
         reason.textContent = EXCLUSION_REASONS[entry.code] || '저장 조건을 충족하지 못했어요.';
         const source = document.createElement('p'); source.className = 'hundredlog-meta';
-        const action = {add:'추가',update:'갱신',complete:'완료',cancel:'취소',archive:'보관'}[entry.action] || '형식 오류';
+        const action = {add:'추가',update:'갱신',knowledge:'지식 갱신',complete:'완료',cancel:'취소',archive:'보관'}[entry.action] || '형식 오류';
         source.textContent = `${action} 제안${Number.isInteger(entry.sourceId) ? ` · 대화 #${entry.sourceId}` : ''}`;
         const detail = document.createElement('details');
         const title = document.createElement('summary'); title.textContent = '인용 확인 · 직접 저장'; detail.append(title);
@@ -1179,6 +1180,7 @@ function renderContent() {
     $id('auto-memory').disabled = busy || translating;
     $id('analysis-interval').value = String(settings().analysisInterval);
     $id('collection-intensity').value = settings().collectionIntensity;
+    $id('omission-check').checked = Boolean(settings().collectionOmissionCheck);
     $id('cleanup-threshold').value = String(settings().cleanupThreshold);
     $id('auto-cleanup').checked = Boolean(settings().autoCleanup);
     $id('auto-cleanup').disabled = working;
@@ -1203,7 +1205,7 @@ function renderContent() {
     $id('translate-missing').disabled = working || !missing;
     $id('translate-stop').disabled = !translating;
     $id('translate-stop').hidden = !translating;
-    for (const id of ['extraction-profile', 'translation-profile', 'profiles-refresh', 'analysis-interval', 'collection-intensity', 'cleanup-threshold']) $id(id).disabled = working;
+    for (const id of ['extraction-profile', 'translation-profile', 'profiles-refresh', 'analysis-interval', 'collection-intensity', 'omission-check', 'cleanup-threshold']) $id(id).disabled = working;
     $id('key').disabled = working;
     $id('test').disabled = working;
     $id('clearkey').disabled = working;
@@ -1552,7 +1554,7 @@ async function performMemorySync({ rebuildRecent = false, force = false } = {}) 
     status('최근 대화 수집을 시작하고 있어요…');
     let changed = 0, added = 0, updated = 0, archived = 0, uncertain = 0;
     const analyzedAssistantIds = new Set();
-    let proposedCount = 0, structuralRejected = 0, storeSkipped = 0;
+    let proposedCount = 0, structuralRejected = 0, storeSkipped = 0, omissionChecks = 0, omissionChanges = 0;
     const exclusionReport = { createdAt: Date.now(), total: 0, items: [] };
     let cleanupResult = { merged: 0, archived: 0, conflicts: 0, changes: [], skipped: true };
     try {
@@ -1596,7 +1598,36 @@ async function performMemorySync({ rebuildRecent = false, force = false } = {}) 
 
             }
             if (!sameChat()) return;
-            const result = applyMemoryOperations(value, parsed.operations, currentSourceChatId);
+            // Stage both passes before advancing the cursor or changing saved memory.
+            // Failure, cancellation or source mutation leaves this batch retryable.
+            const staged = { facts: JSON.parse(JSON.stringify(value.facts)) };
+            const result = applyMemoryOperations(staged, parsed.operations, currentSourceChatId);
+            if (rows.length && settings().collectionOmissionCheck) {
+                status(`최근 대화 누락 확인 중 · ${progress.completed}/${progress.total}`);
+                const rawReview = await traceDiagnostic('누락 확인', () => collectUtility(ctx,
+                    omissionReviewRequest(staged.facts, rows, contextRows, settings().collectionIntensity, value.collectionPreferences), profileId, job), { count: rows.length });
+                if (!sameChat()) return;
+                if (tracked.some(({ id, signature }) => messageSignature(context().chat[id]) !== signature)) {
+                    memoryPending = true; status('대화가 수정되어 바뀐 내용으로 다시 정리할게요.'); return;
+                }
+                const reviewed = parseMemoryOperations(rawReview, rows, staged.facts, currentSourceChatId, contextRows, { collectorOnly: true });
+                const extra = applyMemoryOperations(staged, reviewed.operations, currentSourceChatId);
+                proposedCount += reviewed.proposed || 0; structuralRejected += reviewed.rejected;
+                parsed.rejected += reviewed.rejected;
+                parsed.exclusions = [...(parsed.exclusions || []), ...(reviewed.exclusions || [])];
+                omissionChecks++; omissionChanges += extra.added + extra.updated + extra.archived;
+                for (const metric of ['added', 'updated', 'archived', 'skipped']) result[metric] += extra[metric];
+                result.exclusions.push(...extra.exclusions);
+                // One rollback entry per memory, spanning both collection passes.
+                const changes = new Map(result.changes.map((change) => [change.id, change]));
+                for (const change of extra.changes) {
+                    const first = changes.get(change.id);
+                    changes.set(change.id, first ? { ...change, before: first.before } : change);
+                }
+                result.changes = [...changes.values()];
+            }
+            if (!sameChat()) return;
+            value.facts = staged.facts;
             if (rows.length) {
                 appendCollectionExclusions(exclusionReport, [...(parsed.exclusions || []), ...(result.exclusions || [])]);
                 state.collectionExclusions = exclusionReport;
@@ -1619,13 +1650,14 @@ async function performMemorySync({ rebuildRecent = false, force = false } = {}) 
             if (!stopExtractionRequested && (analyzedAssistantIds.size || !cleanupResult.skipped)) {
                 const activity = [`${analyzedAssistantIds.size}개 답변 분석`, `규칙 ${added}개 추가`, `${updated}개 갱신`];
                 if (archived) activity.push(`${archived}개 종료`);
+                if (omissionChecks) activity.push(`누락 확인 ${omissionChecks}회 · ${omissionChanges}개 추가 반영`);
                 activity.push(`AI 제안 ${proposedCount}개 · 형식·출처 제외 ${structuralRejected}개 · 중복·한도 등 저장 생략 ${storeSkipped}개`);
                 if (!cleanupResult.skipped) activity.push(`AI 자동 청소 · ${cleanupResult.merged + cleanupResult.archived}개 정리${cleanupResult.conflicts ? ` · 충돌 확인 필요 ${cleanupResult.conflicts}쌍` : ''}`);
                 value.lastActivity = { text: activity.join(' · '), at: Date.now(), type: 'collection' };
                 await save(); render();
             }
             status(stopExtractionRequested ? `수집 중단 · 규칙 ${changed}개 반영. 다음에 이어서 수집해요.`
-                : `최근 ${RECENT_MESSAGE_LIMIT}개 대화 수집 완료 · 규칙 ${changed}개 반영${uncertain ? ` · 형식·출처·중복·한도 검사로 ${uncertain}개는 건너뛰었어요` : ''}${cleanupText}`);
+                : `최근 ${RECENT_MESSAGE_LIMIT}개 대화 수집 완료 · 규칙 ${changed}개 반영${uncertain ? ` · 형식·출처·중복·한도 검사로 ${uncertain}개는 건너뛰었어요` : ''}${omissionChecks ? ` · 누락 확인 ${omissionChecks}회, ${omissionChanges}개 추가 반영` : ''}${cleanupText}`);
         }
     } catch (error) {
         if (job.controller.signal.aborted || error?.hundredlogCancelled) {
@@ -2132,8 +2164,11 @@ async function main() {
     const response = await diagnosticFetch(new URL('./settings.html', import.meta.url), { credentials: 'same-origin' });
     if (!response.ok) throw new Error(`설정 화면 파일을 읽지 못했어요 (${response.status}).`);
     const html = await response.text();
-    const container = document.querySelector('#extensions_settings2') ?? document.querySelector('#extensions_settings');
-    if (!container) throw new Error('확장 설정 패널을 찾지 못했어요.');
+    // Keep the panel mounted for event bindings, but expose it only through the wand.
+    const container = document.createElement('div');
+    container.id = 'hundredlog-settings-home'; container.hidden = true;
+    container.style.setProperty('display', 'none', 'important');
+    document.body.append(container); settingsHome = container;
     container.insertAdjacentHTML('beforeend', html);
     bindDiagnosticPanel();
     registerDeveloperTitle($id('title'));
@@ -2389,6 +2424,10 @@ async function main() {
         if (busy || extracting || translating) return;
         const value = data(); const state = chatState(value, context(), false); if (!state) return;
         delete state.collectionExclusions; await save(); render();
+    });
+    $id('omission-check')?.addEventListener('change', (event) => {
+        settings().collectionOmissionCheck = event.target.checked;
+        context().saveSettingsDebounced();
     });
     $id('collection-intensity')?.addEventListener('change', (event) => {
         settings().collectionIntensity = ['detailed', 'balanced', 'meaningful'].includes(event.target.value) ? event.target.value : 'balanced';

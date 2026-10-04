@@ -143,6 +143,7 @@ export function normalizeKnowledgeEvidence(raw, knowledge = {}) {
             sourceId: Number.isInteger(item.sourceId) ? item.sourceId : null,
             verified: item.verified === true, manual: item.manual === true,
             sourceChecked: item.sourceChecked === true,
+            ...(typeof item.sourceChatId === 'string' ? { sourceChatId: item.sourceChatId } : {}),
         };
     }
     return result;
@@ -267,9 +268,10 @@ export function buildReviewSources(chat, facts, currentChatId, excludeLast = fal
     const selected = new Set();
     const references = [];
     for (const fact of facts) {
-        if (fact.sourceChatId !== currentChatId) continue;
-        references.push(fact.sourceId);
-        for (const proof of Object.values(normalizeKnowledgeEvidence(fact.knowledgeEvidence, fact.knowledge))) references.push(proof.sourceId);
+        if (fact.sourceChatId === currentChatId) references.push(fact.sourceId);
+        for (const proof of Object.values(normalizeKnowledgeEvidence(fact.knowledgeEvidence, fact.knowledge))) {
+            if ((proof.sourceChatId ?? fact.sourceChatId) === currentChatId) references.push(proof.sourceId);
+        }
     }
     // Retain latest developments as well as the sources of saved memories.
     for (const row of visible.slice(-6).reverse()) selected.add(row.id);

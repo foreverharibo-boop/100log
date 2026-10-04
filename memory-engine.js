@@ -200,7 +200,7 @@ export function memoryRequest(facts, rows, contextRows = [], intensity = 'balanc
     const pendingCommitments = current.filter((memory) => memory.kind === 'commitment' && !memory.paused);
     const intensityInstruction = COLLECTION_INTENSITIES[intensity] ?? COLLECTION_INTENSITIES.balanced;
     return [
-        'Maintain compact continuity memory for ONLY the latest 100 visible RP messages. This is a rolling recent-context ledger, not long-term lore and not a transcript. Return JSON only: {"operations":[{"action":"add|update|complete|cancel|archive","id":"existing id or null","kind":"fact|relationship|commitment|knowledge|temporary","text":"concise Korean memory","sourceId":0,"evidence":"exact quote from NEW_MESSAGES","evidenceType":"occurred|explicit_statement|promise|intention|explicit_cancellation","confidence":0.0,"importance":3,"retention":"summary|recent","knowledge":{"Name":"known|unknown|unverified"},"knowledgeEvidence":{"Name":{"status":"known|unknown|unverified","reason":"Korean information-flow explanation","sourceId":0,"evidence":"exact source quote"}},"progress":"planned|underway","reason":"short Korean reason"}]}. Return [] operations only if nothing meeting the selected collection intensity changed.',
+        'Maintain compact continuity memory for ONLY the latest 100 visible RP messages. This is a rolling recent-context ledger, not long-term lore and not a transcript. Return JSON only: {"operations":[{"action":"add|update|knowledge|complete|cancel|archive","id":"existing id or null","kind":"fact|relationship|commitment|knowledge|temporary","text":"concise Korean memory","sourceId":0,"evidence":"exact quote from NEW_MESSAGES","evidenceType":"occurred|explicit_statement|promise|intention|explicit_cancellation","confidence":0.0,"importance":3,"retention":"summary|recent","knowledge":{"Name":"known|unknown|unverified"},"knowledgeEvidence":{"Name":{"status":"known|unknown|unverified","reason":"Korean information-flow explanation","sourceId":0,"evidence":"exact source quote"}},"progress":"planned|underway","reason":"short Korean reason"}]}. Return [] operations only if nothing meeting the selected collection intensity changed.',
         'MANDATORY COLLECTION AT EVERY INTENSITY: Always save an explicit promise or agreed future action even if no date, time or place was specified; an explicit future appointment whose date, time, or place is stated; an action that participants explicitly agreed to do together; an explicit promise, refusal, cancellation, or fulfillment; a user correction; a secret or supported character knowledge boundary; and an important unresolved plan. Do not omit these because they seem ordinary or because other memories were already saved. You are responsible for source-grounded collection and knowledge attribution; there is no second model approving collection. Report confidence honestly, but do not omit a directly evidenced fact merely because of an arbitrary confidence cutoff. Store a future appointment or agreed action as kind commitment and keep it pending until the messages directly show fulfillment or explicit cancellation. A short acceptance can confirm a proposal in CONTEXT: cite the new acceptance and use the proposal only to resolve what was accepted; do not demand that all terms be repeated. In detailed mode also collect unilateral invitations, conditions and tentative intentions as such, never as a mutual agreement. These use kind commitment, progress planned and the appropriate intention or explicit_statement evidence type.',
         'EVENT LIFECYCLE: Match an existing commitment by the same intended event, participants and purpose, not just names. For progress on that event, use update with its existing ID and progress planned or underway; rewrite text to describe the current stage while retaining the intended goal. Never add a second fact just to restate arrival or progress for the same event. A visit promise is fulfilled by an evidenced visit; a promise to finish an activity needs evidence of that outcome, not mere arrival. Use complete only when the specific promised goal is fulfilled, cancel for explicit cancellation, and leave ambiguity unchanged. Never move an underway event back to planned without explicit rescheduling. A genuinely new recurring appointment is a separate event. The progress value and changed text must both be supported by new evidence.',
         `COLLECTION INTENSITY: ${intensityInstruction}`,
@@ -214,10 +214,17 @@ export function memoryRequest(facts, rows, contextRows = [], intensity = 'balanc
         `PENDING_COMMITMENTS_TO_RECONCILE: ${JSON.stringify(pendingCommitments)}`,
         'EVENT LIFECYCLE: Match an existing commitment by the same intended event, participants and purpose, not just names. For progress on that event, use update with its existing ID and progress planned or underway; rewrite text to describe the current stage while retaining the intended goal. Never add a second fact just to restate arrival or progress for the same event. A visit promise is fulfilled by an evidenced visit; a promise to finish an activity needs evidence of that outcome, not mere arrival. Use complete only when the specific promised goal is fulfilled, cancel for explicit cancellation, and leave ambiguity unchanged. Never move an underway event back to planned without explicit rescheduling. A genuinely new recurring appointment is a separate event. The progress value and changed text must both be supported by new evidence.',
         'KNOWLEDGE EVIDENCE: When a precise supporting quote is available, include knowledgeEvidence using the same name as key and {status, reason, sourceId, evidence}. If you cannot supply an exact knowledge quote, omit that evidence entry but still submit the independently evidenced fact and proposed knowledge state; Use the supplied original context to decide knowledge independently of quote availability. Do not omit a fact merely because its knowledge annotation is incomplete. reason is a short Korean explanation of HOW information was learned or why ignorance is established, not a guess. evidence is an exact original quote from the numbered NEW_MESSAGES or CONTEXT. Choose known, unknown, or unverified. unverified means neither knowledge nor ignorance is established and imposes NO ignorance constraint. Do not infer ignorance from absence or silence. On update, re-evaluate every previous knowledge entry against the updated full text; explicitly mark unverified when an old boundary is no longer established. Do not inherit old knowledge automatically. KNOWLEDGE UPDATES: A later perception, reaction, direct disclosure, agreement, delivery or access can establish knowledge of an existing fact. Update that SAME fact ID even when its factual text does not change; do not skip this as duplicate and do not add a second copy. Re-evaluate previously unverified/unknown relevant people using the new evidence. Conscious actors and perceivers do not need to say that they know; conversely, being named in a private plan is not proof of receiving it. Keep facts atomic and do not attach unstated precision or motives to the knowledge claim.',
+        'CLAUSE-LEVEL KNOWLEDGE: Before writing each memory, identify the independently supported claims and who learned EACH claim. If those sets differ, split the claims into separate atomic operations with their own exact evidence and knowledge map. In particular, keep an observable agreement or act separate from a concealed motive, deception or secret observation. Do not mechanically split all clauses: shared public terms of one agreement stay together. Never invent private motives to create a split. Preserve attribution: a reported claim is not necessarily objective truth.',
+        'KNOWLEDGE-ONLY PASS AT EVERY INTENSITY: Check NEW_MESSAGES against every current memory for new disclosure, receipt, access, witnessing or explicit ignorance, even if no new factual event needs adding. Use action knowledge with the SAME existing id when only who knows changes. Do not rewrite text, progress, source, retention or event identity. Supply only the changed people in knowledge, each with a matching knowledgeEvidence status, reason, sourceId and exact quote from NEW_MESSAGES. Omitted people retain their prior state and evidence. Preserve manual knowledge entries. Mere silence, absence, mention or missing evidence is not a reason to downgrade someone who already knows. New recipients learn only what was actually conveyed, never an unstated motive or the existence of a hidden observer. For a factual update that changes the claim, continue to use update and reassess knowledge for the changed claim. Never modify pinned, paused or manual memories.',
         `CURRENT_MEMORIES: ${JSON.stringify(current)}`,
         `CONTEXT: ${JSON.stringify(contextRows)}`,
         `NEW_MESSAGES: ${JSON.stringify(rows)}`,
     ].join('\n\n');
+}
+
+export function omissionReviewRequest(facts, rows, contextRows = [], intensity = 'balanced', preferences = {}) {
+    return memoryRequest(facts, rows, contextRows, intensity, preferences) + '\n\n' +
+        'OMISSION REVIEW — SECOND AND FINAL PASS: CURRENT_MEMORIES already includes the accepted first-pass results for these exact NEW_MESSAGES. Re-read each new message for missed promises, accepted/refused invitations, disclosures, corrections, relationship changes and knowledge-only changes. Return ONLY supported additions or changes not already represented. Split claims with different knowledge boundaries. Do not restate existing memories, force a count, reverse a supported first-pass update, or create a third review pass. Return {"operations":[]} if nothing was missed. The same grounding, protection, intensity and live-state exclusions apply.';
 }
 
 export function compoundSplitRequest(operations, facts, rows, contextRows = []) {
@@ -506,7 +513,7 @@ export function parseMemoryOperations(raw, rows, facts, sourceChatId = '', conte
             && (evidence.length >= 4 || ((collectorOnly || deferConfidenceToJev) && evidence === sourceQuote)));
         const supported = collectorOnly || deferConfidenceToJev || (Number.isFinite(op?.confidence) && op.confidence >= .85 && op.confidence <= 1);
         const type = op?.evidenceType;
-        let allowed = hasEvidence && supported && ['add', 'update', 'complete', 'cancel', 'archive'].includes(action)
+        let allowed = hasEvidence && supported && ['add', 'update', 'knowledge', 'complete', 'cancel', 'archive'].includes(action)
             && ['occurred', 'explicit_statement', 'promise', 'intention', 'explicit_cancellation'].includes(type);
         if (action === 'add') allowed &&= Boolean(text && MEMORY_KINDS[kind] && (!['promise', 'intention'].includes(type) || kind === 'commitment'));
         else allowed &&= Boolean(prior && isCurrent(prior) && prior.active && !prior.pinned && prior.origin !== 'manual' && !used.has(prior.id)
@@ -536,7 +543,22 @@ export function parseMemoryOperations(raw, rows, facts, sourceChatId = '', conte
             const quote = compact(proof.evidence);
             if (!row || !proof.reason.trim() || !quote || !compact(row.text).includes(quote)
                 || (quote.length < 4 && quote !== compact(row.text))) delete knowledgeEvidence[name];
-            else { proof.verified = false; proof.manual = false; proof.sourceChecked = true; }
+            else { proof.verified = false; proof.manual = false; proof.sourceChecked = true; proof.sourceChatId = sourceChatId; }
+        }
+        if (action === 'knowledge') {
+            // A patch cannot remove unmentioned people or rewrite the underlying event.
+            for (const name of Object.keys(knowledge)) {
+                const proof = knowledgeEvidence[name];
+                if (!proof?.sourceChecked || proof.status !== knowledge[name]
+                    || !rows.some((row) => row.id === proof.sourceId) || prior.knowledgeEvidence?.[name]?.manual) {
+                    delete knowledge[name]; delete knowledgeEvidence[name];
+                }
+            }
+            if (!Object.keys(knowledge).length) {
+                used.delete(prior.id);
+                exclusions.push(excludedOperation(op, 'evidence_mismatch', sourceChatId, source, prior));
+                rejected++; continue;
+            }
         }
         valid.push({ needsJevValidation: !collectorOnly && deferConfidenceToJev, action, id: prior?.id, text, kind, evidenceType: type, sourceId: source.id, sourceText: String(op.evidence).trim().slice(0, 350), sourceSignature: source.signature,
             progress: kind === 'commitment' && ['planned', 'underway'].includes(op.progress) ? op.progress : undefined,
@@ -555,6 +577,21 @@ export function applyMemoryOperations(value, operations, sourceChatId = '') {
         if (op.needsJevValidation && !op.jevValidated) { skip(op, 'approval'); continue; }
         const prior = value.facts.find((fact) => fact.id === op.id);
         if (op.action !== 'add' && (!prior || !isCurrent(prior) || !prior.active || prior.pinned || prior.origin === 'manual')) { skip(op, prior?.pinned || prior?.origin === 'manual' ? 'protected' : 'unavailable', prior); continue; }
+        if (op.action === 'knowledge') {
+            let patched = false;
+            const knowledge = { ...normalizeKnowledge(prior.knowledge) };
+            const evidence = { ...normalizeKnowledgeEvidence(prior.knowledgeEvidence, prior.knowledge) };
+            for (const [name, status] of Object.entries(normalizeKnowledge(op.knowledge))) {
+                const proof = op.knowledgeEvidence?.[name];
+                if (!proof?.sourceChecked || proof.status !== status || evidence[name]?.manual) continue;
+                if (knowledge[name] === status) continue;
+                if (!(name in knowledge) && Object.keys(knowledge).length >= 24) continue;
+                knowledge[name] = status; evidence[name] = proof; patched = true;
+            }
+            if (!patched) { skip(op, 'unchanged', prior); continue; }
+            prior.knowledge = knowledge; prior.knowledgeEvidence = evidence;
+            updated++; continue;
+        }
         if (['add', 'update'].includes(op.action)) {
             if (op.action === 'add') {
                 const duplicate = value.facts.find((fact) => compact(fact.text).toLowerCase() === compact(op.text).toLowerCase());
