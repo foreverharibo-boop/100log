@@ -865,6 +865,7 @@ function renderReviewReport() {
         running: `${report.stage} 중…`,
         passed: `기억 ${report.checked}개 확인 · ${report.uncertain ? '명확한 충돌 없음' : '모순 없음'}`,
         corrected: `충돌 ${report.issues?.length || 0}개 수정 · 재검수 후 표시`,
+        conflicts_remaining: `충돌 ${report.remaining || 0}개 남음 · 재작성 답변 표시`,
         blocked: `재검수 실패 · 충돌 ${report.remaining || 0}개가 남아 표시하지 않음`,
         failed: `${report.stage} 실패 · 답변 표시 안 됨`,
         cancelled: '생성 중단 · 답변 표시 안 됨',
@@ -1990,11 +1991,10 @@ async function runHidden(key, lastMessage, selectedContext = null, mode = 'norma
             updateReport({ stage });
             status('수정 답변을 한 번 더 확인하고 있어요…');
             const again = await traceDiagnostic(stage, () => reviewStep(job, () => judge(final, facts, ctx.name2, job)), { rules: facts.length, chars: final.length });
-            updateReport({ uncertain: again.uncertain || 0, remaining: again.length });
-            if (again.length) {
-                updateReport({ status: 'blocked', remainingRules: again.map((item) => item.fact.text) });
-                throw new Error(`재검수 후에도 설정 충돌 ${again.length}곳이 남아 있어 답변을 표시하지 않았어요.`);
-            }
+            // Remaining semantic conflicts are report details, not generation failures.
+            // Publish only after the normal cancellation/chat guards below still pass.
+            updateReport({ uncertain: again.uncertain || 0, remaining: again.length,
+                remainingRules: again.map((item) => item.fact.text) });
         }
         if (!final) throw new Error('최종 답변이 비어 있어 게시하지 않았어요.');
         checkReviewJob(job);
@@ -2007,30 +2007,27 @@ async function runHidden(key, lastMessage, selectedContext = null, mode = 'norma
         if (store) {
             const injected = selectedContext === null ? facts.length : (selectionStats?.selected ?? 0);
             store.lastActivity = {
-                text: `${mode === 'swipe' ? '스와이프 · ' : mode === 'regenerate' ? '재생성 · ' : ''}관련 규칙 ${injected}개 주입 · 전체 규칙 ${facts.length}개 검수 · ${flagged.length ? `충돌 ${flagged.length}개 수정` : '충돌 없음'}`,
+                text: `${mode === 'swipe' ? '스와이프 · ' : mode === 'regenerate' ? '재생성 · ' : ''}관련 규칙 ${injected}개 주입 · 전체 규칙 ${facts.length}개 검수 · ${report.remaining ? `한 번 재작성 · 충돌 ${report.remaining}개 남음` : flagged.length ? `충돌 ${flagged.length}개 수정` : '충돌 없음'}`,
                 at: Date.now(), type: 'review',
             };
             context().saveSettingsDebounced?.();
         }
         try { await traceDiagnostic('답변 표시·저장', () => commitReply(final, key, lastMessage, mode), { mode, chars: final.length }); }
         catch (error) { diagnosticError('기타', error, { site: 1904 }); if (store) store.lastActivity = previousActivity; throw error; }
-        updateReport({ status: flagged.length ? 'corrected' : 'passed', stage: '완료', published: true });
+        updateReport({ status: report.remaining ? 'conflicts_remaining' : flagged.length ? 'corrected' : 'passed', stage: '완료', published: true });
         const replyLabel = mode === 'swipe' ? '스와이프 답변을' : mode === 'regenerate' ? '재생성 답변을' : '답변을';
-        status(flagged.length ? `충돌 ${flagged.length}곳을 고쳐 ${replyLabel} 게시했어요.` : `설정 충돌 없이 ${replyLabel} 게시했어요.`);
+        status(report.remaining ? `충돌 ${report.remaining}곳이 남아 있지만 재작성한 ${replyLabel} 게시했어요. 검수 결과에서 확인할 수 있어요.` : flagged.length ? `충돌 ${flagged.length}곳을 고쳐 ${replyLabel} 게시했어요.` : `설정 충돌 없이 ${replyLabel} 게시했어요.`);
     } catch (error) {
         if (job.controller.signal.aborted || error?.hundredlogCancelled === true) {
             updateReport({ stage, status: 'cancelled' });
             status('답변 생성을 중단했어요.');
         } else {
             diagnosticError(stage, error, { site: 1913 });
-            const blocked = report.status === 'blocked';
-            const upstream = ['메인 AI 초안 생성', '메인 AI 재작성', 'JEV 초안 검수', 'JEV 재검수'].includes(stage) && !blocked;
-            updateReport({ stage, status: blocked ? 'blocked' : upstream ? 'external_error' : stage === '답변 표시·저장' ? 'publish_error' : 'failed' });
+            const upstream = ['메인 AI 초안 생성', '메인 AI 재작성', 'JEV 초안 검수', 'JEV 재검수'].includes(stage);
+            updateReport({ stage, status: upstream ? 'external_error' : stage === '답변 표시·저장' ? 'publish_error' : 'failed' });
             const message = upstream ? `${stage} 응답을 받지 못했어요. 설정의 마지막 오류를 확인해 주세요.` : `${stage} 실패: ${error.message}`;
             status(message);
-            // Only an explicit 100LOG rejection owns an error toast. Upstream/ST errors
-            // remain available in diagnostics; do not duplicate another system's alert.
-            if (blocked) globalThis.toastr?.error?.(message, '100LOG');
+            // Keep failures in the report/diagnostics without duplicating upstream alerts.
         }
     }
     finally {
