@@ -46,10 +46,10 @@ test('support cannot bypass exact quotes, lock protection or manual memory prote
  for(const extra of [{pinned:true},{origin:'manual'}]){const value={facts:[{...fact(),...extra}]};assert.equal(parse(value,[confirm()]).operations.length,0)}
  const value={facts:[fact()]};assert.equal(parse(value,[confirm({evidence:'not in source'})]).operations.length,0);
 });
-test('support is bounded and passed to JEV with original source context',()=>{
+test('support is bounded and retained outside JEV review',()=>{
  const f=fact();for(let id=1;id<=7;id++)c.appendSupportingEvidence(f,{sourceId:id,sourceChatId:'c',evidence:`source ${id}`,sourceChecked:true});
  assert.equal(f.supportingEvidence.length,4);assert.equal(f.supportingEvidence.at(-1).sourceId,7);
- assert.equal(core.buildChecks('reply',[f])[0].state.established_facts[0].supporting_evidence.length,4);
+ assert.equal(core.buildChecks('reply',[f])[0].state.established_facts[0].supporting_evidence,undefined);
  const chat=Array.from({length:30},(_,id)=>({mes:`source ${id}`,name:'A'}));assert.ok(core.buildReviewSources(chat,[f],'c').some(row=>row.id===7));assert.ok(!core.buildReviewSources(chat,[f],'other').some(row=>row.id===7));
 });
 test('support is not used after swipe, hiding or leaving visible window, and does not break rollback',()=>{

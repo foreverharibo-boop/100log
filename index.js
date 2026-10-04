@@ -1,6 +1,6 @@
 import { availableSupportingEvidence, normalizeAliases, canonicalName, linkAlias, resolveFactNames, normalizeSupportingEvidence, addRejectedMemory } from './continuity-tools.js';
 import { applyManualKnowledgeDraft, collectedCharacterNames, sortMemoriesBySource, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, omissionReviewRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js';
-import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, buildReviewSources, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js';
+import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js';
 import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js';
 import { normalizeKnowledgeEvidence, KNOWLEDGE_LABELS, COMMITMENT_LABELS, commitmentState } from './core.js';
 
@@ -1798,8 +1798,8 @@ function recentChat(ctx, excludeLast = false) {
         .slice(-12).map((message) => `${message.name ?? (message.is_user ? ctx.name1 : ctx.name2)}: ${String(message.mes ?? '').slice(0, 1000)}`).join('\n');
 }
 
-async function judge(draft, facts, recent, speaker, job = null, sources = []) {
-    const batches = buildChecks(draft, facts, recent, speaker, sources);
+async function judge(draft, facts, speaker, job = null) {
+    const batches = buildChecks(draft, facts, '', speaker);
     const found = [];
     found.uncertain = 0;
     for (const batch of batches) {
@@ -1875,7 +1875,6 @@ function correctionPrompt(draft, flagged, continuityContext = '') {
         issue: item.kind === 'knowledge_leak' ? 'This character acts on information they have not learned.' : 'Current story state conflicts with an established fact.',
         established_fact: item.fact.text,
         explicitly_unknown_to: Object.entries(normalizeKnowledge(item.fact.knowledge)).filter(([, state]) => state === 'unknown').map(([name]) => name),
-        source: item.fact.sourceText ?? '',
     }));
     return `${continuityContext ? `${continuityContext}\n\n` : ''}Revise the following unpublished character reply. The listed issues conflict with approved recent-continuity rules. Fix only those conflicts; preserve the rest of the reply, its language, voice, pacing, POV, and formatting. Do not quote these instructions or explain the edit. Output only the full revised character reply.\n\nApproved issues: ${JSON.stringify(issues)}\n\nUnpublished reply:\n${draft}`;
 }
@@ -1959,7 +1958,6 @@ async function runHidden(key, lastMessage, selectedContext = null, mode = 'norma
         updateReport({ rules: facts.length });
         if (!apiKey()) throw new Error('확장 설정에 Jev API 키를 먼저 입력해 주세요.');
         const recent = recentChat(ctx, mode !== 'normal');
-        const sources = buildReviewSources(ctx.chat, facts, sourceChatId(ctx), mode !== 'normal');
         const activeContext = selectedContext === null ? memoryInjection(facts, recent, MAX_FACTS, true) : selectedContext;
         status(mode === 'swipe' ? '새 스와이프 답변을 화면에 띄우지 않고 작성 중이에요…' : mode === 'regenerate' ? '재생성 답변을 화면에 띄우지 않고 작성 중이에요…' : '메인 AI가 숨은 초안을 작성 중이에요…');
         const draftInstruction = mode !== 'normal'
@@ -1973,7 +1971,7 @@ async function runHidden(key, lastMessage, selectedContext = null, mode = 'norma
         stage = 'JEV 초안 검수';
         updateReport({ stage });
         status(`Jev가 연속성 규칙 ${facts.length}개와 초안을 한 번에 검수 중이에요…`);
-        const flagged = await traceDiagnostic(stage, () => reviewStep(job, () => judge(draft, facts, recent, ctx.name2, job, sources)), { rules: facts.length, chars: draft.length });
+        const flagged = await traceDiagnostic(stage, () => reviewStep(job, () => judge(draft, facts, ctx.name2, job)), { rules: facts.length, chars: draft.length });
         updateReport({ checked: facts.length, uncertain: flagged.uncertain || 0,
             issues: flagged.map((item) => ({ ruleId: item.fact.id, rule: item.fact.text,
                 kind: item.kind, sourceId: item.fact.sourceId,
@@ -1991,7 +1989,7 @@ async function runHidden(key, lastMessage, selectedContext = null, mode = 'norma
             stage = 'JEV 재검수';
             updateReport({ stage });
             status('수정 답변을 한 번 더 확인하고 있어요…');
-            const again = await traceDiagnostic(stage, () => reviewStep(job, () => judge(final, facts, recent, ctx.name2, job, sources)), { rules: facts.length, chars: final.length });
+            const again = await traceDiagnostic(stage, () => reviewStep(job, () => judge(final, facts, ctx.name2, job)), { rules: facts.length, chars: final.length });
             updateReport({ uncertain: again.uncertain || 0, remaining: again.length });
             if (again.length) {
                 updateReport({ status: 'blocked', remainingRules: again.map((item) => item.fact.text) });
