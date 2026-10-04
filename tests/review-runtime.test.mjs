@@ -372,3 +372,43 @@ for(const kind of ['extracting','translating'])test(`${kind}: interceptor does n
  assert.equal(aborted,0);assert.equal(h.requests.length,0);assert.equal(h.sandbox.busy,false);
  assert.equal(h.sandbox.data().chatState.lastReview.status,'background_skipped');
 });
+
+
+for (const running of [false, true]) test(`pre-send hook does not await pending collection (running=${running})`, async () => {
+ const h=harness(()=>reply()); const listeners=new Map(); let collectionCalls=0;
+ Object.assign(h.sandbox, {memoryHooksInstalled:false, extracting:false,translating:false, settings:()=>({autoMemory:true}),
+  activeCollectionJob:running?{}:null, memoryRun:new Promise(()=>{}), normalGenerating:false,
+  memoryPending:true,memoryForcePending:false,sourceMutationTimer:null,queueSourceMutation(){},
+  processSourceMutation:async()=>({changed:true,compacted:false}),syncMemories:()=>{collectionCalls++;return new Promise(()=>{});}});
+ h.ctx.eventTypes={GENERATION_AFTER_COMMANDS:'beforeSend'};
+ h.ctx.eventSource={on:(event,callback)=>listeners.set(event,callback)};
+ vm.runInContext(hookCode,h.sandbox);h.sandbox.installMemoryHooks(h.ctx);
+ let timer;
+ try { await Promise.race([listeners.get('beforeSend')('normal',{},false),new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('User input blocked by collection')),100);})]); }
+ finally {clearTimeout(timer);}
+ assert.equal(collectionCalls,0);assert.equal(h.sandbox.normalGenerating,true);assert.equal(h.sandbox.memoryPending,true);
+});
+
+test('memory maintenance failure cannot reject pre-send event', async () => {
+ const h=harness(()=>reply());const listeners=new Map();
+ Object.assign(h.sandbox,{memoryHooksInstalled:false,extracting:false,translating:false,settings:()=>({autoMemory:true}),activeCollectionJob:null,
+  sourceMutationTimer:null,queueSourceMutation(){},processSourceMutation:async()=>{throw Error('maintenance failure');}});
+ h.ctx.eventTypes={GENERATION_AFTER_COMMANDS:'beforeSend'};h.ctx.eventSource={on:(e,fn)=>listeners.set(e,fn)};
+ vm.runInContext(hookCode,h.sandbox);h.sandbox.installMemoryHooks(h.ctx);
+ await listeners.get('beforeSend')('normal',{},false);
+ assert.equal(h.sandbox.normalGenerating,true);
+});
+
+test('main API utility request never overrides response length',async()=>{
+ const h=harness(()=>reply());let options;
+ h.ctx.generateRaw=async(args)=>{options=args;return 'collected';};
+ assert.equal(await h.sandbox.generateUtility(h.ctx,'facts','',6000),'collected');
+ assert.equal(options.prompt,'facts');assert.equal(Object.hasOwn(options,'responseLength'),false);
+});
+
+test('separate profile keeps its own request budget',async()=>{
+ const h=harness(()=>reply());let args;
+ h.ctx.ConnectionManagerRequestService={getSupportedProfiles:()=>[{id:'collector'}],sendRequest:async(...a)=>{args=a;return 'collected';}};
+ await h.sandbox.generateUtility(h.ctx,'facts','collector',6000);
+ assert.equal(args[2],6000);
+});

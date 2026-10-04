@@ -1,5 +1,5 @@
-import { canonicalName, resolveFactNames, normalizeAliases, normalizeSupportingEvidence, appendSupportingEvidence, rejectedMemoryMatch, aliasSuggestions } from './continuity-tools.js?v=1.9.20';
-import { MAX_FACTS, RECENT_MESSAGE_LIMIT, newId, approveFact, setKnowledge, normalizeKnowledge, normalizeKnowledgeEvidence, advanceCommitment, commitmentState, pickFacts, recentWindowStart, isVisibleChatMessage } from './core.js?v=1.9.20';
+import { canonicalName, resolveFactNames, normalizeAliases, normalizeSupportingEvidence, appendSupportingEvidence, rejectedMemoryMatch, aliasSuggestions } from './continuity-tools.js?v=1.9.21';
+import { MAX_FACTS, RECENT_MESSAGE_LIMIT, newId, approveFact, setKnowledge, normalizeKnowledge, normalizeKnowledgeEvidence, advanceCommitment, commitmentState, pickFacts, recentWindowStart, isVisibleChatMessage } from './core.js?v=1.9.21';
 
 export const MEMORY_KINDS = {
     fact: '최근 핵심 사실',

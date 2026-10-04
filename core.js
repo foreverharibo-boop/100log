@@ -1,4 +1,4 @@
-import { canonicalName, normalizeSupportingEvidence } from './continuity-tools.js?v=1.9.20';
+import { canonicalName, normalizeSupportingEvidence } from './continuity-tools.js?v=1.9.21';
 export const RECENT_MESSAGE_LIMIT = 100;
 export const MAX_FACTS = 40;
 export const MAX_HISTORY = 200;
@@ -378,7 +378,9 @@ export async function generateUtility(ctx, prompt, profileId = '', maxTokens = 6
             { stream: false, extractData: true, includePreset: false, includeInstruct: true, ...(signal ? { signal } : {}) });
     } else {
         if (typeof ctx.generateRaw !== 'function') throw new Error('현재 메인 API를 호출할 수 없어요. 별도 연결 프로필을 선택해 주세요.');
-        response = await ctx.generateRaw({ prompt, responseLength: maxTokens });
+        // responseLength makes ST temporarily overwrite the shared main API
+        // token setting. Background collection must not change that setting.
+        response = await ctx.generateRaw({ prompt });
     }
     const content = typeof response === 'string' ? response : response?.content ?? response?.choices?.[0]?.message?.content ?? response?.text;
     const text = Array.isArray(content) ? content.map((part) => typeof part === 'string' ? part : part?.text ?? '').join('\n') : content;

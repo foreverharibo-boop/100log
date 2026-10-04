@@ -1,8 +1,8 @@
-import { availableSupportingEvidence, normalizeAliases, canonicalName, linkAlias, resolveFactNames, normalizeSupportingEvidence, addRejectedMemory } from './continuity-tools.js?v=1.9.20';
-import { applyManualKnowledgeDraft, collectedCharacterNames, sortMemoriesBySource, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, omissionReviewRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js?v=1.9.20';
-import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js?v=1.9.20';
-import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js?v=1.9.20';
-import { normalizeKnowledgeEvidence, KNOWLEDGE_LABELS, COMMITMENT_LABELS, commitmentState } from './core.js?v=1.9.20';
+import { availableSupportingEvidence, normalizeAliases, canonicalName, linkAlias, resolveFactNames, normalizeSupportingEvidence, addRejectedMemory } from './continuity-tools.js?v=1.9.21';
+import { applyManualKnowledgeDraft, collectedCharacterNames, sortMemoriesBySource, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, omissionReviewRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js?v=1.9.21';
+import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js?v=1.9.21';
+import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js?v=1.9.21';
+import { normalizeKnowledgeEvidence, KNOWLEDGE_LABELS, COMMITMENT_LABELS, commitmentState } from './core.js?v=1.9.21';
 
 const NAME = 'hundredlog';
 const LEGACY_NAME = 'memorybean';
@@ -1774,16 +1774,22 @@ export function installMemoryHooks(ctx = context()) {
     };
     on('GENERATION_AFTER_COMMANDS', async (type, eventData, dryRun) => {
         if (dryRun || ['quiet', 'impersonate'].includes(type) || eventData?.quiet_prompt) return;
-        // A utility adapter can emit this event while our collection is awaiting it.
-        // Waiting for memoryRun here would make the collection wait for itself.
-        if (activeCollectionJob) return;
+        if (!settings().autoMemory) return;
         normalGenerating = true;
-        if (memoryRun) await memoryRun;
-        if (sourceMutationTimer !== null) { clearTimeout(sourceMutationTimer); sourceMutationTimer = null; }
-        const mutation = await processSourceMutation({ queueCollection: false });
-        if (mutation.changed && !mutation.compacted) { memoryPending = true; memoryForcePending = true; }
-        if (memoryPending && !busy && !extracting && !translating) await syncMemories({ force: memoryForcePending });
-        await clearLegacyPrompt();
+        // A utility adapter can emit this event while our collection is awaiting it.
+        // ST awaits this hook BEFORE reading/clearing/saving the user's input.
+        // Never await memoryRun or start an AI collection on this critical path.
+        if (activeCollectionJob) return;
+        try {
+            if (sourceMutationTimer !== null) { clearTimeout(sourceMutationTimer); sourceMutationTimer = null; }
+            const mutation = await processSourceMutation({ queueCollection: false });
+            if (mutation.changed && !mutation.compacted) { memoryPending = true; memoryForcePending = true; }
+            // Pending work is resumed by the generation-end/render hooks.
+            await clearLegacyPrompt();
+        } catch (error) {
+            // Memory maintenance failure must not reject ST's send event.
+            diagnosticError('규칙 저장', error, { site: 1776 });
+        }
     });
     on('CHARACTER_MESSAGE_RENDERED', () => scheduleMemory());
     on('GENERATION_STARTED', (type, _options, dryRun) => diagnostic('generation', { mode: type, dryRun: Boolean(dryRun), busy }));
@@ -2279,7 +2285,7 @@ async function main() {
     const ctx = context();
     installMemoryHooks(ctx);
     if ($id('key')) { registerDeveloperTitle($id('title')); addWandButton(); return; }
-    const response = await diagnosticFetch(new URL('./settings.html?v=1.9.20', import.meta.url), { credentials: 'same-origin' });
+    const response = await diagnosticFetch(new URL('./settings.html?v=1.9.21', import.meta.url), { credentials: 'same-origin' });
     if (!response.ok) throw new Error(`설정 화면 파일을 읽지 못했어요 (${response.status}).`);
     const html = await response.text();
     // Keep the panel mounted for event bindings, but expose it only through the wand.
