@@ -50,7 +50,7 @@ function harness(handler) {
         generateQuietPrompt: async () => { generationCount++; return 'A'.repeat(25000) + 'END'; }, saveSettingsDebounced() {} };
     const store = { facts: [{ id: 'fact', text: 'A plan was made.', active: true, knowledge: {} }] };
     const sandbox = { ...continuity, messageSignature,
-        sourceChatId:()=> 'chat-a', AbortController, activeReviewJob: null, apiKey: () => 'fake-key', context: () => ctx, chatKey: (c) => c.chatId,
+        sourceChatId:()=> 'chat-a', AbortController, activeCollectionJob:null, translationBackgroundSafe:false, activeReviewJob: null, apiKey: () => 'fake-key', context: () => ctx, chatKey: (c) => c.chatId,
         traceGeneration: async (_stage, action) => action(), chatState: (v) => (v.chatState ??= {}), renderReviewReport() {}, diagnostic() {}, diagnosticError() {}, traceDiagnostic: async (_stage, action) => action(),
         diagnosticFetch: (...args) => sandbox.fetch(...args),
         ST_JEV_ROUTE: '/relay', JEV_URL: 'https://example.invalid/jev', ST_STRIP: [], lastJevTransport: '',
@@ -411,4 +411,88 @@ test('separate profile keeps its own request budget',async()=>{
  h.ctx.ConnectionManagerRequestService={getSupportedProfiles:()=>[{id:'collector'}],sendRequest:async(...a)=>{args=a;return 'collected';}};
  await h.sandbox.generateUtility(h.ctx,'facts','collector',6000);
  assert.equal(args[2],6000);
+});
+
+for(const kind of ['extracting','translating']) test(`${kind}: isolated background work still permits hidden draft and JEV`,async()=>{
+ const h=cancellableHarness();h.sandbox.busy=false;h.sandbox[kind]=true;
+ Object.assign(h.sandbox,{settings:()=>({autoMemory:true,developerMemorySelection:false}),
+  activeCollectionJob:{backgroundSafe:true},translationBackgroundSafe:true});
+ h.ctx.chat=[{is_user:true,mes:'hello'}];
+ vm.runInContext(source.slice(source.indexOf('globalThis.hundredlogGenerationInterceptor'),source.indexOf('function closeWand(')),h.sandbox);
+ let handoff;
+ h.sandbox.setTimeout=(fn,ms)=>{if(ms===300){handoff=fn;return 1000;} return 1001;};
+ let aborted=0;await h.sandbox.hundredlogGenerationInterceptor([],1000,()=>aborted++,'normal');
+ assert.equal(aborted,1);assert.equal(typeof handoff,'function'); // replaces normal generation, does not abandon it
+ await h.sandbox.runHidden('chat-a',h.ctx.chat[0],null,'normal',null,h.sandbox.activeReviewJob);
+ assert.equal(h.generationCount(),1);assert.equal(h.requests.length,1);assert.equal(h.published.length,1);
+ assert.equal(h.sandbox.data().chatState.lastReview.status,'passed');
+});
+
+test('collection changing nested stored knowledge during draft cannot change this reply baseline',async()=>{
+ const h=harness(()=>reply()); const f=h.sandbox.data().facts[0];f.kind='commitment';f.knowledge={Speaker:'unknown'};f.commitment={status:'planned'};
+ h.ctx.generateQuietPrompt=async()=>{f.text='Changed during background collection';f.knowledge.Speaker='known';f.commitment.status='resolved';return 'reply';};
+ await h.run();const payload=JSON.parse(h.requests[0].options.body).custom_include_body;
+ const remembered=JSON.parse(payload).state.established_facts[0];
+ assert.equal(remembered.text,'A plan was made.');assert.equal(remembered.knowledge.Speaker,'unknown');assert.equal(remembered.progress,'planned');
+});
+
+test('main background utility uses isolated payload/service and dedicated abort signal',async()=>{
+ const h=harness(()=>reply()); const signal=new AbortController().signal;let payloadOptions,request;
+ h.ctx.mainApi='openai';h.ctx.getChatCompletionModel=()=> 'user-model';
+ h.ctx.chatCompletionSettings=Object.freeze({openai_max_tokens:12345});
+ h.ctx.generateRaw=()=>{throw Error('must not use shared generation lifecycle');};
+ h.ctx.ChatCompletionService={presetToGeneratePayload:async(preset,overrides,opts)=>{
+  payloadOptions=opts;return {...opts,max_tokens:h.ctx.chatCompletionSettings.openai_max_tokens};
+ },sendRequest:async(...args)=>{request=args;return {content:'facts'};}};
+ assert.equal(await h.sandbox.generateUtility(h.ctx,'collect','',6000,signal),'facts');
+ assert.equal(payloadOptions.model,'user-model');assert.equal(Object.hasOwn(payloadOptions,'max_tokens'),false);
+ assert.equal(request[0].max_tokens,12345);assert.equal(request[0].stream,false);assert.equal(request[2],signal);
+ assert.equal(h.ctx.chatCompletionSettings.openai_max_tokens,12345);
+});
+
+test('aborted background utility cannot send after payload preparation',async()=>{
+ const h=harness(()=>reply());const control=new AbortController();let sent=0;
+ h.ctx.mainApi='openai';h.ctx.getChatCompletionModel=()=> 'model';
+ h.ctx.ChatCompletionService={presetToGeneratePayload:async()=>{control.abort(Error('stopped'));return {};},sendRequest:async()=>{sent++;}};
+ await assert.rejects(h.sandbox.generateUtility(h.ctx,'facts','',6000,control.signal),/stopped/);assert.equal(sent,0);
+});
+
+const schedulingCode=source.slice(source.indexOf('function scheduleMemory('),source.indexOf('function applyDetectedSummaryCompaction(')).replace('export ', '');
+function backgroundScheduler(){
+ const timers=[];const box={memoryPending:false,memoryForcePending:false,memoryRun:null,memoryTimer:null,extracting:false,translating:false,busy:true,normalGenerating:true,
+  settings:()=>({autoMemory:true,extractionProfileId:'collector'}),context:()=>({}),chatKey:()=> 'chat',memoryDue:()=>true,render(){},supportsBackgroundUtility:()=>true,
+  setTimeout:(fn)=>{timers.push(fn);return timers.length;},clearTimeout(){}};
+ vm.createContext(box);vm.runInContext(schedulingCode,box);return {box,timers};
+}
+test('background scheduler starts during reply generation, and prevents duplicate collectors',async()=>{
+ const {box,timers}=backgroundScheduler();let finish,calls=0;
+ box.performMemorySync=()=>{calls++;box.extracting=true;return new Promise(r=>finish=r);};
+ box.scheduleMemory();timers.shift()();assert.equal(calls,1);
+ const run=box.memoryRun;box.scheduleMemory();assert.equal(timers.length,0);assert.equal(box.memoryPending,true);
+ assert.equal(box.syncMemories(),run);assert.equal(calls,1);
+ box.extracting=false;finish();await run;await Promise.resolve();assert.equal(timers.length,1);
+});
+test('legacy nonisolated utility does not start alongside reply generation',()=>{
+ const {box,timers}=backgroundScheduler();box.supportsBackgroundUtility=()=>false;
+ let called=0;box.performMemorySync=()=>{called++;return Promise.resolve();};
+ box.scheduleMemory();timers.shift()();assert.equal(called,0);assert.equal(box.memoryPending,true);
+});
+
+test('collection stop aborts only its own request, not the reply review',()=>{
+ const h=harness(()=>reply());h.sandbox.activeCollectionJob={controller:new AbortController()};h.sandbox.activeReviewJob={controller:new AbortController()};
+ Object.assign(h.sandbox,{stopExtractionRequested:false,memoryTimer:null,memoryForcePending:true});
+ vm.runInContext(source.slice(source.indexOf('function stopCollection('),source.indexOf('function refreshDiagnosticPanel(')),h.sandbox);
+ h.sandbox.stopCollection();assert.equal(h.sandbox.activeCollectionJob.controller.signal.aborted,true);assert.equal(h.sandbox.activeReviewJob.controller.signal.aborted,false);
+});
+
+test('reply stop leaves independent collection running',()=>{
+ const h=cancellableHarness();h.sandbox.activeCollectionJob={controller:new AbortController()};h.sandbox.activeReviewJob={controller:new AbortController()};
+ h.stop();assert.equal(h.sandbox.activeReviewJob.controller.signal.aborted,true);assert.equal(h.sandbox.activeCollectionJob.controller.signal.aborted,false);
+});
+
+test('review status never overwrites collection progress',()=>{
+ const box={busy:true,statusText:'',collectionStatusText:'',refreshCollectionStatus(){},$id:()=>null};vm.createContext(box);
+ vm.runInContext(source.slice(source.indexOf('function status('),source.indexOf('function setDeveloperUnlocked(')),box);
+ box.setCollectionStatus('collection 3/6');box.status('reviewing reply');assert.equal(box.collectionStatusText,'collection 3/6');
+ box.setCollectionStatus('collection 6/6');assert.equal(box.statusText,'reviewing reply');
 });

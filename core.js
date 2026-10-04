@@ -1,4 +1,4 @@
-import { canonicalName, normalizeSupportingEvidence } from './continuity-tools.js?v=1.9.21';
+import { canonicalName, normalizeSupportingEvidence } from './continuity-tools.js?v=1.9.22';
 export const RECENT_MESSAGE_LIMIT = 100;
 export const MAX_FACTS = 40;
 export const MAX_HISTORY = 200;
@@ -367,6 +367,14 @@ export function availableProfiles(ctx) {
     return (Array.isArray(profiles) ? profiles : []).filter((profile) => typeof profile?.id === 'string' && profile.id);
 }
 
+export function supportsBackgroundUtility(ctx, profileId = '') {
+    if (profileId) return typeof ctx.ConnectionManagerRequestService?.sendRequest === 'function';
+    return ctx.mainApi === 'openai'
+        && typeof ctx.getChatCompletionModel === 'function'
+        && typeof ctx.ChatCompletionService?.presetToGeneratePayload === 'function'
+        && typeof ctx.ChatCompletionService?.sendRequest === 'function';
+}
+
 export async function generateUtility(ctx, prompt, profileId = '', maxTokens = 6000, signal = undefined) {
     let response;
     if (profileId) {
@@ -376,6 +384,16 @@ export async function generateUtility(ctx, prompt, profileId = '', maxTokens = 6
         if (typeof service?.sendRequest !== 'function') throw new Error('이 실리태번에서 별도 연결 프로필 호출을 지원하지 않아요. 실리태번을 업데이트해 주세요.');
         response = await service.sendRequest(profileId, [{ role: 'user', content: prompt }], maxTokens,
             { stream: false, extractData: true, includePreset: false, includeInstruct: true, ...(signal ? { signal } : {}) });
+    } else if (supportsBackgroundUtility(ctx)) {
+        // ST clones current settings here; no generateRaw/quiet lifecycle,
+        // temporary response-length changes, or global stop-event ownership.
+        const service = ctx.ChatCompletionService;
+        const payload = await service.presetToGeneratePayload({}, {}, {
+            messages: [{ role: 'user', content: prompt }],
+            model: ctx.getChatCompletionModel(), stream: false,
+        });
+        if (signal?.aborted) throw signal.reason ?? new Error('Collection cancelled');
+        response = await service.sendRequest(payload, true, signal);
     } else {
         if (typeof ctx.generateRaw !== 'function') throw new Error('현재 메인 API를 호출할 수 없어요. 별도 연결 프로필을 선택해 주세요.');
         // responseLength makes ST temporarily overwrite the shared main API
