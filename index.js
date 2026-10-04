@@ -953,7 +953,7 @@ function excludedKnowledgeComposer(entry, draft, value, ctx, editExisting = fals
     const panel = document.createElement('div'); panel.className = 'hundredlog-manual-knowledge';
     const heading = document.createElement('div'); heading.className = 'hundredlog-knowledge-heading';
     const label = document.createElement('strong'); label.textContent = '인물별 지식';
-    const hint = document.createElement('span'); hint.textContent = '한 번에 저장'; heading.append(label, hint);
+    heading.append(label);
     const help = document.createElement('p'); help.className = 'hundredlog-help';
     help.textContent = editExisting ? '미지정·×는 저장할 때 해당 지식을 삭제해요.' : '상태를 선택한 인물만 함께 저장해요.';
     const proofs = document.createElement('details'); proofs.className = 'hundredlog-bulk-proof';
