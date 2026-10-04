@@ -1,5 +1,5 @@
 // Diagnostics contain fixed labels and allowlisted metadata only. Never serialize payloads/errors.
-export const DIAGNOSTIC_VERSION = '1.9.6';
+export const DIAGNOSTIC_VERSION = '1.9.7';
 const STORAGE = 'hundredlog.diagnostics.v1';
 const LIMIT = 1;
 const labels = {
