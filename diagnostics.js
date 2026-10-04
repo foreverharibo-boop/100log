@@ -1,5 +1,5 @@
 // Diagnostics contain fixed labels and allowlisted metadata only. Never serialize payloads/errors.
-export const DIAGNOSTIC_VERSION = '1.9.5';
+export const DIAGNOSTIC_VERSION = '1.9.6';
 const STORAGE = 'hundredlog.diagnostics.v1';
 const LIMIT = 1;
 const labels = {
@@ -12,6 +12,7 @@ const stages = ['초기화', '메인 AI 초안 생성', '메인 AI 재작성', '
     '생성 준비', '답변 표시·저장', '규칙 수집', '규칙 청소', '규칙 파싱', '청소 파싱', '보조 AI', '규칙 저장',
     '번역', '화면', '설정 저장', '미처리', '기타'];
 const enums = {
+    collectionStage: ['수집 준비', '정리 AI 응답 대기', 'JEV 사실·지식 검증', 'JEV 분리 규칙 검증', 'JEV 청소 검증'],
     stage: stages,
     route: ['실리태번 JEV 중계', 'JEV 직접', '실리태번 프록시', 'Google 번역', 'Google 임베딩', '설정 파일', '기타'],
     mode: ['normal', 'swipe', 'regenerate', 'regen', 'retry', 'quiet', 'impersonate', 'continue', '기타'],
@@ -20,7 +21,7 @@ const enums = {
     category: ['요청 한도', '서버 오류', '인증·권한', '요청 형식·크기', '시간 초과', '연결 실패', 'JSON·판정 형식', '빈 응답', '저장소', '대화 변경', '설정 충돌', '생성 중단', '코드 실행', '기타'],
     errorType: ['Error', 'TypeError', 'SyntaxError', 'ReferenceError', 'RangeError', 'TimeoutError', 'AbortError', 'QuotaExceededError', 'SecurityError', '기타'],
 };
-const numeric = new Set(['http', 'ms', 'attempt', 'waitMs', 'questions', 'rules', 'chars', 'count', 'site', 'line', 'column', 'id', 'requests']);
+const numeric = new Set(['http', 'ms', 'attempt', 'waitMs', 'questions', 'rules', 'chars', 'count', 'site', 'line', 'column', 'id', 'requests', 'collectionSeconds', 'stageSeconds']);
 const boolean = new Set(['busy', 'extracting', 'translating', 'enabled', 'hasKey', 'retryable', 'dryRun', 'profile', 'pending']);
 const files = ['index.js', 'core.js', 'memory-engine.js', 'diagnostics.js'];
 let entries = [];

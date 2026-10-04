@@ -327,7 +327,7 @@ export function availableProfiles(ctx) {
     return (Array.isArray(profiles) ? profiles : []).filter((profile) => typeof profile?.id === 'string' && profile.id);
 }
 
-export async function generateUtility(ctx, prompt, profileId = '', maxTokens = 6000) {
+export async function generateUtility(ctx, prompt, profileId = '', maxTokens = 6000, signal = undefined) {
     let response;
     if (profileId) {
         const profile = availableProfiles(ctx).find((item) => item.id === profileId);
@@ -335,7 +335,7 @@ export async function generateUtility(ctx, prompt, profileId = '', maxTokens = 6
         const service = ctx.ConnectionManagerRequestService;
         if (typeof service?.sendRequest !== 'function') throw new Error('이 실리태번에서 별도 연결 프로필 호출을 지원하지 않아요. 실리태번을 업데이트해 주세요.');
         response = await service.sendRequest(profileId, [{ role: 'user', content: prompt }], maxTokens,
-            { stream: false, extractData: true, includePreset: false, includeInstruct: true });
+            { stream: false, extractData: true, includePreset: false, includeInstruct: true, ...(signal ? { signal } : {}) });
     } else {
         if (typeof ctx.generateRaw !== 'function') throw new Error('현재 메인 API를 호출할 수 없어요. 별도 연결 프로필을 선택해 주세요.');
         response = await ctx.generateRaw({ prompt, responseLength: maxTokens });

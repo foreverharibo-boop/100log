@@ -20,6 +20,8 @@ const ST_STRIP = ['messages', 'prompt', 'stream', 'temperature', 'max_tokens', '
 let busy = false;
 let activeReviewJob = null;
 let extracting = false;
+let activeCollectionJob = null;
+let collectionStatusText = '';
 let translating = false;
 let stopTranslationRequested = false;
 let stopExtractionRequested = false;
@@ -84,9 +86,59 @@ function waitForJevRetry(ms, job) {
 const generateUtility = (ctx, prompt, profileId) => traceDiagnostic('보조 AI',
     () => rawGenerateUtility(ctx, prompt, profileId), { profile: Boolean(profileId) });
 
+// Interrupt our wait even if a connection-profile adapter cannot abort its request.
+// The adapter's late result is consumed but must never reach rule application.
+function collectionStep(job, action, stage) {
+    if (!job) return action();
+    checkReviewJob(job);
+    if (stage) { job.stage = stage; job.stageStarted = Date.now(); refreshCollectionStatus(); }
+    return new Promise((resolve, reject) => {
+        const signal = job.controller.signal;
+        const stopped = () => reject(reviewCancelledError());
+        signal.addEventListener('abort', stopped, { once: true });
+        Promise.resolve().then(() => { checkReviewJob(job); return action(); }).then(
+            (result) => { signal.removeEventListener('abort', stopped); if (!signal.aborted) resolve(result); },
+            (error) => { signal.removeEventListener('abort', stopped); if (!signal.aborted) reject(error); },
+        );
+    });
+}
+
+function collectUtility(ctx, prompt, profileId, job) {
+    return traceDiagnostic('보조 AI', () => collectionStep(job,
+        () => rawGenerateUtility(ctx, prompt, profileId, 6000, job?.controller.signal), '정리 AI 응답 대기'), { profile: Boolean(profileId) });
+}
+
+function stopCollection() {
+    stopExtractionRequested = true;
+    memoryPending = false; memoryForcePending = false;
+    if (memoryTimer !== null) { clearTimeout(memoryTimer); memoryTimer = null; }
+    activeCollectionJob?.controller.abort(reviewCancelledError());
+}
+
+function refreshDiagnosticPanel() {
+    const output = $id('diagnostics-log');
+    if (output && document.activeElement !== output) output.value = diagnosticReport(diagnosticSnapshot());
+}
+
+function refreshCollectionStatus() {
+    const job = activeCollectionJob;
+    const elapsed = job ? Math.max(0, Math.floor((Date.now() - job.stageStarted) / 1000)) : 0;
+    const text = collectionStatusText ? collectionStatusText + (job ? ` · 현재 단계 ${elapsed}초` : '') : '';
+    for (const id of ['collection-status', 'collection-settings-status']) {
+        const node = $id(id);
+        if (node) { node.textContent = text; node.hidden = !text; }
+    }
+    refreshDiagnosticPanel();
+}
+
 function diagnosticSnapshot() {
     // Read without side effects: logging a storage failure must not trigger another snapshot error.
     const snapshot = { busy, extracting, translating, pending: memoryPending };
+    if (activeCollectionJob) {
+        snapshot.collectionStage = activeCollectionJob.stage;
+        snapshot.collectionSeconds = Math.max(0, Math.floor((Date.now() - activeCollectionJob.started) / 1000));
+        snapshot.stageSeconds = Math.max(0, Math.floor((Date.now() - activeCollectionJob.stageStarted) / 1000));
+    }
     try {
         snapshot.enabled = Boolean(context().extensionSettings?.[NAME]?.autoMemory);
         snapshot.hasKey = Boolean(localStorage.getItem(KEY_STORAGE) || localStorage.getItem(LEGACY_KEY_STORAGE));
@@ -131,7 +183,7 @@ function bindDiagnosticPanel() {
 }
 
 function apiKey() {
-    try { return localStorage.getItem(KEY_STORAGE)?.trim() || localStorage.getItem(LEGACY_KEY_STORAGE)?.trim() || ''; } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 134 }); return ''; }
+    try { return localStorage.getItem(KEY_STORAGE)?.trim() || localStorage.getItem(LEGACY_KEY_STORAGE)?.trim() || ''; } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 186 }); return ''; }
 }
 
 function embeddingProvider() {
@@ -139,7 +191,7 @@ function embeddingProvider() {
 }
 
 function embeddingKey(provider = embeddingProvider()) {
-    try { return localStorage.getItem(`${EMBEDDING_KEY_PREFIX}${provider}`)?.trim() || ''; } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 142 }); return ''; }
+    try { return localStorage.getItem(`${EMBEDDING_KEY_PREFIX}${provider}`)?.trim() || ''; } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 194 }); return ''; }
 }
 
 function embeddingLabel(provider = embeddingProvider()) {
@@ -147,7 +199,7 @@ function embeddingLabel(provider = embeddingProvider()) {
 }
 
 function isDeveloperUnlocked() {
-    try { return localStorage.getItem(DEVELOPER_UNLOCK_STORAGE) === 'true'; } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 150 }); return false; }
+    try { return localStorage.getItem(DEVELOPER_UNLOCK_STORAGE) === 'true'; } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 202 }); return false; }
 }
 
 function translationProvider() {
@@ -166,7 +218,7 @@ async function googleTranslateText(value) {
     let response;
     try {
         response = await diagnosticFetch(url.toString(), { credentials: 'omit', referrerPolicy: 'no-referrer', signal: AbortSignal.timeout(30000) });
-    } catch (error) { diagnosticError('기타', error, { site: 169 });
+    } catch (error) { diagnosticError('기타', error, { site: 221 });
         if (error?.name === 'TimeoutError') throw new Error('Google 번역 연결 시간이 초과됐어요.');
         const headers = context().getRequestHeaders?.();
         if (!headers) throw new Error('Google 번역 직접 연결이 차단됐고 실리태번 프록시를 사용할 수 없어요.');
@@ -174,11 +226,11 @@ async function googleTranslateText(value) {
             response = await diagnosticFetch(`/proxy/${encodeURIComponent(url.toString())}`, {
                 headers, credentials: 'same-origin', signal: AbortSignal.timeout(30000)
             });
-        } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 177 }); throw new Error('Google 번역에 연결하지 못했어요. 실리태번 서버의 인터넷 연결을 확인해 주세요.'); }
+        } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 229 }); throw new Error('Google 번역에 연결하지 못했어요. 실리태번 서버의 인터넷 연결을 확인해 주세요.'); }
         if (response.status === 404) throw new Error('실리태번 내장 프록시가 꺼져 있어요. config.yaml에서 enableCorsProxy: true로 바꾸고 서버를 다시 시작해 주세요.');
     }
     let result;
-    try { result = await response.json(); } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 181 }); throw new Error('Google 번역 응답을 읽지 못했어요.'); }
+    try { result = await response.json(); } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 233 }); throw new Error('Google 번역 응답을 읽지 못했어요.'); }
     if (!response.ok) {
         if (response.status === 429) throw new Error('Google 번역 요청이 너무 많아요. 잠시 후 다시 시도해 주세요.');
         throw new Error(`Google 번역 오류 (${response.status})`);
@@ -226,7 +278,7 @@ async function requestGoogleJson(url, key, payload, label) {
             method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders }, body: JSON.stringify(payload),
             credentials: 'omit', referrerPolicy: 'no-referrer', signal: AbortSignal.timeout(45000)
         });
-    } catch (error) { diagnosticError('기타', error, { site: 229 });
+    } catch (error) { diagnosticError('기타', error, { site: 281 });
         if (error?.name === 'TimeoutError') throw new Error(`${label} 임베딩 연결 시간이 초과됐어요.`);
         const headers = context().getRequestHeaders?.();
         if (!headers) throw new Error(`${label} 직접 연결이 차단됐고 실리태번 프록시를 사용할 수 없어요.`);
@@ -235,11 +287,11 @@ async function requestGoogleJson(url, key, payload, label) {
                 method: 'POST', headers: { ...headers, 'Content-Type': 'application/json', ...authHeaders }, body: JSON.stringify(payload),
                 credentials: 'same-origin', signal: AbortSignal.timeout(45000)
             });
-        } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 238 }); throw new Error(`${label}에 연결하지 못했어요. 실리태번 서버의 인터넷 연결을 확인해 주세요.`); }
+        } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 290 }); throw new Error(`${label}에 연결하지 못했어요. 실리태번 서버의 인터넷 연결을 확인해 주세요.`); }
         if (response.status === 404) throw new Error('실리태번 내장 프록시가 꺼져 있어요. config.yaml에서 enableCorsProxy: true로 바꾸고 서버를 다시 시작해 주세요.');
     }
     let result;
-    try { result = await response.json(); } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 242 }); throw new Error(`${label} 임베딩 응답을 읽지 못했어요.`); }
+    try { result = await response.json(); } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 294 }); throw new Error(`${label} 임베딩 응답을 읽지 못했어요.`); }
     if (!response.ok || result?.error) {
         const detail = String(result?.error?.message ?? result?.error ?? '').slice(0, 180);
         if ([400, 401, 403].includes(response.status)) throw new Error(`${label} 키 또는 사용 권한을 확인해 주세요${detail ? `: ${detail}` : ''}`);
@@ -309,7 +361,7 @@ async function readJevResponse(response, transport, questions, job = null) {
     }
     let result;
     try { result = await response.json(); checkReviewJob(job); }
-    catch (diagnosticCaughtError) { checkReviewJob(job); diagnosticError('기타', diagnosticCaughtError, { site: 312 }); throw jevRequestError(`JEV 응답을 읽지 못했어요. [${transport}]`, { retryable: true }); }
+    catch (diagnosticCaughtError) { checkReviewJob(job); diagnosticError('기타', diagnosticCaughtError, { site: 364 }); throw jevRequestError(`JEV 응답을 읽지 못했어요. [${transport}]`, { retryable: true }); }
     if (result?.error) {
         // Some relay servers wrap upstream errors in an HTTP 200 response.
         // Inspect for classification only; never display the raw upstream body.
@@ -366,7 +418,7 @@ async function requestJevOnce(state, questions, key, job = null) {
                 })
             });
         }
-    } catch (diagnosticCaughtError) { checkReviewJob(job); diagnosticError('기타', diagnosticCaughtError, { site: 369 });
+    } catch (diagnosticCaughtError) { checkReviewJob(job); diagnosticError('기타', diagnosticCaughtError, { site: 421 });
         response = null;
     }
     if (response && ![404, 405].includes(response.status)) {
@@ -378,7 +430,7 @@ async function requestJevOnce(state, questions, key, job = null) {
             method: 'POST', signal, headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
             body, credentials: 'omit', referrerPolicy: 'no-referrer'
         });
-    } catch (diagnosticCaughtError) { checkReviewJob(job); diagnosticError('기타', diagnosticCaughtError, { site: 381 });
+    } catch (diagnosticCaughtError) { checkReviewJob(job); diagnosticError('기타', diagnosticCaughtError, { site: 433 });
         const headers = context().getRequestHeaders?.();
         if (!headers) throw jevRequestError('JEV 직접 연결이 실패했고 실리태번 요청 헤더를 가져오지 못했어요.', { retryable: true });
         try {
@@ -387,7 +439,7 @@ async function requestJevOnce(state, questions, key, job = null) {
                 body, credentials: 'same-origin'
             });
             transport = '실리태번 내장 프록시';
-        } catch (diagnosticCaughtError) { checkReviewJob(job); diagnosticError('기타', diagnosticCaughtError, { site: 390 });
+        } catch (diagnosticCaughtError) { checkReviewJob(job); diagnosticError('기타', diagnosticCaughtError, { site: 442 });
             throw jevRequestError('JEV 연결에 실패했어요. 서버 인터넷 연결을 확인해 주세요.', { retryable: true });
         }
         if (response.status === 404) {
@@ -421,7 +473,7 @@ async function requestJev(state, questions, job = null) {
                 if (!sameChat()) throw new Error('대화가 바뀌어 JEV 판정을 적용하지 않았어요.');
                 diagnostic('jevDone', { attempt: attempt + 1, ms: Date.now() - attemptStarted, questions: Object.keys(questions).length });
                 return result;
-            } catch (error) { checkReviewJob(job); diagnosticError('기타', error, { site: 424 });
+            } catch (error) { checkReviewJob(job); diagnosticError('기타', error, { site: 476 });
                 if (!error.retryable) throw error;
                 if (attempt >= retryDelays.length) {
                     throw jevRequestError(`${error.message} 자동 재시도 2회도 실패했어요.`, { status: error.status });
@@ -468,7 +520,7 @@ function knowledgeReviewOptions(operation, character, rows, contextRows, prior) 
     return { sourceCriteria, proofs };
 }
 
-export async function reviewExtractedKnowledge(operations, rows, contextRows = [], currentFacts = []) {
+export async function reviewExtractedKnowledge(operations, rows, contextRows = [], currentFacts = [], job = null) {
     const reviewed = operations.map((operation) => ({ ...operation, knowledge: normalizeKnowledge(operation.knowledge),
         knowledgeEvidence: normalizeKnowledgeEvidence(operation.knowledgeEvidence, operation.knowledge) }));
     const factChecks = reviewed.map((operation, operationIndex) => ({ kind: 'fact', operationIndex, questionId: `f${operationIndex}` }));
@@ -491,6 +543,10 @@ export async function reviewExtractedKnowledge(operations, rows, contextRows = [
     const rejectedOperations = new Set();
     const compoundOperations = new Set();
     for (let start = 0; start < checks.length; start += 10) {
+        if (job) {
+            checkReviewJob(job);
+            status(`JEV 사실·지식 검증 중 · ${Math.floor(start / 10) + 1}/${Math.ceil(checks.length / 10)}묶음`);
+        }
         const batch = checks.slice(start, start + 10);
         const reviewChecks = batch.map((check) => {
             const { operationIndex } = check;
@@ -557,7 +613,7 @@ export async function reviewExtractedKnowledge(operations, rows, contextRows = [
             new_messages: rows.map(({ id, role, name, text }) => ({ id, role, name, text })),
             review_checks: reviewChecks,
             current_commitments: currentFacts.filter((fact) => isCurrent(fact) && fact.kind === 'commitment').map((fact) => ({ id: fact.id, text: fact.text, original_goal: fact.commitment?.originalText || fact.text, progress: commitmentState(fact) })),
-        }, questions);
+        }, questions, job);
         batch.forEach((check) => {
             const answer = body.answers?.[check.questionId];
             const confidence = Number(answer?.confidence);
@@ -701,7 +757,7 @@ function ensureCharacterUuid(ctx = context()) {
         character.data.extensions[IDENTITY_FIELD] = payload;
         if (!embedded || embedded !== uuid) {
             Promise.resolve(ctx.writeExtensionField?.(characterId, IDENTITY_FIELD, payload))
-                .catch((error) => diagnosticError('초기화', error, { site: 704 }));
+                .catch((error) => diagnosticError('초기화', error, { site: 760 }));
         }
     }
     if (registryChanged) ctx.saveSettingsDebounced?.();
@@ -775,7 +831,7 @@ function data(create = true) {
         mergeLegacyChatData(value, legacy, sourceChatId(ctx));
         ctx.chatMetadata.hundredlogCharacterStoreMigration = ownerKey;
         ctx.saveSettingsDebounced?.();
-        void Promise.resolve(ctx.saveMetadata?.()).catch((error) => diagnosticError('초기화', error, { site: 778 }));
+        void Promise.resolve(ctx.saveMetadata?.()).catch((error) => diagnosticError('초기화', error, { site: 834 }));
     }
     value.embeddingIndex ??= { provider: '', model: '', entries: {} };
     value.embeddingIndex.entries ??= {};
@@ -805,8 +861,8 @@ function status(value) {
     statusText = value;
     if ($id('status')) $id('status').textContent = value;
     if (extracting) {
-        const node = $id('collection-status');
-        if (node) { node.textContent = value; node.hidden = false; }
+        collectionStatusText = value;
+        refreshCollectionStatus();
     }
 }
 
@@ -814,7 +870,7 @@ function setDeveloperUnlocked(unlocked) {
     try {
         if (unlocked) localStorage.setItem(DEVELOPER_UNLOCK_STORAGE, 'true');
         else localStorage.removeItem(DEVELOPER_UNLOCK_STORAGE);
-    } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 817 }); /* local storage can be unavailable in restricted browser contexts */ }
+    } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 873 }); /* local storage can be unavailable in restricted browser contexts */ }
     render();
 }
 
@@ -895,7 +951,7 @@ function appendOriginal(parent, record) {
 function refreshProfiles() {
     if (!$id('extraction-profile')) return;
     let profiles = [];
-    try { profiles = availableProfiles(context()); } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 898 }); /* Keep saved choices visible for correction. */ }
+    try { profiles = availableProfiles(context()); } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 954 }); /* Keep saved choices visible for correction. */ }
     for (const [id, key] of [['extraction-profile', 'extractionProfileId'], ['translation-profile', 'translationProfileId']]) {
         const select = $id(id);
         const choices = id === 'translation-profile' ? [['@extraction', '사실 추출용 프로필과 동일']] : [];
@@ -948,7 +1004,7 @@ export async function translateRecords(mode = 'missing') {
             render();
         }
         status(stopTranslationRequested ? `${done}/${targets.length}개 번역 후 중단했어요. 완료한 번역은 저장됐어요.` : `${done}개를 한국어로 번역했어요. 원문 보기에서 원래 내용을 확인할 수 있어요.`);
-    } catch (error) { diagnosticError('번역', error, { site: 951 }); status(`번역 중단 · ${done}개 저장됨: ${error.message}`); }
+    } catch (error) { diagnosticError('번역', error, { site: 1007 }); status(`번역 중단 · ${done}개 저장됨: ${error.message}`); }
     finally { translating = false; render(); if (memoryPending) scheduleMemory(); }
 }
 
@@ -1103,6 +1159,7 @@ function knowledgeEditor(record, persist) {
 }
 
 function render() {
+    refreshDiagnosticPanel();
     if (!$id('facts')) return;
     const value = data();
     renderReviewReport();
@@ -1255,7 +1312,7 @@ function render() {
             try {
                 approveFact(value, restored, current?.active && isCurrent(current) ? current.id : null);
                 await save(); render(); status('현재 기억으로 복원하고 자동 변경 잠금했어요.');
-            } catch (error) { diagnosticError('기타', error, { site: 1258 }); status(error.message); }
+            } catch (error) { diagnosticError('기타', error, { site: 1315 }); status(error.message); }
         }));
         $id('history').append(item);
     }
@@ -1281,7 +1338,7 @@ function render() {
                 approveFact(value, candidate, replacement.value || null);
                 value.candidates = value.candidates.filter((entry) => entry.id !== candidate.id);
                 await save(); render();
-            } catch (error) { diagnosticError('기타', error, { site: 1284 }); status(error.message); }
+            } catch (error) { diagnosticError('기타', error, { site: 1341 }); status(error.message); }
         }));
         actions.append(makeButton('제외', async () => { value.candidates = value.candidates.filter((entry) => entry.id !== candidate.id); await save(); render(); }));
         item.append(actions);
@@ -1331,7 +1388,7 @@ function cleanupSignature(facts) {
     return JSON.stringify(facts.filter((fact) => fact.active && isCurrent(fact)).map((fact) => [fact.id, fact.text, fact.kind, fact.importance, fact.sourceId]));
 }
 
-export async function reviewCleanupActions(actions, value, rows) {
+export async function reviewCleanupActions(actions, value, rows, job = null) {
     const active = new Map((value.facts ?? []).filter((fact) => fact.active && isCurrent(fact)).map((fact) => [fact.id, fact]));
     if (!actions.length) return { actions: [], warnings: [], checked: 0, rejected: 0, conflictsResolved: 0, conflictsPending: 0, noKey: false };
     if (!apiKey()) return { actions: [], warnings: [], checked: 0, rejected: actions.length, conflictsResolved: 0, conflictsPending: 0, noKey: true };
@@ -1342,6 +1399,10 @@ export async function reviewCleanupActions(actions, value, rows) {
     }));
     const answersByIndex = new Map();
     for (let start = 0; start < actions.length; start += 20) {
+        if (job) {
+            checkReviewJob(job);
+            status(`JEV 청소 검증 중 · ${Math.floor(start / 20) + 1}/${Math.ceil(actions.length / 20)}묶음`);
+        }
         const batch = actions.slice(start, start + 20);
         const questions = {};
         batch.forEach((action, localIndex) => {
@@ -1370,7 +1431,7 @@ export async function reviewCleanupActions(actions, value, rows) {
             current_rules: rules,
             recent_messages: rows.map(({ id, role, name, text }) => ({ id, role, name, text })),
             proposed_actions: batch,
-        }, questions);
+        }, questions, job);
         batch.forEach((_action, localIndex) => answersByIndex.set(start + localIndex, body.answers?.[`c${start + localIndex}`]));
     }
     const approved = [];
@@ -1411,14 +1472,14 @@ export async function reviewCleanupActions(actions, value, rows) {
     return { actions: approved, warnings, checked: actions.length, rejected, conflictsResolved, conflictsPending, noKey: false };
 }
 
-async function runAutomaticCleanup(value, ctx, profileId, sameChat) {
+async function runAutomaticCleanup(value, ctx, profileId, sameChat, job = null) {
     const active = value.facts.filter((fact) => fact.active && isCurrent(fact));
     if (!settings().autoCleanup || active.length < settings().cleanupThreshold) return { merged: 0, archived: 0, conflicts: 0, changes: [], skipped: true };
     const signature = cleanupSignature(active);
     if (value.lastCleanupSignature === signature) return { merged: 0, archived: 0, conflicts: value.cleanupConflicts?.length ?? 0, changes: [], skipped: true };
     const rows = recentCleanupRows(ctx);
     status(`규칙 ${active.length}개에서 중복·종료·충돌을 자동 청소 중이에요…`);
-    const raw = await traceDiagnostic('규칙 청소', () => generateUtility(ctx, cleanupRequest(value.facts, rows), profileId), { rules: active.length });
+    const raw = await traceDiagnostic('규칙 청소', () => collectUtility(ctx, cleanupRequest(value.facts, rows), profileId, job), { rules: active.length });
     if (!sameChat()) return null;
     const actions = await traceDiagnostic('청소 파싱', () => parseCleanupActions(raw, value, rows));
     const proposedPairs = new Set(actions.filter((action) => action.action === 'conflict').map((action) => [...action.ids].sort().join('\u0000')));
@@ -1428,7 +1489,7 @@ async function runAutomaticCleanup(value, ctx, profileId, sameChat) {
         if (ids.length === 2 && !proposedPairs.has(pair)) { actions.push({ action: 'conflict', ids, reason: conflict.reason || '이전 청소에서 발견한 충돌' }); proposedPairs.add(pair); }
     }
     status(`Jev가 자동 청소 제안 ${actions.length}개를 원문과 기존 규칙으로 재검증 중이에요…`);
-    const review = await reviewCleanupActions(actions, value, rows);
+    const review = await collectionStep(job, () => reviewCleanupActions(actions, value, rows, job), 'JEV 청소 검증');
     if (!sameChat()) return null;
     if (review.noKey) return { merged: 0, archived: 0, conflicts: value.cleanupConflicts?.length ?? 0, changes: [], skipped: true, jevRequired: true };
     const result = { ...applyCleanupActions(value, review.actions, sourceChatId(ctx)), cleanupChecked: review.checked, cleanupRejected: review.rejected,
@@ -1542,12 +1603,13 @@ async function processSourceMutation({ queueCollection = true } = {}) {
 
 function queueSourceMutation() {
     memoryEpoch++;
+    activeCollectionJob?.controller.abort(reviewCancelledError());
     if (sourceMutationTimer !== null) clearTimeout(sourceMutationTimer);
     // Summary extensions often hide dozens of messages in a rapid burst. Wait for
     // that burst to finish so it is handled once instead of as dozens of edits.
     sourceMutationTimer = setTimeout(() => {
         sourceMutationTimer = null;
-        void processSourceMutation().catch((error) => { diagnosticError('규칙 저장', error, { site: 1550 }); status(error.message); });
+        void processSourceMutation().catch((error) => { diagnosticError('규칙 저장', error, { site: 1612 }); status(error.message); });
     }, 900);
 }
 
@@ -1559,11 +1621,15 @@ async function performMemorySync({ rebuildRecent = false, force = false } = {}) 
     const state = chatState(value, ctx);
     const currentSourceChatId = sourceChatId(ctx);
     const epoch = memoryEpoch;
-    const sameChat = () => chatKey(context()) === key && data(false) === value && epoch === memoryEpoch;
+    const job = { controller: new AbortController(), started: Date.now(), stageStarted: Date.now(), stage: '수집 준비' };
+    const sameOrigin = () => chatKey(context()) === key && data(false) === value && epoch === memoryEpoch;
+    const sameChat = () => sameOrigin() && !job.controller.signal.aborted;
     let auto = initializeAuto(state, ctx.chat);
     if (!rebuildRecent && !force && !memoryDue(value, ctx)) return;
     memoryPending = false;
     extracting = true; stopExtractionRequested = false;
+    activeCollectionJob = job;
+    const progressTimer = setInterval(refreshCollectionStatus, 1000);
     render();
     status('최근 대화 수집을 시작하고 있어요…');
     let changed = 0, added = 0, updated = 0, archived = 0, uncertain = 0, factChecked = 0, factRejected = 0, factApproved = 0;
@@ -1600,7 +1666,7 @@ async function performMemorySync({ rebuildRecent = false, force = false } = {}) 
             status(`최근 ${RECENT_MESSAGE_LIMIT}개 대화 수집 중 · ${progress.completed}/${progress.total} · 규칙 ${changed}개 반영`);
             let parsed = { operations: [], rejected: 0 };
             if (rows.length) {
-                const raw = await traceDiagnostic('규칙 수집', () => generateUtility(ctx, memoryRequest(value.facts, rows, contextRows, settings().collectionIntensity), profileId), { count: rows.length });
+                const raw = await traceDiagnostic('규칙 수집', () => collectUtility(ctx, memoryRequest(value.facts, rows, contextRows, settings().collectionIntensity), profileId, job), { count: rows.length });
                 if (!sameChat()) return;
                 if (tracked.some(({ id, signature }) => messageSignature(context().chat[id]) !== signature)) {
                     memoryPending = true;
@@ -1611,7 +1677,7 @@ async function performMemorySync({ rebuildRecent = false, force = false } = {}) 
                 proposedCount += parsed.proposed || 0; structuralRejected += parsed.rejected;
                 if (parsed.operations.length) {
                     status(`Jev가 새 규칙 ${parsed.operations.length}개와 인물별 지식을 검증 중이에요…`);
-                    const review = await reviewExtractedKnowledge(parsed.operations, rows, contextRows, value.facts);
+                    const review = await collectionStep(job, () => reviewExtractedKnowledge(parsed.operations, rows, contextRows, value.facts, job), 'JEV 사실·지식 검증');
                     if (!sameChat()) return;
                     parsed.operations = review.operations;
                     factChecked += review.factsChecked;
@@ -1624,11 +1690,11 @@ async function performMemorySync({ rebuildRecent = false, force = false } = {}) 
                     jevValidationSkipped ||= review.noKey;
                     if (review.compoundOperations.length) {
                         status(`Jev가 복합 규칙 ${review.compoundOperations.length}개를 발견해 인물별 지식 경계에 맞게 다시 나누고 있어요…`);
-                        const splitRaw = await generateUtility(ctx, compoundSplitRequest(review.compoundOperations, value.facts, rows, contextRows), profileId);
+                        const splitRaw = await collectUtility(ctx, compoundSplitRequest(review.compoundOperations, value.facts, rows, contextRows), profileId, job);
                         if (!sameChat()) return;
                         const splitParsed = parseMemoryOperations(splitRaw, rows, value.facts, currentSourceChatId, contextRows, { deferConfidenceToJev: Boolean(apiKey()) });
                         splitProposed += splitParsed.proposed || 0; structuralRejected += splitParsed.rejected;
-                        const splitReview = await reviewExtractedKnowledge(splitParsed.operations, rows, contextRows, value.facts);
+                        const splitReview = await collectionStep(job, () => reviewExtractedKnowledge(splitParsed.operations, rows, contextRows, value.facts, job), 'JEV 분리 규칙 검증');
                         if (!sameChat()) return;
                         parsed.operations.push(...splitReview.operations);
                         parsed.rejected += splitParsed.rejected;
@@ -1654,7 +1720,7 @@ async function performMemorySync({ rebuildRecent = false, force = false } = {}) 
             await save(); render();
         }
         if (sameChat() && !stopExtractionRequested) {
-            cleanupResult = await runAutomaticCleanup(value, ctx, profileId, sameChat) ?? cleanupResult;
+            cleanupResult = await collectionStep(job, () => runAutomaticCleanup(value, ctx, profileId, sameChat, job)) ?? cleanupResult;
             if (!sameChat()) return;
             if (!cleanupResult.skipped) { await save(); render(); }
         }
@@ -1679,14 +1745,23 @@ async function performMemorySync({ rebuildRecent = false, force = false } = {}) 
             status(stopExtractionRequested ? `수집 중단 · 규칙 ${changed}개 반영. 다음에 이어서 수집해요.${factResult}${knowledgeResult}`
                 : `최근 ${RECENT_MESSAGE_LIMIT}개 대화 수집 완료 · 규칙 ${changed}개 반영${uncertain ? ` · 불확실하거나 중복된 제안 ${uncertain}개는 건너뛰었어요` : ''}${factResult}${knowledgeResult}${cleanupText}`);
         }
-    } catch (error) { diagnosticError('규칙 수집', error, { site: 1682 }); if (sameChat()) status(`기억 정리를 멈췄어요: ${error.message} ‘지금 정리’로 다시 시도할 수 있어요.`); }
+    } catch (error) {
+        if (job.controller.signal.aborted || error?.hundredlogCancelled) {
+            if (sameOrigin()) status(`수집을 중단했어요 · 규칙 ${changed}개 반영. ‘새 대화 갱신’으로 이어서 수집할 수 있어요.`);
+        } else {
+            diagnosticError('규칙 수집', error, { site: 1752 });
+            if (sameChat()) status(`기억 정리를 멈췄어요: ${error.message} ‘새 대화 갱신’으로 다시 시도할 수 있어요.`);
+        }
+    }
     finally {
+        clearInterval(progressTimer);
+        if (activeCollectionJob === job) activeCollectionJob = null;
         extracting = false;
         if (chatKey(context()) === key && data(false) === value && epoch !== memoryEpoch
             && settings().autoMemory && !stopExtractionRequested) {
             memoryPending = true; memoryForcePending = true;
         }
-        render();
+        refreshCollectionStatus(); render();
     }
 }
 
@@ -1701,11 +1776,14 @@ export function installMemoryHooks(ctx = context()) {
                 const result = callback(...args);
                 if (result?.then) return result.catch((error) => { diagnosticError('미처리', error); throw error; });
                 return result;
-            } catch (error) { diagnosticError('기타', error, { site: 1704 }); diagnosticError('미처리', error); throw error; }
+            } catch (error) { diagnosticError('기타', error, { site: 1779 }); diagnosticError('미처리', error); throw error; }
         });
     };
     on('GENERATION_AFTER_COMMANDS', async (type, eventData, dryRun) => {
         if (dryRun || ['quiet', 'impersonate'].includes(type) || eventData?.quiet_prompt) return;
+        // A utility adapter can emit this event while our collection is awaiting it.
+        // Waiting for memoryRun here would make the collection wait for itself.
+        if (activeCollectionJob) return;
         normalGenerating = true;
         if (memoryRun) await memoryRun;
         if (sourceMutationTimer !== null) { clearTimeout(sourceMutationTimer); sourceMutationTimer = null; }
@@ -1856,7 +1934,7 @@ async function commitReply(text, key, lastMessage, mode = 'normal') {
             await ctx.eventSource.emit((ctx.eventTypes ?? ctx.event_types).CHARACTER_MESSAGE_RENDERED, index);
             await ctx.saveChat();
             return;
-        } catch (error) { diagnosticError('기타', error, { site: 1859 });
+        } catch (error) { diagnosticError('기타', error, { site: 1937 });
             console.error('[100LOG] 오류·진단 기록을 확인해 주세요.');
             throw new Error('스와이프 표시 또는 저장 중 오류가 났어요. 채팅에 답변이 보이는지 확인해 주세요.');
         }
@@ -1872,7 +1950,7 @@ async function commitReply(text, key, lastMessage, mode = 'normal') {
         ctx.addOneMessage(message);
         await ctx.eventSource.emit((ctx.eventTypes ?? ctx.event_types).CHARACTER_MESSAGE_RENDERED, index);
         await ctx.saveChat();
-    } catch (error) { diagnosticError('기타', error, { site: 1875 });
+    } catch (error) { diagnosticError('기타', error, { site: 1953 });
         // Never remove a message after rendering or after another extension has observed it.
         console.error('[100LOG] 오류·진단 기록을 확인해 주세요.');
         throw new Error('답변 표시 또는 저장 중 오류가 났어요. 채팅에 답변이 보이는지 확인해 주세요.');
@@ -1955,7 +2033,7 @@ async function runHidden(key, lastMessage, selectedContext = null, mode = 'norma
             context().saveSettingsDebounced?.();
         }
         try { await traceDiagnostic('답변 표시·저장', () => commitReply(final, key, lastMessage, mode), { mode, chars: final.length }); }
-        catch (error) { diagnosticError('기타', error, { site: 1958 }); if (store) store.lastActivity = previousActivity; throw error; }
+        catch (error) { diagnosticError('기타', error, { site: 2036 }); if (store) store.lastActivity = previousActivity; throw error; }
         updateReport({ status: flagged.length ? 'corrected' : 'passed', stage: '완료', published: true });
         const replyLabel = mode === 'swipe' ? '스와이프 답변을' : mode === 'regenerate' ? '재생성 답변을' : '답변을';
         status(flagged.length ? `충돌 ${flagged.length}곳을 고쳐 ${replyLabel} 게시했어요.` : `설정 충돌 없이 ${replyLabel} 게시했어요.`);
@@ -1964,7 +2042,7 @@ async function runHidden(key, lastMessage, selectedContext = null, mode = 'norma
             updateReport({ stage, status: 'cancelled' });
             status('답변 생성을 중단했어요.');
         } else {
-            diagnosticError(stage, error, { site: 1967 });
+            diagnosticError(stage, error, { site: 2045 });
             const blocked = report.status === 'blocked';
             const upstream = ['메인 AI 초안 생성', '메인 AI 재작성', 'JEV 초안 검수', 'JEV 재검수'].includes(stage) && !blocked;
             updateReport({ stage, status: blocked ? 'blocked' : upstream ? 'external_error' : stage === '답변 표시·저장' ? 'publish_error' : 'failed' });
@@ -1976,7 +2054,7 @@ async function runHidden(key, lastMessage, selectedContext = null, mode = 'norma
         }
     }
     finally {
-        try { await clearLegacyPrompt(); } catch (error) { diagnosticError('기타', error, { site: 1979 }); console.error('[100LOG] 오류·진단 기록을 확인해 주세요.'); }
+        try { await clearLegacyPrompt(); } catch (error) { diagnosticError('기타', error, { site: 2057 }); console.error('[100LOG] 오류·진단 기록을 확인해 주세요.'); }
         if (activeReviewJob === job) activeReviewJob = null;
         busy = false; normalGenerating = false; render(); if (memoryPending) scheduleMemory();
     }
@@ -2021,7 +2099,7 @@ globalThis.hundredlogGenerationInterceptor = async function (promptChat, _size, 
             selectionStats = { candidates: result.candidateCount, selected: result.selected.length };
             selectedContext = memoryInjection(result.selected, recentChat(ctx), config.maxInjectedMemories, true);
         }
-    } catch (error) { diagnosticError('기타', error, { site: 2024 });
+    } catch (error) { diagnosticError('기타', error, { site: 2102 });
         if (activeReviewJob === job) activeReviewJob = null;
         abort(true);
         busy = false;
@@ -2235,7 +2313,7 @@ async function main() {
             const storage = `${EMBEDDING_KEY_PREFIX}${embeddingProvider()}`;
             if (value) localStorage.setItem(storage, value); else localStorage.removeItem(storage);
             $id('embedding-state').textContent = value ? '키 저장됨 · 연결 확인 필요' : 'API 키를 입력해 주세요';
-        } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 2238 }); status('이 브라우저에 임베딩 키를 저장하지 못했어요.'); }
+        } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 2316 }); status('이 브라우저에 임베딩 키를 저장하지 못했어요.'); }
     });
     $id('embedding-test')?.addEventListener('click', async () => {
         try {
@@ -2251,7 +2329,7 @@ async function main() {
             $id('embedding-state').textContent = `${embeddingLabel()} 연결됨`;
             embeddingError();
             status(facts.length ? `임베딩 연결 완료 · 현재 규칙 ${facts.length}개를 준비했어요.` : '임베딩 연결을 확인했어요. 저장된 현재 규칙은 아직 없어요.');
-        } catch (error) { diagnosticError('기타', error, { site: 2254 });
+        } catch (error) { diagnosticError('기타', error, { site: 2332 });
             $id('embedding-state').textContent = '연결 실패';
             embeddingError(error.message);
             status(error.message);
@@ -2271,7 +2349,7 @@ async function main() {
             $id('embedding-state').textContent = `${embeddingLabel()} 연결됨`;
             embeddingError();
             status(`누락 임베딩 재시도 완료 · ${after.completed}/${after.total}개 성공${after.missing ? ` · ${after.missing}개 미완료` : ''}`);
-        } catch (error) { diagnosticError('기타', error, { site: 2274 });
+        } catch (error) { diagnosticError('기타', error, { site: 2352 });
             $id('embedding-state').textContent = '재시도 실패';
             embeddingError(error.message);
             status(error.message);
@@ -2324,7 +2402,7 @@ async function main() {
             if (value) localStorage.setItem(KEY_STORAGE, value);
             else localStorage.removeItem(KEY_STORAGE);
             $id('server').textContent = value ? '키 저장됨 · 연결 확인 필요' : 'API 키를 입력해 주세요';
-        } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 2327 }); status('이 브라우저에 키를 저장하지 못했어요.'); }
+        } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 2405 }); status('이 브라우저에 키를 저장하지 못했어요.'); }
     });
     $id('test')?.addEventListener('click', async () => {
         try {
@@ -2337,7 +2415,7 @@ async function main() {
             $id('server').textContent = 'Jev 연결됨';
             connectionError();
             status(`Jev에 연결됐어요 (${lastJevTransport}).`);
-        } catch (error) { diagnosticError('기타', error, { site: 2340 });
+        } catch (error) { diagnosticError('기타', error, { site: 2418 });
             $id('server').textContent = '연결 실패';
             connectionError(error.message);
             status(error.message);
@@ -2365,7 +2443,7 @@ async function main() {
             $id('newfact').value = '';
             $id('replaces').value = '';
             await save(); render();
-        } catch (error) { diagnosticError('기타', error, { site: 2368 }); status(error.message); }
+        } catch (error) { diagnosticError('기타', error, { site: 2446 }); status(error.message); }
     });
     $id('endscene')?.addEventListener('click', async () => {
         const value = data();
@@ -2400,7 +2478,7 @@ async function main() {
         settings().autoMemory = event.target.checked;
         settings().enabled = event.target.checked;
         memoryEpoch++; memoryPending = false;
-        if (!settings().autoMemory) stopExtractionRequested = true;
+        if (!settings().autoMemory) stopCollection();
         context().saveSettingsDebounced();
         await clearLegacyPrompt(); render();
         status(settings().autoMemory ? '최근 규칙 관리와 일반·재생성·스와이프 공개 전 검수를 모두 시작해요.' : '100LOG를 껐어요. 저장된 규칙은 유지돼요.');
@@ -2434,16 +2512,17 @@ async function main() {
         scheduleMemory();
         status(`AI 답변 ${settings().analysisInterval}개마다 연속성 규칙을 자동 갱신해요.`);
     });
-    $id('stop')?.addEventListener('click', () => { stopExtractionRequested = true; status('진행 중인 묶음을 마치고 최근 기억 분석을 멈출게요.'); });
+    $id('stop')?.addEventListener('click', stopCollection);
     ctx.eventSource.on((ctx.eventTypes ?? ctx.event_types).CHAT_CHANGED, () => {
         diagnostic('event', { event: 'CHAT_CHANGED', busy, extracting, translating });
+        stopCollection();
         memoryEpoch++; normalGenerating = false; memoryPending = false;
         memoryForcePending = false;
-        if ($id('collection-status')) { $id('collection-status').hidden = true; $id('collection-status').textContent = ''; }
+        collectionStatusText = ''; refreshCollectionStatus();
         const value = data();
         const state = chatState(value, context(), false);
         if (state) initializeAuto(state, context().chat);
-        status('준비됐어요.'); render();
+        if (!extracting) status('준비됐어요.'); render();
         void clearLegacyPrompt();
         if (state?.autoMemory?.cursor < context().chat.length) scheduleMemory();
     });
@@ -2460,8 +2539,8 @@ const initialContext = context();
 const appReady = (initialContext.eventTypes ?? initialContext.event_types)?.APP_READY;
 if (appReady) {
     initialContext.eventSource.on(appReady, () => {
-        void main().catch((error) => diagnosticError('초기화', error, { site: 2463 }));
+        void main().catch((error) => diagnosticError('초기화', error, { site: 2542 }));
     });
 } else {
-    void main().catch((error) => diagnosticError('초기화', error, { site: 2466 }));
+    void main().catch((error) => diagnosticError('초기화', error, { site: 2545 }));
 }
