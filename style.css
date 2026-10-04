@@ -132,7 +132,7 @@
 #hundredlog .hundredlog-overview strong { font-size: .98em; font-weight: 500; }
 #hundredlog .hundredlog-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 #hundredlog .hundredlog-translation-tools { padding: 4px 0 12px; }
-#hundredlog .hundredlog-translation-controls select { background: transparent; border: 0; padding-left: 0 !important; min-width: 80px !important; font-size: .86em; }
+#hundredlog .hundredlog-translation-controls select { background: transparent; border: 0; padding-left: 10px !important; min-width: 80px !important; font-size: .86em; }
 #hundredlog .hundredlog-translation-controls button.menu_button,
 #hundredlog .hundredlog-quick-actions button.menu_button,
 #hundredlog .hundredlog-knowledge-tags button.menu_button { border: 0; background: transparent; border-radius: 0; padding: 6px 4px; }
@@ -188,10 +188,10 @@
   #hundredlog #hundredlog-translation-count { font-size: .74em; }
 }
 
-/* Isolate the dialog from theme alignment, size and transform rules. */
+/* Isolate theme positioning; extra bottom space lifts the visual center by 16px without clipping the popup. */
 #hundredlog-wand-overlay { max-width: none !important; max-height: none !important; border: 0 !important; outline: 0; box-sizing: border-box !important; }
 #hundredlog-wand-overlay::backdrop { background: transparent; }
-#hundredlog-wand-overlay { display: grid !important; grid-template: minmax(0, 1fr) / minmax(0, 1fr) !important; place-items: center !important; padding: max(12px, env(safe-area-inset-top), env(safe-area-inset-bottom), env(safe-area-inset-left), env(safe-area-inset-right)) !important; }
+#hundredlog-wand-overlay { display: grid !important; grid-template: minmax(0, 1fr) / minmax(0, 1fr) !important; place-items: center !important; --hundredlog-edge-gap: max(12px, env(safe-area-inset-top), env(safe-area-inset-bottom), env(safe-area-inset-left), env(safe-area-inset-right)); padding: var(--hundredlog-edge-gap) !important; padding-bottom: calc(var(--hundredlog-edge-gap) + 32px) !important; }
 #hundredlog-wand-popup { position: relative !important; inset: auto !important; align-self: center !important; justify-self: center !important; transform: none !important; width: min(520px, 100%) !important; max-height: min(660px, 100%) !important; }
 #hundredlog-wand-overlay, #hundredlog-wand-popup { translate: none !important; rotate: none !important; scale: none !important; animation: none !important; transition: none !important; }
 #hundredlog-collection-status, #hundredlog-collection-settings-status { margin: 5px 0 12px !important; overflow-wrap: anywhere; }
