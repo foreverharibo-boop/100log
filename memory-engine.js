@@ -1,4 +1,4 @@
-import { MAX_FACTS, RECENT_MESSAGE_LIMIT, newId, approveFact, normalizeKnowledge, normalizeKnowledgeEvidence, advanceCommitment, commitmentState, pickFacts, recentWindowStart, isVisibleChatMessage } from './core.js';
+import { MAX_FACTS, RECENT_MESSAGE_LIMIT, newId, approveFact, setKnowledge, normalizeKnowledge, normalizeKnowledgeEvidence, advanceCommitment, commitmentState, pickFacts, recentWindowStart, isVisibleChatMessage } from './core.js';
 
 export const MEMORY_KINDS = {
     fact: '최근 핵심 사실',
@@ -79,8 +79,55 @@ export const EXCLUSION_REASONS = {
     approval: '이전 방식의 승인 조건이 충족되지 않았어요.',
 };
 
+export function collectedCharacterNames(value, chat = [], extra = {}) {
+    const names = new Set();
+    const add = (name) => {
+        const text = typeof name === 'string' ? name.trim().slice(0, 50) : '';
+        if (text && !['__proto__', 'constructor', 'prototype'].includes(text)) names.add(text);
+    };
+    const collect = (record) => {
+        for (const name of record?.characterNames || []) add(name);
+        for (const name of Object.keys(normalizeKnowledge(record?.knowledge))) add(name);
+    };
+    collect(extra);
+    for (const record of [...(value?.facts || []), ...(value?.candidates || [])]) collect(record);
+    for (const state of Object.values(value?.chats || {})) {
+        for (const record of state.collectionExclusions?.items || []) collect(record);
+    }
+    for (const message of chat.slice(recentWindowStart(chat))) if (isVisibleChatMessage(message)) add(message.name);
+    return [...names];
+}
+
+// Message IDs belong to a chat. Sort within chat groups, never compare IDs across chats.
+export function sortMemoriesBySource(facts, currentChatId = '') {
+    const source = (fact) => ({ chatId: fact.sourceChatId || fact.collectedFrom?.chatId || '',
+        id: Number.isInteger(fact.sourceId) ? fact.sourceId : fact.collectedFrom?.messageId });
+    const groups = new Map();
+    for (const fact of facts) { const id = source(fact).chatId; if (!groups.has(id)) groups.set(id, groups.size); }
+    return [...facts].sort((a, b) => {
+        const x = source(a), y = source(b);
+        if (x.chatId !== y.chatId) {
+            if (x.chatId === currentChatId) return -1;
+            if (y.chatId === currentChatId) return 1;
+            return groups.get(x.chatId) - groups.get(y.chatId);
+        }
+        const ai = Number.isInteger(x.id) && x.id >= 0 ? x.id : Infinity;
+        const bi = Number.isInteger(y.id) && y.id >= 0 ? y.id : Infinity;
+        if (ai !== bi) return ai < bi ? -1 : 1;
+        return (Number(a.createdAt) || 0) - (Number(b.createdAt) || 0);
+    });
+}
+
+export function removeSavedExclusions(report) {
+    const kept = report.items.filter((entry) => !entry.savedId);
+    const removed = report.items.length - kept.length;
+    report.items = kept;
+    report.saved = (report.saved || 0) + removed;
+    return removed;
+}
+
 function excludedOperation(op, code, sourceChatId, source = null, prior = null) {
-    return { id: newId(), code, action: typeof op?.action === 'string' ? op.action.slice(0, 24) : '',
+    return { id: newId(), code, characterNames: [...new Set([...Object.keys(normalizeKnowledge(op?.knowledge)), ...Object.keys(normalizeKnowledge(prior?.knowledge))])], action: typeof op?.action === 'string' ? op.action.slice(0, 24) : '',
         text: String(op?.text || prior?.text || '').slice(0, 300), kind: prior?.kind || op?.kind || 'fact',
         sourceId: Number.isInteger(op?.sourceId) ? op.sourceId : null, sourceChatId,
         sourceText: String(op?.evidence ?? op?.sourceText ?? '').slice(0, 350),
@@ -95,7 +142,7 @@ export function appendCollectionExclusions(report, entries = []) {
     report.items.push(...entries.slice(0, room));
 }
 
-export function saveExcludedMemory(value, entry, text, chat = [], sourceChatId = '') {
+export function saveExcludedMemory(value, entry, text, chat = [], sourceChatId = '', manualKnowledge = {}) {
     if (!['add', 'update'].includes(entry?.action)) throw new Error('종료·취소 제안은 현재 규칙의 관리 메뉴에서 확인해 주세요.');
     const summary = String(text ?? '').trim().slice(0, 300);
     if (!summary) throw new Error('저장할 내용을 입력해 주세요.');
@@ -105,7 +152,15 @@ export function saveExcludedMemory(value, entry, text, chat = [], sourceChatId =
     const record = { id: newId(), text: summary, kind, scope: ['state', 'temporary'].includes(kind) ? 'scene' : 'always',
         origin: 'manual', pinned: true, knowledge: {}, knowledgeEvidence: {}, createdAt: Date.now(),
         retention: memoryRetention(kind, summary), reason: '제외된 제안을 사용자가 확인하고 직접 저장했어요.' };
+    record.characterNames = collectedCharacterNames(null, [], entry);
+    for (const [name, state] of Object.entries(manualKnowledge)) {
+        // Only explicit user selections, never the rejected AI's knowledge labels.
+        if (state) setKnowledge(record, name, state, '사용자가 직접 저장하며 지정했어요.');
+    }
     const source = Number.isInteger(entry.sourceId) ? chat[entry.sourceId] : null;
+    if (entry.sourceChatId === sourceChatId && isVisibleChatMessage(source)) {
+        record.collectedFrom = { chatId: sourceChatId, messageId: entry.sourceId };
+    }
     if (entry.sourceChatId === sourceChatId && isVisibleChatMessage(source)
         && messageSignature(source) === entry.sourceSignature && compact(entry.sourceText)
         && compact(source.mes).includes(compact(entry.sourceText))) {

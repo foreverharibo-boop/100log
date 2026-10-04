@@ -206,3 +206,12 @@
 #hundredlog .hundredlog-excluded-item summary { cursor: pointer; font-size: .8em; padding: 4px 0; }
 #hundredlog .hundredlog-excluded-item blockquote { margin: 8px 0; padding: 4px 10px; border-left: 2px solid var(--SmartThemeBorderColor); font-size: .85em; white-space: pre-wrap; }
 #hundredlog .hundredlog-excluded-item textarea { width: 100%; box-sizing: border-box; padding: 8px 10px; }
+
+#hundredlog .hundredlog-name-suggestions { display: flex; flex-wrap: wrap; gap: 4px 6px; margin: 7px 0; }
+#hundredlog .hundredlog-name-suggestions button.menu_button { padding: 3px 8px; font-size: .82em; min-height: 28px; }
+#hundredlog .hundredlog-manual-knowledge { margin: 12px 0; }
+#hundredlog .hundredlog-manual-knowledge > strong { font-size: .88em; }
+#hundredlog .hundredlog-manual-knowledge-rows { display: grid; gap: 5px; margin: 8px 0; }
+#hundredlog .hundredlog-manual-knowledge-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(110px, 1fr); align-items: center; gap: 8px; font-size: .85em; }
+#hundredlog .hundredlog-manual-knowledge-row select { margin: 0 !important; height: 32px !important; min-height: 32px !important; padding: 3px 8px !important; }
+#hundredlog .hundredlog-manual-knowledge .hundredlog-row input { flex: 1; min-width: 0; height: 32px; }
