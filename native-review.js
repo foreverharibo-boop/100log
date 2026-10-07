@@ -72,12 +72,10 @@ export function createReplyMask(index) {
     if (!Number.isInteger(index) || index < 0 || typeof document === 'undefined') return () => {};
     const style = document.createElement('style');
     style.dataset.hundredlogReview = String(index);
-    // Install before the first streaming frame. Hide the whole reply block,
-    // including reasoning and media, while leaving other messages untouched.
+    // Collapse only this pending reply, without a placeholder or blank space.
+    // Removing this style restores the theme's normal layout after review.
     const selector = `#chat .mes[mesid="${index}"]`;
-    style.textContent = `${selector} .mes_block { visibility: hidden !important; pointer-events: none !important; }
-${selector}::after { content: '100LOG · 답변 수신·검수 중…'; display: block; padding: .5em; opacity: .7; }
-${selector} { pointer-events: none !important; }`;
+    style.textContent = `${selector} { display: none !important; }`;
     document.head.append(style);
     return () => style.remove();
 }
