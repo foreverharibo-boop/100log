@@ -42,12 +42,12 @@ test('compatible, uncertain and low confidence decisions do not trigger rewritin
     assert.equal(readContradictions(batch, answer('contradiction')).length, 1);
 });
 
-test('draft context and rewrite instructions use saved memories without source quotes', () => {
+test('native fact injection and rewrite instructions use saved memories without source quotes', () => {
     const context = memoryInjection([fact()], '', 40, true);
     assert.match(context, /underway/);
     assert.doesNotMatch(context, /PRIVATE_|Prefer the original conversation/);
     const source = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
-    const code = source.slice(source.indexOf('function correctionPrompt('), source.indexOf('function stillSameChat('));
+    const code = source.slice(source.indexOf('function correctionPrompt('), source.indexOf('async function applyReviewedReply('));
     const sandbox = { normalizeKnowledge }; vm.createContext(sandbox); vm.runInContext(code, sandbox);
     const prompt = sandbox.correctionPrompt('REPLY', [{ fact: fact(), kind: 'contradiction' }], context);
     assert.match(prompt, /Fix only those conflicts/);

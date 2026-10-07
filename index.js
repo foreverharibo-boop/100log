@@ -1,8 +1,9 @@
-import { availableSupportingEvidence, normalizeAliases, canonicalName, linkAlias, resolveFactNames, normalizeSupportingEvidence, addRejectedMemory } from './continuity-tools.js?v=1.9.25';
-import { applyManualKnowledgeDraft, collectedCharacterNames, sortMemoriesByCollection, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, omissionReviewRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js?v=1.9.25';
-import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, supportsBackgroundUtility, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js?v=1.9.25';
-import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js?v=1.9.25';
-import { normalizeKnowledgeEvidence, KNOWLEDGE_LABELS, COMMITMENT_LABELS, commitmentState } from './core.js?v=1.9.25';
+import { createNativeReview } from './native-review.js?v=1.9.26';
+import { availableSupportingEvidence, normalizeAliases, canonicalName, linkAlias, resolveFactNames, normalizeSupportingEvidence, addRejectedMemory } from './continuity-tools.js?v=1.9.26';
+import { applyManualKnowledgeDraft, collectedCharacterNames, sortMemoriesByCollection, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, omissionReviewRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js?v=1.9.26';
+import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, supportsBackgroundUtility, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js?v=1.9.26';
+import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js?v=1.9.26';
+import { normalizeKnowledgeEvidence, KNOWLEDGE_LABELS, COMMITMENT_LABELS, commitmentState } from './core.js?v=1.9.26';
 
 const NAME = 'hundredlog';
 const LEGACY_NAME = 'memorybean';
@@ -45,13 +46,14 @@ let memoryForcePending = false;
 let memoryEpoch = 0;
 let normalGenerating = false;
 let memoryHooksInstalled = false;
+let nativeReview = null;
 let developerTitleClicks = 0;
 let developerTitleTimer = null;
 
 const context = () => SillyTavern.getContext();
 const $id = (id) => document.getElementById(`hundredlog-${id}`);
 
-// Only the hidden reply owns this token. Collection/translation requests are separate.
+// Only the current reply review owns this token. Collection/translation requests are separate.
 function reviewCancelledError() {
     return Object.assign(new Error('답변 생성을 중단했어요.'), { name: 'AbortError', hundredlogCancelled: true });
 }
@@ -61,18 +63,27 @@ function checkReviewJob(job) {
 }
 
 function stopReviewJob() {
+    nativeReview?.cancel();
     if (activeReviewJob && !activeReviewJob.publishing) activeReviewJob.controller.abort(reviewCancelledError());
 }
 
 async function reviewStep(job, action) {
     checkReviewJob(job);
+    const signal = job?.controller.signal;
+    let stopped;
+    const interrupted = signal ? new Promise((_resolve, reject) => {
+        stopped = () => reject(reviewCancelledError());
+        signal.addEventListener('abort', stopped, { once: true });
+    }) : null;
     try {
-        const result = await action();
+        const result = await (interrupted ? Promise.race([action(), interrupted]) : action());
         checkReviewJob(job);
         return result;
     } catch (error) {
         checkReviewJob(job);
         throw error;
+    } finally {
+        if (stopped) signal.removeEventListener('abort', stopped);
     }
 }
 
@@ -87,7 +98,7 @@ function waitForJevRetry(ms, job) {
     });
 }
 
-// Only the hidden reply opts in. Never register collection/translation work.
+// Only reply review/rewrite stages opt in. Never register collection/translation work.
 function replyRetryService(job) {
     if (!job?.retryContext) return null;
     const service = job.retryService ?? globalThis.die429Retry;
@@ -99,7 +110,7 @@ function runReplyRetry(job, stage, action) {
     const service = replyRetryService(job);
     if (!service) return reviewStep(job, action);
     const { owner, validate } = job.retryContext;
-    return service.run({ owner: '100LOG', stage, action: () => reviewStep(job, action),
+    return service.run({ owner: '100LOG', stage: stage === 'JEV 답변 검수' ? 'JEV 초안 검수' : stage, action: () => reviewStep(job, action),
         signal: job.controller.signal,
         validate: () => { checkReviewJob(owner); if (!validate()) { owner.controller.abort(reviewCancelledError()); throw reviewCancelledError(); } return true; },
         onCancel: () => owner.controller.abort(reviewCancelledError()),
@@ -1835,6 +1846,25 @@ async function performMemorySync({ rebuildRecent = false, force = false, reviewO
 export function installMemoryHooks(ctx = context()) {
     if (memoryHooksInstalled) return;
     memoryHooksInstalled = true;
+    nativeReview = createNativeReview({ context, chatKey,
+        review: (job, message) => runReceivedReview(job, message),
+        released: (job) => {
+            if (activeReviewJob === job) activeReviewJob = null;
+            busy = false;
+            void clearLegacyPrompt().catch(error => diagnosticError('생성 준비', error));
+            render(); if (memoryPending) scheduleMemory();
+        },
+    });
+    const receiveEvent = (ctx.eventTypes ?? ctx.event_types)?.MESSAGE_RECEIVED;
+    if (receiveEvent) {
+        const receive = async (index, type) => {
+            try { await nativeReview.receive(index, type); }
+            catch (error) { diagnosticError('JEV 답변 검수', error); }
+        };
+        ctx.eventSource.on(receiveEvent, receive);
+        ctx.eventSource.makeFirst?.(receiveEvent, receive);
+        nativeReview.prioritize = () => ctx.eventSource.makeFirst?.(receiveEvent, receive);
+    }
     const types = ctx.eventTypes ?? ctx.event_types ?? {};
     const on = (name, callback) => {
         if (types[name]) ctx.eventSource.on(types[name], (...args) => {
@@ -1870,6 +1900,7 @@ export function installMemoryHooks(ctx = context()) {
     on('MESSAGE_RECEIVED', () => scheduleMemory());
     on('GENERATION_ENDED', (type) => {
         if (['quiet', 'impersonate'].includes(type)) return;
+        nativeReview?.ended();
         normalGenerating = false;
         if (memoryPending) scheduleMemory();
     });
@@ -1884,7 +1915,7 @@ function recentChat(ctx, excludeLast = false) {
         .slice(-12).map((message) => `${message.name ?? (message.is_user ? ctx.name1 : ctx.name2)}: ${String(message.mes ?? '').slice(0, 1000)}`).join('\n');
 }
 
-async function judge(draft, facts, speaker, job = null, stage = 'JEV 초안 검수') {
+async function judge(draft, facts, speaker, job = null, stage = 'JEV 답변 검수') {
     const batches = buildChecks(draft, facts, '', speaker);
     const found = [];
     found.uncertain = 0;
@@ -1988,66 +2019,37 @@ function correctionPrompt(draft, flagged, continuityContext = '') {
     return `${continuityContext ? `${continuityContext}\n\n` : ''}Revise the following unpublished character reply. The listed issues conflict with approved recent-continuity rules. Fix only those conflicts; preserve the rest of the reply, its language, voice, pacing, POV, and formatting. Do not quote these instructions or explain the edit. Output only the full revised character reply.\n\nApproved issues: ${JSON.stringify(issues)}\n\nUnpublished reply:\n${draft}`;
 }
 
-function stillSameChat(key, lastMessage, mode = 'normal') {
+async function applyReviewedReply(text, job, message) {
+    checkReviewJob(job);
+    if (!job.validate()) throw reviewCancelledError();
+    if (text === message.mes) return; // Passed replies keep their exact native text/metadata.
     const ctx = context();
-    return chatKey(ctx) === key && ctx.chat.at(-1) === lastMessage
-        && (mode === 'normal' ? Boolean(lastMessage?.is_user) : !lastMessage?.is_user);
+    let tokens;
+    if (message.extra?.token_count !== undefined && typeof ctx.getTokenCountAsync === 'function') {
+        try { tokens = await ctx.getTokenCountAsync(text, 0); } catch { /* Drop stale count below. */ }
+    }
+    checkReviewJob(job);
+    if (!job.validate()) throw reviewCancelledError();
+    message.mes = text;
+    job.acceptedText = text;
+    message.extra ??= {};
+    // Generated text changed: a translation, cached display or old reasoning
+    // signature cannot describe the rewrite. Keep native model/time/media fields.
+    for (const key of ['display_text', 'reasoning', 'reasoning_duration', 'reasoning_signature', 'token_count']) delete message.extra[key];
+    if (tokens !== undefined) message.extra.token_count = tokens;
+    if (Array.isArray(message.swipes) && Number.isInteger(message.swipe_id)) {
+        message.swipes[message.swipe_id] = text;
+        if (message.swipe_info?.[message.swipe_id]) message.swipe_info[message.swipe_id].extra = structuredClone(message.extra);
+    }
+    // Non-streaming ST renders after the awaited receive hook. A streaming
+    // message already has a masked DOM block, so refresh it before revealing it.
+    ctx.updateMessageBlock?.(job.index, message);
 }
 
-async function commitReply(text, key, lastMessage, mode = 'normal') {
-    if (!stillSameChat(key, lastMessage, mode)) throw new Error('대화가 바뀌어 답변을 게시하지 않았어요.');
-    const ctx = context();
-    if (typeof ctx.addOneMessage !== 'function' || typeof ctx.saveChat !== 'function') throw new Error('이 SillyTavern 버전에서 답변 저장 기능을 찾지 못했어요.');
-    if (mode !== 'normal') {
-        const index = ctx.chat.length - 1;
-        const message = lastMessage;
-        const generatedAt = new Date().toISOString();
-        const generationId = Date.now();
-        message.swipes = Array.isArray(message.swipes) && message.swipes.length ? message.swipes : [String(message.mes ?? '')];
-        message.swipe_info = Array.isArray(message.swipe_info) ? message.swipe_info : [];
-        while (message.swipe_info.length < message.swipes.length) message.swipe_info.push({});
-        message.swipes.push(text);
-        message.swipe_info.push({ send_date: generatedAt, gen_id: generationId, extra: { hundredlog: true } });
-        if (Array.isArray(message.variables)) {
-            while (message.variables.length < message.swipes.length - 1) message.variables.push({});
-            message.variables.push({});
-        }
-        message.swipe_id = message.swipes.length - 1;
-        message.mes = text;
-        message.send_date = generatedAt;
-        message.extra = { ...(message.extra ?? {}), gen_id: generationId, hundredlog: true };
-        try {
-            ctx.addOneMessage(message, { type: 'swipe' });
-            await ctx.eventSource.emit((ctx.eventTypes ?? ctx.event_types).MESSAGE_SWIPED, index);
-            await ctx.eventSource.emit((ctx.eventTypes ?? ctx.event_types).CHARACTER_MESSAGE_RENDERED, index);
-            await ctx.saveChat();
-            return;
-        } catch (error) { diagnosticError('기타', error, { site: 1804 });
-            console.error('[100LOG] 오류·진단 기록을 확인해 주세요.');
-            throw new Error('스와이프 표시 또는 저장 중 오류가 났어요. 채팅에 답변이 보이는지 확인해 주세요.');
-        }
-    }
-    const message = {
-        name: ctx.name2, is_user: false, is_system: false, send_date: new Date().toISOString(),
-        mes: text, extra: { gen_id: Date.now(), hundredlog: true }, swipes: [text], swipe_id: 0
-    };
-    ctx.chat.push(message);
-    try {
-        const index = ctx.chat.length - 1;
-        await ctx.eventSource.emit((ctx.eventTypes ?? ctx.event_types).MESSAGE_RECEIVED, index, 'normal');
-        ctx.addOneMessage(message);
-        await ctx.eventSource.emit((ctx.eventTypes ?? ctx.event_types).CHARACTER_MESSAGE_RENDERED, index);
-        await ctx.saveChat();
-    } catch (error) { diagnosticError('기타', error, { site: 1820 });
-        // Never remove a message after rendering or after another extension has observed it.
-        console.error('[100LOG] 오류·진단 기록을 확인해 주세요.');
-        throw new Error('답변 표시 또는 저장 중 오류가 났어요. 채팅에 답변이 보이는지 확인해 주세요.');
-    }
-}
-
-async function runHidden(key, lastMessage, selectedContext = null, mode = 'normal', selectionStats = null, job = null) {
-    job ??= { controller: new AbortController(), publishing: false };
-    job.retryContext = { owner: job, validate: () => stillSameChat(key, lastMessage, mode) };
+async function runReceivedReview(job, message) {
+    const { key, mode, selectionStats, activeContext, facts } = job;
+    const draft = String(message.mes ?? '');
+    job.retryContext = { owner: job, validate: job.validate };
     activeReviewJob = job;
     let stage = '생성 준비';
     const owner = chatKey(context()) === key ? data(false) : null;
@@ -2061,11 +2063,12 @@ async function runHidden(key, lastMessage, selectedContext = null, mode = 'norma
     };
     const recoverReply = (error) => {
         checkReviewJob(job);
-        if (!stillSameChat(key, lastMessage, mode)) throw reviewCancelledError();
+        if (!job.validate()) throw reviewCancelledError();
         diagnosticError(stage, error, { site: 1914 });
         updateReport({ reviewIncomplete: true, skippedStage: stage });
     };
     const reviewOrSkip = async (text, facts, speaker) => {
+        context().deactivateSendButtons?.();
         try { return await traceDiagnostic(stage, () => reviewStep(job, () => judge(text, facts, speaker, job, stage)), { rules: facts.length, chars: text.length }); }
         catch (error) {
             recoverReply(error);
@@ -2075,27 +2078,14 @@ async function runHidden(key, lastMessage, selectedContext = null, mode = 'norma
     try {
         checkReviewJob(job);
         const ctx = context();
-        if (!stillSameChat(key, lastMessage, mode)) throw reviewCancelledError();
-        const owner = data(false);
-        // Freeze the entire baseline for this answer, including knowledge/progress.
-        // Background collection may replace or archive stored facts while we wait.
-        const facts = JSON.parse(JSON.stringify(owner?.facts.filter((item) => item.active && isCurrent(item)).map(item => ({ ...resolveFactNames(item, owner.nameAliases), supportingEvidence: availableSupportingEvidence(item, ctx.chat, sourceChatId(ctx), recentWindowStart(ctx.chat), messageSignature) })) ?? []));
+        if (!job.validate()) throw reviewCancelledError();
         updateReport({ rules: facts.length });
         if (!apiKey()) throw new Error('확장 설정에 Jev API 키를 먼저 입력해 주세요.');
-        const recent = recentChat(ctx, mode !== 'normal');
-        const activeContext = selectedContext === null ? memoryInjection(facts, recent, MAX_FACTS, true) : selectedContext;
-        status(mode === 'swipe' ? '새 스와이프 답변을 화면에 띄우지 않고 작성 중이에요…' : mode === 'regenerate' ? '재생성 답변을 화면에 띄우지 않고 작성 중이에요…' : '메인 AI가 숨은 초안을 작성 중이에요…');
-        const draftInstruction = mode !== 'normal'
-            ? 'Write a new alternative in-character roleplay reply to the user message immediately before the existing assistant reply. Replace that assistant reply rather than continuing from it. Make the alternative meaningfully distinct while respecting the supplied recent-continuity rules as factual guardrails. Output only the full alternative reply, with no preface or explanation.'
-            : 'Write the next in-character roleplay reply to the latest user message. Treat the supplied recent-continuity rules only as factual guardrails, not as dialogue or permanent lore. Output only the reply, with no preface or explanation.';
-        stage = '메인 AI 초안 생성';
+        if (!draft.trim()) throw new Error('받은 답변이 비어 있어 검수를 건너뛰었어요.');
+        await clearLegacyPrompt();
+        stage = 'JEV 답변 검수';
         updateReport({ stage });
-        const draft = await runReplyRetry(job, stage, () => traceGeneration(stage, () => reviewStep(job, () => ctx.generateQuietPrompt({ quietPrompt: `${activeContext ? `${activeContext}\n\n` : ''}${draftInstruction}` })), { mode, rules: facts.length }));
-        if (!draft) throw new Error('메인 AI가 빈 응답을 반환했어요. 실리태번의 API 오류와 연결 상태를 확인해 주세요.');
-        if (!stillSameChat(key, lastMessage, mode)) throw reviewCancelledError();
-        stage = 'JEV 초안 검수';
-        updateReport({ stage });
-        status(`Jev가 연속성 규칙 ${facts.length}개와 초안을 한 번에 검수 중이에요…`);
+        status(`Jev가 연속성 규칙 ${facts.length}개와 받은 답변을 검수 중이에요…`);
         const flagged = await reviewOrSkip(draft, facts, ctx.name2);
         updateReport({ checked: flagged.incomplete ? 0 : facts.length, uncertain: flagged.uncertain || 0,
             issues: flagged.map((item) => ({ ruleId: item.fact.id, rule: item.fact.text,
@@ -2104,7 +2094,7 @@ async function runHidden(key, lastMessage, selectedContext = null, mode = 'norma
                     : '이 규칙과 충돌하는 내용을 고치고 나머지 말투·언어·전개는 유지하도록 재작성 요청' })) });
         let final = draft;
         if (flagged.length) {
-            if (!stillSameChat(key, lastMessage, mode)) throw reviewCancelledError();
+            if (!job.validate()) throw reviewCancelledError();
             stage = '메인 AI 재작성';
             updateReport({ stage, rewriteRequested: true });
             status(`설정 충돌 ${flagged.length}곳을 발견했어요. 메인 AI에게 수정 요청 중이에요…`);
@@ -2112,7 +2102,7 @@ async function runHidden(key, lastMessage, selectedContext = null, mode = 'norma
                 const rewritten = await runReplyRetry(job, stage, () => traceGeneration(stage, () => reviewStep(job, () => ctx.generateQuietPrompt({ quietPrompt: correctionPrompt(draft, flagged, activeContext) })), { mode, rules: facts.length }));
                 if (!rewritten?.trim()) throw new Error('수정 답변이 비어 있어 게시하지 않았어요.');
                 final = rewritten;
-                if (!stillSameChat(key, lastMessage, mode)) throw reviewCancelledError();
+                if (!job.validate()) throw reviewCancelledError();
                 stage = 'JEV 재검수';
                 updateReport({ stage });
                 status('수정 답변을 한 번 더 확인하고 있어요…');
@@ -2125,32 +2115,32 @@ async function runHidden(key, lastMessage, selectedContext = null, mode = 'norma
         }
         if (!final) throw new Error('최종 답변이 비어 있어 게시하지 않았어요.');
         checkReviewJob(job);
-        if (!stillSameChat(key, lastMessage, mode)) throw reviewCancelledError();
+        if (!job.validate()) throw reviewCancelledError();
         job.publishing = true;
         stage = '답변 표시·저장';
         updateReport({ stage });
         const store = data(false);
         const previousActivity = store?.lastActivity;
         if (store) {
-            const injected = selectedContext === null ? facts.length : (selectionStats?.selected ?? 0);
+            const injected = selectionStats?.selected ?? facts.length;
             store.lastActivity = {
                 text: `${mode === 'swipe' ? '스와이프 · ' : mode === 'regenerate' ? '재생성 · ' : ''}관련 규칙 ${injected}개 주입 · 검수 대상 ${facts.length}개 · ${report.reviewIncomplete ? '검수 미완료 · 받은 답변 표시' : report.remaining ? `한 번 재작성 · 충돌 ${report.remaining}개 남음` : flagged.length ? `충돌 ${flagged.length}개 수정` : '충돌 없음'}`,
                 at: Date.now(), type: 'review',
             };
             context().saveSettingsDebounced?.();
         }
-        try { await traceDiagnostic('답변 표시·저장', () => commitReply(final, key, lastMessage, mode), { mode, chars: final.length }); }
+        try { await traceDiagnostic('답변 표시·저장', () => applyReviewedReply(final, job, message), { mode, chars: final.length }); }
         catch (error) { diagnosticError('기타', error, { site: 1904 }); if (store) store.lastActivity = previousActivity; throw error; }
         updateReport({ status: report.reviewIncomplete ? 'review_skipped' : report.remaining ? 'conflicts_remaining' : flagged.length ? 'corrected' : 'passed', stage: '완료', published: true });
         const replyLabel = mode === 'swipe' ? '스와이프 답변을' : mode === 'regenerate' ? '재생성 답변을' : '답변을';
-        status(report.reviewIncomplete ? `검수를 마치지 못해 받아둔 ${replyLabel} 게시했어요.` : report.remaining ? `충돌 ${report.remaining}곳이 남아 있지만 재작성한 ${replyLabel} 게시했어요. 검수 결과에서 확인할 수 있어요.` : flagged.length ? `충돌 ${flagged.length}곳을 고쳐 ${replyLabel} 게시했어요.` : `설정 충돌 없이 ${replyLabel} 게시했어요.`);
+        status(report.reviewIncomplete ? `검수를 마치지 못해 받아둔 ${replyLabel} 표시할게요.` : report.remaining ? `충돌 ${report.remaining}곳이 남아 있지만 재작성한 ${replyLabel} 표시할게요. 검수 결과에서 확인할 수 있어요.` : flagged.length ? `충돌 ${flagged.length}곳을 고쳐 ${replyLabel} 표시할게요.` : `설정 충돌 없이 ${replyLabel} 표시할게요.`);
     } catch (error) {
         if (job.controller.signal.aborted || error?.hundredlogCancelled === true) {
             updateReport({ stage, status: 'cancelled' });
             status('답변 생성을 중단했어요.');
         } else {
             diagnosticError(stage, error, { site: 1913 });
-            const upstream = ['메인 AI 초안 생성', '메인 AI 재작성', 'JEV 초안 검수', 'JEV 재검수'].includes(stage);
+            const upstream = ['메인 AI 재작성', 'JEV 답변 검수', 'JEV 재검수'].includes(stage);
             updateReport({ stage, status: upstream ? 'external_error' : stage === '답변 표시·저장' ? 'publish_error' : 'failed' });
             const message = upstream ? `${stage} 응답을 받지 못했어요. 설정의 마지막 오류를 확인해 주세요.` : `${stage} 실패: ${error.message}`;
             status(message);
@@ -2158,74 +2148,70 @@ async function runHidden(key, lastMessage, selectedContext = null, mode = 'norma
         }
     }
     finally {
-        try { await clearLegacyPrompt(); } catch (error) { diagnosticError('기타', error, { site: 1925 }); console.error('[100LOG] 오류·진단 기록을 확인해 주세요.'); }
+        try { if (nativeReview?.current() === job) await clearLegacyPrompt(); } catch (error) { diagnosticError('기타', error, { site: 1925 }); console.error('[100LOG] 오류·진단 기록을 확인해 주세요.'); }
         if (activeReviewJob === job) activeReviewJob = null;
-        busy = false; normalGenerating = false; render(); if (memoryPending) scheduleMemory();
+        render();
     }
 }
 
-globalThis.hundredlogGenerationInterceptor = async function (promptChat, _size, abort, type) {
-    const ctx = context();
-    const config = settings();
-    const selectMemory = Boolean(config.developerMemorySelection);
+globalThis.hundredlogGenerationInterceptor = async function (_promptChat, _size, abort, type) {
+    const ctx = context(), config = settings();
     const mode = type === 'swipe' ? 'swipe' : ['regenerate', 'regen', 'retry'].includes(type) ? 'regenerate' : [undefined, 'normal'].includes(type) ? 'normal' : null;
     diagnostic('generation', { mode: mode ?? type, busy, extracting, translating, enabled: Boolean(config.autoMemory) });
-    if (!mode || !config.autoMemory || !chatKey(ctx)) {
-        diagnostic('skip', { reason: !mode ? '지원하지 않는 생성' : '비활성' }); return;
-    }
-    const confirmed = data(false)?.facts.filter((fact) => fact.active && isCurrent(fact)) ?? [];
-    if (!confirmed.length) { diagnostic('skip', { reason: '규칙 없음' }); return; }
-    if (!apiKey()) {
-        diagnostic('skip', { reason: '키 없음' }, 'warn'); abort(true);
-        const state = chatState(data(false));
-        if (state) state.lastReview = { at: Date.now(), mode, status: 'failed', stage: 'JEV 연결 · API 키 없음', checked: 0, issues: [] };
-        context().saveSettingsDebounced?.(); renderReviewReport();
-        status('Jev API 키가 없어 공개 전 검수를 실행하지 못했어요.'); return;
-    }
-    if (selectMemory && mode === 'normal' && !embeddingKey()) { abort(true); status(`${embeddingLabel()} 임베딩 키가 없어 맞춤 규칙 주입을 실행하지 못했어요.`); return; }
+    if (!mode) return; // Quiet utility/rewrite calls never start a new reply review.
+    if (nativeReview?.current()?.receiving) { abort(true); status('받은 답변을 검수 중이에요. 중단한 뒤 새로 전송해 주세요.'); return; }
+    stopReviewJob();
+    await clearLegacyPrompt();
+    if (!config.autoMemory || !chatKey(ctx)) return;
+    const owner = data(false);
+    const confirmed = owner?.facts.filter(fact => fact.active && isCurrent(fact)) ?? [];
+    if (!confirmed.length) return;
+    if (!nativeReview || !apiKey()) { status('공개 전 검수를 사용할 수 없어 실리태번의 일반 생성을 진행해요. JEV 연결을 확인해 주세요.'); return; }
     if ((extracting && !activeCollectionJob?.backgroundSafe) || (translating && !translationBackgroundSafe)) {
-        // Background memory work must not swallow the user's send action.
-        const state = chatState(data(false));
+        const state = chatState(owner);
         if (state) state.lastReview = { at: Date.now(), mode, status: 'background_skipped', stage: '수집·번역 중', checked: 0, issues: [] };
-        context().saveSettingsDebounced?.(); renderReviewReport();
-        return;
+        context().saveSettingsDebounced?.(); renderReviewReport(); return;
     }
-    if (busy) { abort(true); status('이미 규칙 선별 또는 공개 전 검수를 진행하고 있어요. 잠시 기다려 주세요.'); return; }
-    const last = ctx.chat.at(-1);
-    if (mode === 'normal' && !last?.is_user) { abort(true); status('마지막 메시지가 사용자 메시지가 아니라 공개 전 검수 생성을 멈췄어요.'); return; }
-    if (mode !== 'normal' && (last?.is_user || !ctx.chat.slice(0, -1).some((message) => message?.is_user))) { abort(true); status(`${mode === 'swipe' ? '스와이프' : '재생성'}할 기존 AI 답변이나 이전 사용자 메시지를 찾지 못했어요.`); return; }
-    const key = chatKey(ctx);
-    const job = { controller: new AbortController(), publishing: false };
+    const job = { controller: new AbortController(), publishing: false, key: chatKey(ctx), mode };
     activeReviewJob = job;
     busy = true;
     render();
-    let selectedContext = null;
-    let selectionStats = null;
     try {
-        if (selectMemory && mode === 'normal') {
-            status(`${embeddingLabel()} 임베딩으로 현재 장면과 가까운 규칙을 찾고 있어요…`);
-            const result = await reviewStep(job, () => selectInjectionFactsByEmbedding(confirmed, ctx, job));
-            if (chatKey(context()) !== key) throw new Error('대화가 바뀌어 맞춤 규칙 주입을 중단했어요.');
-            selectionStats = { candidates: result.candidateCount, selected: result.selected.length };
-            selectedContext = memoryInjection(result.selected.map(fact => ({ ...resolveFactNames(fact, data(false)?.nameAliases), supportingEvidence: availableSupportingEvidence(fact, ctx.chat, sourceChatId(ctx), recentWindowStart(ctx.chat), messageSignature) })), recentChat(ctx), config.maxInjectedMemories, true);
+        // Freeze the factual baseline before the native request. Collection may
+        // run independently while its response is arriving.
+        job.facts = JSON.parse(JSON.stringify(confirmed.map(item => ({ ...resolveFactNames(item, owner.nameAliases),
+            supportingEvidence: availableSupportingEvidence(item, ctx.chat, sourceChatId(ctx), recentWindowStart(ctx.chat), messageSignature) }))));
+        let selected = job.facts;
+        if (config.developerMemorySelection && mode === 'normal') {
+            if (!embeddingKey()) throw new Error(`${embeddingLabel()} 임베딩 키가 없어요.`);
+            const result = await reviewStep(job, () => selectInjectionFactsByEmbedding(job.facts, ctx, job));
+            selected = result.selected;
+            job.selectionStats = { candidates: result.candidateCount, selected: selected.length };
         }
-    } catch (error) { diagnosticError('기타', error, { site: 1970 });
+        checkReviewJob(job);
+        if (chatKey(context()) !== job.key) throw reviewCancelledError();
+        job.activeContext = memoryInjection(selected, recentChat(ctx, mode === 'swipe'), job.selectionStats ? selected.length : MAX_FACTS, true);
+        if (typeof ctx.setExtensionPrompt !== 'function') throw new Error('실리태번의 사실 주입 기능을 찾지 못했어요.');
+        // IN_CHAT=1, depth=0, SYSTEM=0. Native prompt assembly still includes
+        // the user's preset, lorebooks and other extension injections normally.
+        await ctx.setExtensionPrompt('100log-context', job.activeContext, 1, 0, false, 0);
+        checkReviewJob(job);
+        if (chatKey(context()) !== job.key) throw reviewCancelledError();
+        nativeReview.arm(job);
+        nativeReview.prioritize?.();
+        status('사실을 주입했어요. 실리태번의 답변이 도착하면 검수할게요.');
+    } catch (error) {
+        const cancelled = job.controller.signal.aborted || error?.hundredlogCancelled || chatKey(context()) !== job.key;
+        diagnosticError('생성 준비', error);
+        stopReviewJob();
         if (activeReviewJob === job) activeReviewJob = null;
-        abort(true);
         busy = false;
-        if (job.controller.signal.aborted || error?.hundredlogCancelled === true) {
-            const state = chatState(data(false));
-            if (state) state.lastReview = { at: Date.now(), mode, status: 'cancelled', stage: '생성 준비', checked: 0, issues: [] };
-            context().saveSettingsDebounced?.();
-            status('답변 생성을 중단했어요.');
-        } else status(`맞춤 규칙 선별을 실패해 생성을 멈췄어요: ${error.message}`);
-        render();
-        return;
+        await clearLegacyPrompt();
+        if (cancelled) { abort(true); status('답변 생성을 중단했어요.'); }
+        else status('사실 주입·검수를 준비하지 못해 실리태번의 일반 생성을 진행해요. 마지막 오류를 확인해 주세요.');
     }
-    abort(true);
-    status(mode === 'swipe' ? '스와이프 답변을 화면에 표시하기 전에 검수할게요…' : mode === 'regenerate' ? '재생성 답변을 화면에 표시하기 전에 검수할게요…' : selectMemory ? '맞춤 규칙 주입을 마쳤어요. 답변을 숨은 초안으로 생성할게요…' : '답변을 화면에 표시하지 않고 숨은 초안으로 생성할게요…'); render();
-    // Let SillyTavern finish unwinding the aborted generation first.
-    setTimeout(() => { void runHidden(key, last, selectedContext, mode, selectionStats, job); }, 300);
+    render();
+    // Do not abort, generate a quiet draft, or append a synthetic reply.
 };
 
 function closeWand() {
@@ -2363,7 +2349,7 @@ async function main() {
     const ctx = context();
     installMemoryHooks(ctx);
     if ($id('key')) { registerDeveloperTitle($id('title')); addWandButton(); return; }
-    const response = await diagnosticFetch(new URL('./settings.html?v=1.9.25', import.meta.url), { credentials: 'same-origin' });
+    const response = await diagnosticFetch(new URL('./settings.html?v=1.9.26', import.meta.url), { credentials: 'same-origin' });
     if (!response.ok) throw new Error(`설정 화면 파일을 읽지 못했어요 (${response.status}).`);
     const html = await response.text();
     // Keep the panel mounted for event bindings, but expose it only through the wand.
@@ -2595,7 +2581,7 @@ async function main() {
         settings().autoMemory = event.target.checked;
         settings().enabled = event.target.checked;
         memoryEpoch++; memoryPending = false;
-        if (!settings().autoMemory) stopCollection();
+        if (!settings().autoMemory) { stopCollection(); stopReviewJob(); }
         context().saveSettingsDebounced();
         await clearLegacyPrompt(); render();
         status(settings().autoMemory ? '최근 규칙 관리와 일반·재생성·스와이프 공개 전 검수를 모두 시작해요.' : '100LOG를 껐어요. 저장된 규칙은 유지돼요.');

@@ -1,5 +1,5 @@
 // Diagnostics contain fixed labels and allowlisted metadata only. Never serialize payloads/errors.
-export const DIAGNOSTIC_VERSION = '1.9.25';
+export const DIAGNOSTIC_VERSION = '1.9.26';
 const STORAGE = 'hundredlog.diagnostics.v1';
 const LIMIT = 1;
 const labels = {
@@ -8,7 +8,7 @@ const labels = {
     retry: 'JEV 재시도 대기', delay: 'JEV 30초 지연', attempt: 'JEV 시도', jevDone: 'JEV 판정 수신',
     generation: '생성 진입', event: '실리태번 이벤트', skip: '검수 생략·중단', status: '상태 안내',
 };
-const stages = ['초기화', '메인 AI 초안 생성', '메인 AI 재작성', 'JEV 초안 검수', 'JEV 재검수', 'JEV 요청',
+const stages = ['초기화', '메인 AI 초안 생성', '메인 AI 재작성', 'JEV 초안 검수', 'JEV 답변 검수', 'JEV 재검수', 'JEV 요청',
     '생성 준비', '답변 표시·저장', '규칙 수집', '규칙 청소', '규칙 파싱', '청소 파싱', '보조 AI', '규칙 저장',
     '번역', '화면', '설정 저장', '미처리', '기타'];
 const enums = {
@@ -291,4 +291,3 @@ if (globalThis.addEventListener) {
     });
     globalThis.addEventListener('pagehide', flush);
 }
-
