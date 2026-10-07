@@ -1,8 +1,8 @@
-import { availableSupportingEvidence, normalizeAliases, canonicalName, linkAlias, resolveFactNames, normalizeSupportingEvidence, addRejectedMemory } from './continuity-tools.js?v=1.9.24';
-import { applyManualKnowledgeDraft, collectedCharacterNames, sortMemoriesByCollection, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, omissionReviewRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js?v=1.9.24';
-import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, supportsBackgroundUtility, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js?v=1.9.24';
-import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js?v=1.9.24';
-import { normalizeKnowledgeEvidence, KNOWLEDGE_LABELS, COMMITMENT_LABELS, commitmentState } from './core.js?v=1.9.24';
+import { availableSupportingEvidence, normalizeAliases, canonicalName, linkAlias, resolveFactNames, normalizeSupportingEvidence, addRejectedMemory } from './continuity-tools.js?v=1.9.25';
+import { applyManualKnowledgeDraft, collectedCharacterNames, sortMemoriesByCollection, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, omissionReviewRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js?v=1.9.25';
+import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, supportsBackgroundUtility, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js?v=1.9.25';
+import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js?v=1.9.25';
+import { normalizeKnowledgeEvidence, KNOWLEDGE_LABELS, COMMITMENT_LABELS, commitmentState } from './core.js?v=1.9.25';
 
 const NAME = 'hundredlog';
 const LEGACY_NAME = 'memorybean';
@@ -85,6 +85,55 @@ function waitForJevRetry(ms, job) {
         const timer = setTimeout(() => { signal.removeEventListener('abort', stopped); resolve(); }, ms);
         signal.addEventListener('abort', stopped, { once: true });
     });
+}
+
+// Only the hidden reply opts in. Never register collection/translation work.
+function replyRetryService(job) {
+    if (!job?.retryContext) return null;
+    const service = job.retryService ?? globalThis.die429Retry;
+    return service?.apiVersion === 1 && typeof service.run === 'function'
+        && (job.retryService || service.isEnabled?.()) ? service : null;
+}
+
+function runReplyRetry(job, stage, action) {
+    const service = replyRetryService(job);
+    if (!service) return reviewStep(job, action);
+    const { owner, validate } = job.retryContext;
+    return service.run({ owner: '100LOG', stage, action: () => reviewStep(job, action),
+        signal: job.controller.signal,
+        validate: () => { checkReviewJob(owner); if (!validate()) { owner.controller.abort(reviewCancelledError()); throw reviewCancelledError(); } return true; },
+        onCancel: () => owner.controller.abort(reviewCancelledError()),
+    });
+}
+
+// With 429die, each JEV attempt has its own 60-second deadline. Backoff time
+// does not consume that deadline, and an exhausted stage still uses the existing
+// "show the saved draft with incomplete review" fallback below.
+async function managedJevAttempt(job, action) {
+    checkReviewJob(job);
+    const controller = new AbortController();
+    const attempt = { controller };
+    const parentSignal = job.controller.signal;
+    const stopped = () => controller.abort(reviewCancelledError());
+    parentSignal.addEventListener('abort', stopped, { once: true });
+    const timeout = Object.assign(new Error('JEV 응답 대기 시간 초과'), { name: 'TimeoutError' });
+    let rejectAbort;
+    const interrupted = new Promise((_resolve, reject) => { rejectAbort = reject; });
+    const onAbort = () => rejectAbort(controller.signal.reason);
+    controller.signal.addEventListener('abort', onAbort, { once: true });
+    const timer = setTimeout(() => controller.abort(timeout), 60000);
+    try {
+        checkReviewJob(job);
+        return await Promise.race([interrupted, action(attempt)]);
+    } catch (error) {
+        checkReviewJob(job);
+        if (controller.signal.aborted) throw controller.signal.reason;
+        throw error;
+    } finally {
+        clearTimeout(timer);
+        parentSignal.removeEventListener('abort', stopped);
+        controller.signal.removeEventListener('abort', onAbort);
+    }
 }
 
 const generateUtility = (ctx, prompt, profileId) => traceDiagnostic('보조 AI',
@@ -469,6 +518,17 @@ async function requestJev(state, questions, job = null) {
         if (sameChat() && !job?.controller.signal.aborted) globalThis.toastr?.info?.('JEV 응답이 늦어지고 있습니다.', '100LOG');
     }, 30000);
     try {
+        if (replyRetryService(job) && job.retryStage) {
+            // Exactly one retry owner: do not nest the old 2-retry loop.
+            return await runReplyRetry(job, job.retryStage, async () => {
+                checkReviewJob(job);
+                if (!sameChat()) throw reviewCancelledError();
+                const result = await managedJevAttempt(job, attempt => requestJevOnce(state, questions, key, attempt));
+                checkReviewJob(job);
+                if (!sameChat()) throw reviewCancelledError();
+                return result;
+            });
+        }
         for (let attempt = 0; ; attempt++) {
             checkReviewJob(job);
             if (!sameChat()) throw new Error('대화가 바뀌어 JEV 요청을 중단했어요.');
@@ -1824,7 +1884,7 @@ function recentChat(ctx, excludeLast = false) {
         .slice(-12).map((message) => `${message.name ?? (message.is_user ? ctx.name1 : ctx.name2)}: ${String(message.mes ?? '').slice(0, 1000)}`).join('\n');
 }
 
-async function judge(draft, facts, speaker, job = null) {
+async function judge(draft, facts, speaker, job = null, stage = 'JEV 초안 검수') {
     const batches = buildChecks(draft, facts, '', speaker);
     const found = [];
     found.uncertain = 0;
@@ -1832,14 +1892,15 @@ async function judge(draft, facts, speaker, job = null) {
     checkReviewJob(job);
     // Scope the deadline to JEV only: never cancel the parent reply or its fallback.
     const controller = new AbortController();
-    const child = { controller };
+    const retryService = replyRetryService(job);
+    const child = { controller, retryService, retryContext: job?.retryContext, retryStage: stage };
     const stopped = () => controller.abort(reviewCancelledError());
     job?.controller.signal.addEventListener('abort', stopped, { once: true });
     let rejectStopped;
     const interrupted = new Promise((_resolve, reject) => { rejectStopped = reject; });
     const onAbort = () => rejectStopped(controller.signal.reason);
     controller.signal.addEventListener('abort', onAbort, { once: true });
-    const timer = setTimeout(() => controller.abort(Object.assign(
+    const timer = retryService ? null : setTimeout(() => controller.abort(Object.assign(
         new Error('JEV 검수 대기 시간이 60초를 초과했어요.'), { name: 'TimeoutError' })), 60000);
     try {
         return await Promise.race([interrupted, (async () => {
@@ -1986,6 +2047,7 @@ async function commitReply(text, key, lastMessage, mode = 'normal') {
 
 async function runHidden(key, lastMessage, selectedContext = null, mode = 'normal', selectionStats = null, job = null) {
     job ??= { controller: new AbortController(), publishing: false };
+    job.retryContext = { owner: job, validate: () => stillSameChat(key, lastMessage, mode) };
     activeReviewJob = job;
     let stage = '생성 준비';
     const owner = chatKey(context()) === key ? data(false) : null;
@@ -2004,7 +2066,7 @@ async function runHidden(key, lastMessage, selectedContext = null, mode = 'norma
         updateReport({ reviewIncomplete: true, skippedStage: stage });
     };
     const reviewOrSkip = async (text, facts, speaker) => {
-        try { return await traceDiagnostic(stage, () => reviewStep(job, () => judge(text, facts, speaker, job)), { rules: facts.length, chars: text.length }); }
+        try { return await traceDiagnostic(stage, () => reviewStep(job, () => judge(text, facts, speaker, job, stage)), { rules: facts.length, chars: text.length }); }
         catch (error) {
             recoverReply(error);
             const result = []; result.incomplete = true; return result;
@@ -2028,7 +2090,7 @@ async function runHidden(key, lastMessage, selectedContext = null, mode = 'norma
             : 'Write the next in-character roleplay reply to the latest user message. Treat the supplied recent-continuity rules only as factual guardrails, not as dialogue or permanent lore. Output only the reply, with no preface or explanation.';
         stage = '메인 AI 초안 생성';
         updateReport({ stage });
-        const draft = await traceGeneration(stage, () => reviewStep(job, () => ctx.generateQuietPrompt({ quietPrompt: `${activeContext ? `${activeContext}\n\n` : ''}${draftInstruction}` })), { mode, rules: facts.length });
+        const draft = await runReplyRetry(job, stage, () => traceGeneration(stage, () => reviewStep(job, () => ctx.generateQuietPrompt({ quietPrompt: `${activeContext ? `${activeContext}\n\n` : ''}${draftInstruction}` })), { mode, rules: facts.length }));
         if (!draft) throw new Error('메인 AI가 빈 응답을 반환했어요. 실리태번의 API 오류와 연결 상태를 확인해 주세요.');
         if (!stillSameChat(key, lastMessage, mode)) throw reviewCancelledError();
         stage = 'JEV 초안 검수';
@@ -2047,7 +2109,7 @@ async function runHidden(key, lastMessage, selectedContext = null, mode = 'norma
             updateReport({ stage, rewriteRequested: true });
             status(`설정 충돌 ${flagged.length}곳을 발견했어요. 메인 AI에게 수정 요청 중이에요…`);
             try {
-                const rewritten = await traceGeneration(stage, () => reviewStep(job, () => ctx.generateQuietPrompt({ quietPrompt: correctionPrompt(draft, flagged, activeContext) })), { mode, rules: facts.length });
+                const rewritten = await runReplyRetry(job, stage, () => traceGeneration(stage, () => reviewStep(job, () => ctx.generateQuietPrompt({ quietPrompt: correctionPrompt(draft, flagged, activeContext) })), { mode, rules: facts.length }));
                 if (!rewritten?.trim()) throw new Error('수정 답변이 비어 있어 게시하지 않았어요.');
                 final = rewritten;
                 if (!stillSameChat(key, lastMessage, mode)) throw reviewCancelledError();
@@ -2301,7 +2363,7 @@ async function main() {
     const ctx = context();
     installMemoryHooks(ctx);
     if ($id('key')) { registerDeveloperTitle($id('title')); addWandButton(); return; }
-    const response = await diagnosticFetch(new URL('./settings.html?v=1.9.24', import.meta.url), { credentials: 'same-origin' });
+    const response = await diagnosticFetch(new URL('./settings.html?v=1.9.25', import.meta.url), { credentials: 'same-origin' });
     if (!response.ok) throw new Error(`설정 화면 파일을 읽지 못했어요 (${response.status}).`);
     const html = await response.text();
     // Keep the panel mounted for event bindings, but expose it only through the wand.
@@ -2594,6 +2656,7 @@ async function main() {
     $id('stop')?.addEventListener('click', stopCollection);
     ctx.eventSource.on((ctx.eventTypes ?? ctx.event_types).CHAT_CHANGED, () => {
         diagnostic('event', { event: 'CHAT_CHANGED', busy, extracting, translating });
+        stopReviewJob();
         stopCollection();
         memoryEpoch++; normalGenerating = false; memoryPending = false;
         memoryForcePending = false;

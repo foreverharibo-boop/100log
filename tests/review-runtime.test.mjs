@@ -18,6 +18,78 @@ const reply = (code = 200, body = answer(), retryAfter) => ({
     headers: { get: () => retryAfter ?? null }, json: async () => body,
 });
 
+// Set DIE429_TEST_MODULE to an absolute managed-retry.js path to additionally
+// exercise the real companion extension. The default stub tests the API contract.
+const companion = process.env.DIE429_TEST_MODULE ? await import(process.env.DIE429_TEST_MODULE) : null;
+function installRetryBridge(h, { maxRetries = 2, setTimer } = {}) {
+    const calls = [], config = { enabled: true, catchMode: 'safe', maxRetries };
+    const classify = companion?.classifyManagedError ?? (e => ({ retryable: e.name === 'TimeoutError' || e.retryable || /429|500/.test(e.message) }));
+    const api = companion ? companion.createManagedRetry({ getSettings: () => config, classify,
+        setTimer: setTimer ?? ((fn) => { queueMicrotask(fn); return 1; }), clearTimer() {} }) : {
+        apiVersion: 1, isEnabled: () => config.enabled,
+        async run({ action, validate, signal }) {
+            for (let count = 0; ; count++) {
+                validate(); if (signal.aborted) throw Object.assign(Error(), { name: 'AbortError' });
+                try { const result = await action(); validate(); return result; }
+                catch (e) { if (e.name === 'AbortError' || !classify(e).retryable || count >= maxRetries) throw e; }
+            }
+        },
+    };
+    h.sandbox.die429Retry = { apiVersion: 1, isEnabled: api.isEnabled,
+        run(options) { calls.push(options.stage); return api.run(options); } };
+    return { api, calls, config };
+}
+
+test('429die: draft failure retries generation before checking and publishes once', async () => {
+    const h = harness(() => reply()); const bridge = installRetryBridge(h); let attempts = 0;
+    h.ctx.generateQuietPrompt = async () => { if (++attempts === 1) throw Error('Got response status 500'); return 'saved draft'; };
+    await h.run(); assert.equal(attempts, 2); assert.equal(h.requests.length, 1);
+    assert.deepEqual(h.published, ['saved draft']); assert.deepEqual(bridge.calls, ['메인 AI 초안 생성', 'JEV 초안 검수']);
+});
+test('429die: JEV failure preserves draft and bypasses the old retry loop', async () => {
+    const h = harness((_u, _o, n) => reply(n === 1 ? 429 : 200)); installRetryBridge(h);
+    await h.run(); assert.equal(h.generationCount(), 1); assert.equal(h.requests.length, 2);
+    assert.equal(h.published.length, 1); assert.deepEqual(h.sleeps, []); assert.equal(h.timers.size, 0);
+});
+test('429die: rewrite and recheck retry independently without regenerating the draft', async () => {
+    const h = harness((_u, _o, n) => reply(n === 2 ? 429 : 200, answer(n === 1 ? 'contradiction' : 'no_conflict')));
+    const bridge = installRetryBridge(h); const prompts = []; let n = 0;
+    h.ctx.generateQuietPrompt = async (options) => { prompts.push(options.quietPrompt); if (++n === 2) throw Error('HTTP 429'); return n === 1 ? 'draft' : 'corrected'; };
+    await h.run(); assert.equal(n, 3); assert.equal(prompts[1], prompts[2]); assert.equal(h.requests.length, 3);
+    assert.deepEqual(h.published, ['corrected']);
+    assert.deepEqual(bridge.calls, ['메인 AI 초안 생성', 'JEV 초안 검수', '메인 AI 재작성', 'JEV 재검수']);
+});
+test('429die: exhausted JEV keeps the existing incomplete-review fallback', async () => {
+    const h = harness(() => reply(429)); installRetryBridge(h, { maxRetries: 1 });
+    await h.run(); assert.equal(h.requests.length, 2); assert.equal(h.generationCount(), 1);
+    assert.equal(h.published.length, 1); assert.equal(h.sandbox.data().chatState.lastReview.reviewIncomplete, true);
+});
+test('429die: collection requests do not opt in', async () => {
+    const h = harness((_u, _o, n) => reply(n === 1 ? 429 : 200)); const bridge = installRetryBridge(h);
+    await h.request(); assert.deepEqual(bridge.calls, []); assert.deepEqual(h.sleeps, [2000]);
+});
+test('429die: chat change prevents retry and publication', async () => {
+    const h = harness(() => { h.ctx.chatId = 'chat-b'; return reply(429); }); installRetryBridge(h);
+    await h.run(); assert.equal(h.requests.length, 1); assert.equal(h.published.length, 0);
+});
+test('429die: per-attempt timeout retries JEV without losing the draft', async () => {
+    const h = harness((_u, _o, n) => n === 1 ? new Promise(() => {}) : reply()); installRetryBridge(h);
+    const task = h.run();
+    for (let i = 0; i < 40 && h.requests.length === 0; i++) await Promise.resolve();
+    assert.equal(h.requests.length, 1); assert.equal(h.timers.size, 2);
+    [...h.timers.values()].at(-1)(); await task;
+    assert.equal(h.requests.length, 2); assert.equal(h.generationCount(), 1); assert.equal(h.published.length, 1);
+    assert.equal(h.requests[0].options.signal.aborted, true); assert.equal(h.timers.size, 0);
+});
+test('429die: badge cancellation during backoff stops the owning reply', { skip: !companion }, async () => {
+    let waiting;
+    const h = harness(() => reply(429)); const bridge = installRetryBridge(h, { setTimer: fn => { waiting = fn; return 1; } });
+    const task = h.run();
+    for (let i = 0; i < 80 && !waiting; i++) await Promise.resolve();
+    assert.ok(waiting); bridge.api.cancelAll(); await task;
+    assert.equal(h.requests.length, 1); assert.equal(h.published.length, 0); assert.equal(h.timers.size, 0);
+});
+
 test('report records passed result only after publishing', async () => {
  const h=harness(()=>reply()); await h.run();
  assert.equal(h.sandbox.data().chatState.lastReview.status,'passed');
