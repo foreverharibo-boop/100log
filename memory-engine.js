@@ -77,6 +77,7 @@ export const EXCLUSION_REASONS = {
     duplicate: '같은 내용의 기억이 이미 있어요. 자동으로 병합한 것은 아니에요.',
     unchanged: '내용·인물별 지식·진행 상태가 기존 기억과 같아요.',
     capacity: '현재 사용 중인 규칙이 40개 한도에 도달했어요.',
+    protected_capacity: '유지할 개수가 직접 저장·잠금한 기억으로 차 있어 새 기억을 넣지 못했어요.',
     batch_limit: '한 묶음의 제안 64개 처리 한도를 넘었어요.',
     approval: '이전 방식의 승인 조건이 충족되지 않았어요.',
 };
@@ -581,18 +582,50 @@ export function parseMemoryOperations(raw, rows, facts, sourceChatId = '', conte
     return { aliasSuggestions: aliasSuggestions(result.aliasSuggestions, rows, sourceChatId), operations: valid, proposed: result.operations.length, rejected: rejected + Math.max(0, result.operations.length - 64), exclusions };
 }
 
-export function applyMemoryOperations(value, operations, sourceChatId = '') {
+export function normalizeMemoryLimit(value, fallback = 30) {
+    const number = Number(value);
+    return Number.isFinite(number) && number >= 1 ? Math.max(1, Math.min(MAX_FACTS, Math.floor(number))) : fallback;
+}
+
+// The array is collection order (the UI reverses it). Do not use sourceId:
+// character memories can span chats, and updates retain their collection slot.
+export function evictOldestMemories(value, limit = 30, sourceChatId = '', sourceId = null, protectedIds = new Set()) {
+    const active = value.facts.filter(fact => fact.active && isCurrent(fact));
+    let excess = Math.max(0, active.length - Math.max(0, Math.floor(limit)));
+    const changes = [];
+    for (const fact of active) {
+        if (!excess) break;
+        if (fact.pinned || fact.origin !== 'auto' || protectedIds.has(fact.id)) continue;
+        const before = copy(fact);
+        fact.active = false;
+        fact.archived = 'oldest_evicted';
+        fact.archiveReason = '오래된 기억 자동 밀어내기 · 수집 순서 기준';
+        fact.endedAtSourceChatId = sourceChatId;
+        fact.endedAtSourceId = sourceId;
+        changes.push({ id: fact.id, before, after: copy(fact) });
+        excess--;
+    }
+    return { evicted: changes.length, blocked: excess, changes };
+}
+
+export function applyMemoryOperations(value, operations, sourceChatId = '', options = {}) {
     const before = new Map(value.facts.map((fact) => [fact.id, copy(fact)]));
     let added = 0, updated = 0, archived = 0, skipped = 0;
     const exclusions = [];
     const capacityDeferred = [];
+    const limit = options.autoEvict ? normalizeMemoryLimit(options.memoryLimit) : MAX_FACTS;
+    // Apply updates/closures before additions can evict their old targets.
+    const orderedOperations = options.autoEvict
+        ? [...operations.filter(op => op.action !== 'add'), ...operations.filter(op => op.action === 'add')]
+        : operations;
+    let evicted = 0;
     const skip = (op, code, prior = null) => {
         skipped++;
         const exclusion = excludedOperation(op, code, sourceChatId, null, prior);
         exclusions.push(exclusion);
         if (code === 'capacity') capacityDeferred.push({ operation: copy(op), exclusionId: exclusion.id });
     };
-    for (const originalOp of operations) {
+    for (const originalOp of orderedOperations) {
         const op = { ...originalOp };
         const resolved = resolveFactNames(op, value.nameAliases); op.knowledge = resolved.knowledge; op.knowledgeEvidence = resolved.knowledgeEvidence;
         if (op.needsJevValidation && !op.jevValidated) { skip(op, 'approval'); continue; }
@@ -623,6 +656,10 @@ export function applyMemoryOperations(value, operations, sourceChatId = '') {
             if (op.action === 'add') {
                 const duplicate = value.facts.find((fact) => compact(fact.text).toLowerCase() === compact(op.text).toLowerCase());
                 if (duplicate) { skip(op, 'duplicate', duplicate); continue; }
+                if (options.autoEvict) {
+                    evicted += evictOldestMemories(value, limit - 1, sourceChatId, op.sourceId).evicted;
+                    if (value.facts.filter(fact => fact.active && isCurrent(fact)).length >= limit) { skip(op, 'protected_capacity'); continue; }
+                }
                 if (value.facts.filter((fact) => isCurrent(fact) && fact.active).length >= MAX_FACTS) { skip(op, 'capacity'); continue; }
             }
             if (prior && prior.text === op.text && JSON.stringify(prior.knowledge ?? {}) === JSON.stringify(op.knowledge)
@@ -681,12 +718,13 @@ export function applyMemoryOperations(value, operations, sourceChatId = '') {
             archived++;
         }
     }
+    if (options.autoEvict) evicted += evictOldestMemories(value, limit, sourceChatId, operations.at(-1)?.sourceId ?? null).evicted;
     const changes = [];
     for (const fact of value.facts) {
         const old = before.get(fact.id) ?? null;
         if (JSON.stringify(old) !== JSON.stringify(fact)) changes.push({ id: fact.id, before: old, after: copy(fact) });
     }
-    return { added, updated, archived, skipped, changes, exclusions, capacityDeferred };
+    return { added, updated, archived, evicted, skipped, changes, exclusions, capacityDeferred };
 }
 
 // Retry only this collection's already validated, capacity-blocked additions.

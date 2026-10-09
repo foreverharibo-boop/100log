@@ -1,10 +1,10 @@
-import { createNativeReview } from './native-review.js?v=1.9.28';
-import { retryCapacityOperations } from './memory-engine.js?v=1.9.28';
-import { availableSupportingEvidence, normalizeAliases, canonicalName, linkAlias, resolveFactNames, normalizeSupportingEvidence, addRejectedMemory } from './continuity-tools.js?v=1.9.28';
-import { applyManualKnowledgeDraft, collectedCharacterNames, sortMemoriesByCollection, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, omissionReviewRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js?v=1.9.28';
-import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, supportsBackgroundUtility, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js?v=1.9.28';
-import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js?v=1.9.28';
-import { normalizeKnowledgeEvidence, KNOWLEDGE_LABELS, COMMITMENT_LABELS, commitmentState } from './core.js?v=1.9.28';
+import { createNativeReview } from './native-review.js?v=1.9.29';
+import { retryCapacityOperations, evictOldestMemories, normalizeMemoryLimit } from './memory-engine.js?v=1.9.29';
+import { availableSupportingEvidence, normalizeAliases, canonicalName, linkAlias, resolveFactNames, normalizeSupportingEvidence, addRejectedMemory } from './continuity-tools.js?v=1.9.29';
+import { applyManualKnowledgeDraft, collectedCharacterNames, sortMemoriesByCollection, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, omissionReviewRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js?v=1.9.29';
+import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, supportsBackgroundUtility, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js?v=1.9.29';
+import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js?v=1.9.29';
+import { normalizeKnowledgeEvidence, KNOWLEDGE_LABELS, COMMITMENT_LABELS, commitmentState } from './core.js?v=1.9.29';
 
 const NAME = 'hundredlog';
 const LEGACY_NAME = 'memorybean';
@@ -592,6 +592,9 @@ function settings() {
     const legacyJevEnabled = Boolean(config.enabled);
     config.autoMemory ??= legacyJevEnabled;
     config.enabled = Boolean(config.autoMemory);
+    config.reviewEnabled ??= Boolean(config.autoMemory && apiKey());
+    config.autoEvict ??= false;
+    config.memoryLimit = normalizeMemoryLimit(config.memoryLimit);
     config.autoCleanup ??= true;
     config.collectionIntensity = ['detailed', 'balanced', 'meaningful'].includes(config.collectionIntensity) ? config.collectionIntensity : 'balanced';
     config.cleanupThreshold = cleanupThreshold(config.cleanupThreshold, 20);
@@ -945,6 +948,8 @@ function renderReviewReport() {
         passed: `기억 ${report.checked}개 확인 · ${report.uncertain ? '명확한 충돌 없음' : '모순 없음'}`,
         corrected: `충돌 ${report.issues?.length || 0}개 수정 · 재검수 후 표시`,
         background_skipped: '수집·번역 중 · 이번 답변은 실리태번 기본 생성으로 진행',
+        review_disabled: '기억 주입 · JEV 답변 검수 끔',
+        review_unavailable: '기억 주입 · JEV 연결 없음으로 답변 검수 생략',
         review_skipped: `${report.skippedStage || '검수'} 미완료 · 받은 답변 표시`,
         conflicts_remaining: `충돌 ${report.remaining || 0}개 남음 · 재작성 답변 표시`,
         blocked: `재검수 실패 · 충돌 ${report.remaining || 0}개가 남아 표시하지 않음`,
@@ -1333,6 +1338,10 @@ function renderContent() {
     $id('cleanup-threshold').value = String(settings().cleanupThreshold);
     $id('auto-cleanup').checked = Boolean(settings().autoCleanup);
     $id('auto-cleanup').disabled = working;
+    if ($id('auto-evict')) { $id('auto-evict').checked = Boolean(settings().autoEvict); $id('auto-evict').disabled = working || normalGenerating; }
+    if ($id('memory-limit')) { $id('memory-limit').value = String(settings().memoryLimit); $id('memory-limit').disabled = working || normalGenerating; }
+    if ($id('eviction-summary')) $id('eviction-summary').textContent = value?.lastEvictionSummary || '';
+    if ($id('review-enabled')) { $id('review-enabled').checked = Boolean(settings().reviewEnabled); $id('review-enabled').disabled = working || normalGenerating; }
     if ($id('cleanup-now')) $id('cleanup-now').disabled = working || normalGenerating || !currentFacts.some(fact => fact.active);
     if ($id('cleanup-stop')) $id('cleanup-stop').hidden = !extracting;
     const intervalWarning = $id('interval-warning');
@@ -1344,8 +1353,8 @@ function renderContent() {
     $id('undo-last').disabled = working || !value || !state?.autoMemory?.journal?.some((entry) => entry.changes?.length && !entry.undoneAt);
     refreshProfiles();
     if ($id('background-help')) $id('background-help').textContent = supportsBackgroundUtility(context(), settings().extractionProfileId || '')
-        ? '기억은 백그라운드로 정리해요. 수집 중에도 저장된 기억으로 답변을 검수하고, 새 기억은 다음 답변부터 사용해요.'
-        : '현재 API는 호환 수집 경로를 사용해요. 답변 검수와 수집을 함께 진행하려면 정리용 연결 프로필을 선택해 주세요.';
+        ? '기억은 백그라운드로 정리해요. 저장된 기억은 답변에 주입하고, 새 기억은 다음 답변부터 사용해요. JEV 답변 검수는 선택 사항이에요.'
+        : '현재 API는 호환 수집 경로를 사용해요. 정리용 연결 프로필을 선택하면 백그라운드 수집을 지원하는 API를 사용할 수 있어요.';
     const allRecords = value ? [...value.facts, ...value.candidates] : [];
     const missing = allRecords.filter((record) => !hasUsableKoreanText(record)).length;
     $id('translation-count').textContent = `미번역 ${missing}`;
@@ -1483,7 +1492,7 @@ function renderContent() {
         const title = document.createElement('div'); title.className = 'hundredlog-text'; title.textContent = displayText(fact);
         const next = value.facts.find((entry) => entry.id === fact.supersededBy);
         const meta = document.createElement('div'); meta.className = 'hundredlog-meta';
-        const reason = { completed: '완료됨', cancelled: '취소됨', past_scene: '지난 상황', updated: '새 상태로 갱신', merged: '비슷한 규칙에 병합', low_importance: '중요도가 낮아 자동 정리', restored: '이전 기억 복원' }[fact.archived] || '지난 상태';
+        const reason = { completed: '완료됨', cancelled: '취소됨', past_scene: '지난 상황', updated: '새 상태로 갱신', merged: '비슷한 규칙에 병합', low_importance: '중요도가 낮아 자동 정리', oldest_evicted: '오래된 수집 순서로 밀어냄', restored: '이전 기억 복원' }[fact.archived] || '지난 상태';
         meta.textContent = `${reason}${fact.archiveReason ? ` · ${fact.archiveReason}` : ''}${next ? ` → ${displayText(next)}` : ''}`;
         item.append(title, meta); appendOriginal(item, fact); appendCommitmentHistory(item, fact);
         if (fact.closedEvidence) { const evidence = document.createElement('div'); evidence.className = 'hundredlog-meta'; evidence.textContent = `변경 근거: ${fact.closedEvidence}`; item.append(evidence); }
@@ -1582,6 +1591,25 @@ function cleanupSummaryText(review) {
         + (review.proposed === 0 ? '. AI가 정리할 항목을 제안하지 않았어요.' : '')
         + (review.recovered ? ` · 자리 부족으로 빠졌던 기억 ${review.recovered}개 저장` : '')
         + (review.capacityRemaining ? ` · 자리가 부족해 새 기억 ${review.capacityRemaining}개를 저장하지 못했어요.` : '');
+}
+
+function evictionSummaryText(value, evicted, limit) {
+    const active = value.facts.filter(fact => fact.active && isCurrent(fact)).length;
+    return `오래된 기억 ${evicted}개를 보관으로 옮겼어요 · 현재 ${active}개 / 유지 기준 ${limit}개`
+        + (active > limit ? ' · 직접 저장·잠금한 기억은 유지해요.' : '');
+}
+
+async function applyEvictionSetting() {
+    if (busy || extracting || translating || normalGenerating) return;
+    const config = settings(), ctx = context(), value = data();
+    if (!config.autoEvict || !value) { render(); return; }
+    const state = chatState(value, ctx);
+    const auto = initializeAuto(state, ctx.chat);
+    const result = evictOldestMemories(value, config.memoryLimit, sourceChatId(ctx));
+    if (result.changes.length) recordMemoryBatch(state, { rows: [], start: auto.cursor, offset: auto.offset,
+        nextCursor: auto.cursor, nextOffset: auto.offset, changes: result.changes });
+    value.lastEvictionSummary = evictionSummaryText(value, result.evicted, config.memoryLimit);
+    await save(); render(); status(value.lastEvictionSummary);
 }
 
 async function runAutomaticCleanup(value, ctx, profileId, sameChat, job = null, { force = false } = {}) {
@@ -1755,7 +1783,7 @@ async function performMemorySync({ rebuildRecent = false, force = false, reviewO
     const progressTimer = setInterval(refreshCollectionStatus, 1000);
     render();
     setCollectionStatus(reviewOnly ? '저장된 기억과 최근 대화를 비교해 누락을 확인해요…' : '최근 대화 수집을 시작하고 있어요…');
-    let changed = 0, added = 0, updated = 0, archived = 0, uncertain = 0;
+    let changed = 0, added = 0, updated = 0, archived = 0, evicted = 0, uncertain = 0;
     const analyzedAssistantIds = new Set();
     let proposedCount = 0, structuralRejected = 0, storeSkipped = 0;
     const exclusionReport = { createdAt: Date.now(), total: 0, items: [] };
@@ -1816,7 +1844,7 @@ async function performMemorySync({ rebuildRecent = false, force = false, reviewO
             if (!sameChat()) return;
             // Apply only after the request and source checks succeed.
             const staged = { facts: JSON.parse(JSON.stringify(value.facts)), nameAliases:value.nameAliases, rejectedMemories:value.rejectedMemories };
-            const result = applyMemoryOperations(staged, parsed.operations, currentSourceChatId);
+            const result = applyMemoryOperations(staged, parsed.operations, currentSourceChatId, settings());
             capacityDeferred.push(...result.capacityDeferred);
             if (!sameChat()) return;
             value.facts = staged.facts;
@@ -1835,8 +1863,10 @@ async function performMemorySync({ rebuildRecent = false, force = false, reviewO
                 nextOffset: reviewOnly ? auto.offset : batch.nextOffset, changes: result.changes });
             if (reviewOnly) { reviewCursor = batch.nextCursor; reviewOffset = batch.nextOffset; }
             storeSkipped += result.skipped;
-            changed += result.added + result.updated + result.archived;
+            changed += result.added + result.updated + result.archived + result.evicted;
             added += result.added; updated += result.updated; archived += result.archived;
+            evicted += result.evicted;
+            if (settings().autoEvict) value.lastEvictionSummary = evictionSummaryText(value, evicted, settings().memoryLimit);
             uncertain += parsed.rejected + result.skipped;
             state.extractionCursor = auto.cursor; state.extractionOffset = auto.offset;
             await save(); render();
@@ -1869,6 +1899,7 @@ async function performMemorySync({ rebuildRecent = false, force = false, reviewO
             if (!stopExtractionRequested && (analyzedAssistantIds.size || !cleanupResult.skipped)) {
                 const activity = [`${analyzedAssistantIds.size}개 답변 분석`, `규칙 ${added}개 추가`, `${updated}개 갱신`];
                 if (archived) activity.push(`${archived}개 종료`);
+                if (evicted) activity.push(`오래된 기억 ${evicted}개 밀어냄`);
                 if (reviewOnly) activity.unshift('수동 누락 재확인');
                 activity.push(`AI 제안 ${proposedCount}개 · 형식·출처 제외 ${structuralRejected}개 · 중복·한도 등 저장 생략 ${storeSkipped}개`);
                 if (!cleanupResult.skipped) activity.push(`AI 자동 청소 · ${cleanupResult.merged + cleanupResult.archived}개 정리${cleanupResult.conflicts ? ` · 충돌 확인 필요 ${cleanupResult.conflicts}쌍` : ''}`);
@@ -1953,13 +1984,14 @@ export function installMemoryHooks(ctx = context()) {
     on('CHARACTER_MESSAGE_RENDERED', () => scheduleMemory());
     on('GENERATION_STARTED', (type, _options, dryRun) => diagnostic('generation', { mode: type, dryRun: Boolean(dryRun), busy }));
     on('MESSAGE_RECEIVED', () => scheduleMemory());
-    on('GENERATION_ENDED', (type) => {
+    on('GENERATION_ENDED', async (type) => {
         if (['quiet', 'impersonate'].includes(type)) return;
         nativeReview?.ended();
         normalGenerating = false;
+        if (!nativeReview?.current() && !activeReviewJob) await clearLegacyPrompt();
         if (memoryPending) scheduleMemory();
     });
-    on('GENERATION_STOPPED', () => { normalGenerating = false; stopReviewJob(); if (memoryPending) scheduleMemory(); });
+    on('GENERATION_STOPPED', async () => { normalGenerating = false; stopReviewJob(); await clearLegacyPrompt(); if (memoryPending) scheduleMemory(); });
     for (const event of ['MESSAGE_SWIPED', 'MESSAGE_EDITED', 'MESSAGE_DELETED']) on(event, queueSourceMutation);
 }
 
@@ -2221,8 +2253,8 @@ globalThis.hundredlogGenerationInterceptor = async function (_promptChat, _size,
     const owner = data(false);
     const confirmed = owner?.facts.filter(fact => fact.active && isCurrent(fact)) ?? [];
     if (!confirmed.length) return;
-    if (!nativeReview || !apiKey()) { status('공개 전 검수를 사용할 수 없어 실리태번의 일반 생성을 진행해요. JEV 연결을 확인해 주세요.'); return; }
-    if ((extracting && !activeCollectionJob?.backgroundSafe) || (translating && !translationBackgroundSafe)) {
+    const useReview = Boolean(config.reviewEnabled && nativeReview && apiKey());
+    if (useReview && ((extracting && !activeCollectionJob?.backgroundSafe) || (translating && !translationBackgroundSafe))) {
         const state = chatState(owner);
         if (state) state.lastReview = { at: Date.now(), mode, status: 'background_skipped', stage: '수집·번역 중', checked: 0, issues: [] };
         context().saveSettingsDebounced?.(); renderReviewReport(); return;
@@ -2252,9 +2284,20 @@ globalThis.hundredlogGenerationInterceptor = async function (_promptChat, _size,
         await ctx.setExtensionPrompt('100log-context', job.activeContext, 1, 0, false, 0);
         checkReviewJob(job);
         if (chatKey(context()) !== job.key) throw reviewCancelledError();
-        nativeReview.arm(job);
-        nativeReview.prioritize?.();
-        status('사실을 주입했어요. 실리태번의 답변이 도착하면 검수할게요.');
+        if (useReview) {
+            nativeReview.arm(job);
+            nativeReview.prioritize?.();
+            status('사실을 주입했어요. 실리태번의 답변이 도착하면 검수할게요.');
+        } else {
+            // Injection works independently of JEV: no reply mask, review request
+            // or rewrite. The native generation owns rendering and streaming.
+            const state = chatState(owner);
+            if (state) state.lastReview = { at: Date.now(), mode, status: config.reviewEnabled ? 'review_unavailable' : 'review_disabled', checked: 0, issues: [] };
+            context().saveSettingsDebounced?.();
+            if (activeReviewJob === job) activeReviewJob = null;
+            busy = false;
+            status(config.reviewEnabled ? '기억을 주입했어요. JEV 키·연결이 없어 답변 검수는 생략해요.' : '기억을 주입했어요. JEV 답변 검수는 꺼져 있어요.');
+        }
     } catch (error) {
         const cancelled = job.controller.signal.aborted || error?.hundredlogCancelled || chatKey(context()) !== job.key;
         diagnosticError('생성 준비', error);
@@ -2404,7 +2447,7 @@ async function main() {
     const ctx = context();
     installMemoryHooks(ctx);
     if ($id('key')) { registerDeveloperTitle($id('title')); addWandButton(); return; }
-    const response = await diagnosticFetch(new URL('./settings.html?v=1.9.28', import.meta.url), { credentials: 'same-origin' });
+    const response = await diagnosticFetch(new URL('./settings.html?v=1.9.29', import.meta.url), { credentials: 'same-origin' });
     if (!response.ok) throw new Error(`설정 화면 파일을 읽지 못했어요 (${response.status}).`);
     const html = await response.text();
     // Keep the panel mounted for event bindings, but expose it only through the wand.
@@ -2520,7 +2563,6 @@ async function main() {
         status(`${embeddingLabel()} 임베딩 키를 삭제했어요.`);
     });
     $id('developer-memory')?.addEventListener('change', (event) => {
-        if (event.target.checked && !apiKey()) { status('Jev API 키를 먼저 입력해 주세요.'); render(); return; }
         if (event.target.checked && !embeddingKey()) { status(`${embeddingLabel()} 임베딩 키를 먼저 입력해 주세요.`); render(); return; }
         settings().developerMemorySelection = event.target.checked;
         ctx.saveSettingsDebounced();
@@ -2581,11 +2623,10 @@ async function main() {
         $id('key').value = '';
         $id('server').textContent = 'API 키를 입력해 주세요';
         connectionError();
-        settings().developerMemorySelection = false;
-        settings().autoMemory = false;
-        settings().enabled = false;
+        settings().reviewEnabled = false;
+        stopReviewJob();
         ctx.saveSettingsDebounced();
-        status('Jev 키를 삭제하고 100LOG 사용을 껐어요.');
+        status('JEV 키를 삭제하고 답변 검수만 껐어요. 기억 수집·주입은 기존 설정대로 유지해요.');
         render();
     });
     $id('add')?.addEventListener('click', async () => {
@@ -2623,23 +2664,13 @@ async function main() {
         status(`최근 자동 정리에서 바뀐 기억 ${count}개를 되돌렸어요.`);
     });
     $id('auto-memory')?.addEventListener('change', async (event) => {
-        if (event.target.checked && !apiKey()) {
-            event.target.checked = false;
-            settings().autoMemory = false;
-            settings().enabled = false;
-            showView('settings');
-            context().saveSettingsDebounced();
-            render();
-            status('100LOG를 사용하려면 Jev API 키를 먼저 입력해 주세요.');
-            return;
-        }
         settings().autoMemory = event.target.checked;
         settings().enabled = event.target.checked;
         memoryEpoch++; memoryPending = false;
         if (!settings().autoMemory) { stopCollection(); stopReviewJob(); }
         context().saveSettingsDebounced();
         await clearLegacyPrompt(); render();
-        status(settings().autoMemory ? '최근 규칙 관리와 일반·재생성·스와이프 공개 전 검수를 모두 시작해요.' : '100LOG를 껐어요. 저장된 규칙은 유지돼요.');
+        status(settings().autoMemory ? `기억 수집·주입을 시작해요. JEV 답변 검수는 ${settings().reviewEnabled ? '켜져' : '꺼져'} 있어요.` : '100LOG를 껐어요. 저장된 규칙은 유지돼요.');
         if (settings().autoMemory) scheduleMemory();
     });
     $id('auto-cleanup')?.addEventListener('change', (event) => {
@@ -2650,6 +2681,25 @@ async function main() {
     });
     $id('cleanup-now')?.addEventListener('click', () => { void syncMemories({ cleanupOnly: true, force: true }); });
     $id('cleanup-stop')?.addEventListener('click', stopCollection);
+    $id('auto-evict')?.addEventListener('change', async (event) => {
+        settings().autoEvict = event.target.checked;
+        context().saveSettingsDebounced();
+        if (!event.target.checked) { render(); status('오래된 기억 자동 밀어내기를 껐어요.'); return; }
+        try { await applyEvictionSetting(); } catch (error) { diagnosticError('규칙 저장', error); status(error.message); }
+    });
+    $id('memory-limit')?.addEventListener('change', async (event) => {
+        settings().memoryLimit = normalizeMemoryLimit(event.target.value);
+        event.target.value = String(settings().memoryLimit);
+        context().saveSettingsDebounced();
+        try { await applyEvictionSetting(); } catch (error) { diagnosticError('규칙 저장', error); status(error.message); }
+    });
+    $id('review-enabled')?.addEventListener('change', (event) => {
+        if (event.target.checked && !apiKey()) { event.target.checked = false; status('JEV 답변 검수를 켜려면 아래에 JEV 키를 입력해 주세요. 기억 수집·주입은 키 없이 사용할 수 있어요.'); return; }
+        settings().reviewEnabled = event.target.checked;
+        if (!event.target.checked) stopReviewJob();
+        context().saveSettingsDebounced(); render();
+        status(event.target.checked ? 'JEV 답변 검수를 켰어요. 다음 답변부터 검사해요.' : 'JEV 답변 검수를 껐어요. 기억 수집·주입은 계속 사용할 수 있어요.');
+    });
     const saveCollectionPreferences = async () => {
         if (busy || extracting || translating) return;
         const value = data(); if (!value) return;

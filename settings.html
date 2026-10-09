@@ -50,8 +50,12 @@
           <label for="hundredlog-analysis-interval"><span>자동 규칙 갱신 주기</span><span class="hundredlog-number-field"><input id="hundredlog-analysis-interval" type="number" min="1" step="1" inputmode="numeric"><span>AI 답변마다</span></span></label>
           <label for="hundredlog-cleanup-threshold"><span>자동 청소 시작 개수</span><span class="hundredlog-number-field"><input id="hundredlog-cleanup-threshold" type="number" min="5" max="40" step="1" inputmode="numeric"><span>개 이상</span></span></label>
         </div>
-        <p class="hundredlog-help">약속·비밀·정정은 모든 강도에서 수집해요. 세세하게는 작은 부탁·제안·취향·경험·변화까지 넓게 모으며, 미확정 계획은 미확정으로 기록해요. 규칙이 많아지면 검수량도 늘어요. 갱신 주기는 AI 답변 수 기준이에요.</p>
+        <p class="hundredlog-help">약속·비밀·정정은 모든 강도에서 수집해요. 세세하게는 작은 부탁·제안·취향·경험·변화까지 넓게 모으며, 미확정 계획은 미확정으로 기록해요. 규칙이 많아지면 검수량도 늘어요. 갱신 주기는 AI 답변 수 기준이에요. 수집 강도 변경은 다음 수집·누락 재확인에 적용돼요. ‘지금 청소’는 재수집이 아니에요. 기존 기억을 바뀐 강도로 다시 모으려면 ‘최근 100개 재수집’을 사용해 주세요.</p>
         <p id="hundredlog-interval-warning" class="hundredlog-help hundredlog-warning" hidden>갱신 주기가 50 이상이면 정리되기 전에 오래된 메시지가 최근 100개 범위에서 빠질 수 있어요.</p>
+        <label class="hundredlog-toggle hundredlog-setting-toggle"><input id="hundredlog-auto-evict" type="checkbox"><span>오래된 기억 자동 밀어내기</span></label>
+        <div class="hundredlog-setting-grid"><label for="hundredlog-memory-limit"><span>유지할 기억 개수</span><span class="hundredlog-number-field"><input id="hundredlog-memory-limit" type="number" min="1" max="40" step="1" inputmode="numeric"><span>개</span></span></label></div>
+        <p class="hundredlog-help">켜거나 개수를 줄이면 바로 적용하고, 이후 수집할 때도 유지해요. 대화가 100개 미만이어도 오래된 수집 순서로 현재 목록에서 빼고 보관 기록에 남겨요. 직접 저장·잠금한 기억은 유지하며, 잠그지 않은 자동 수집 기억은 약속·비밀도 밀려날 수 있어요. 보호된 기억만으로 개수가 차면 새 기억은 저장하지 못해요. AI 추가 호출은 없어요.</p>
+        <p id="hundredlog-eviction-summary" class="hundredlog-help" aria-live="polite"></p>
         <label class="hundredlog-toggle hundredlog-setting-toggle"><input id="hundredlog-auto-cleanup" type="checkbox"><span>수집 후 규칙 자동 청소</span></label>
         <p class="hundredlog-help">5~40개부터 정리 AI가 청소해요. 원문 인용·잠금·병합 조건을 코드로 검사한 뒤 적용하며 직접 추가·잠금한 규칙은 유지해요.</p>
         <div class="hundredlog-actions"><button type="button" id="hundredlog-cleanup-now" class="menu_button">지금 청소</button><button type="button" id="hundredlog-cleanup-stop" class="menu_button" hidden>중단</button></div>
@@ -82,8 +86,10 @@
         <p class="hundredlog-help">규칙 삭제에서 ‘잘못 수집됨’을 선택한 항목이에요. 같은 원문의 같은 내용을 다시 모으지 않도록 정리 AI에 알리고, 일치하는 제안을 걸러요. 표현만 바뀐 제안은 AI의 동일 내용 판정이 필요해요. 새 메시지의 사건은 수집할 수 있어요. 제외 해제 후 ‘누락 재확인’으로 다시 확인할 수 있어요.</p>
         <div id="hundredlog-rejected-memories"></div>
       </section>
-      <section class="hundredlog-settings-block"><div class="hundredlog-fold-title"><strong>JEV 연결</strong></div>
-        <p class="hundredlog-help">사실 주입 → 실리태번 정상 생성 → 받은 답변 검수 순서로 동작해요. 통과하면 원문 그대로, 충돌하면 한 번 수정 요청한 뒤 다시 검사해요. 스트리밍 본문도 검수가 끝나면 보여줘요. 검수·수정 요청 실패 시 받은 답변을 보존하고 검수 미완료로 남겨요. 429다이를 함께 켜면 해당 단계만 재시도해요.</p>
+      <section class="hundredlog-settings-block"><div class="hundredlog-fold-title"><strong>JEV 답변 검수 · 선택 사항</strong></div>
+        <label class="hundredlog-toggle hundredlog-setting-toggle"><input id="hundredlog-review-enabled" type="checkbox"><span>JEV로 받은 답변 검수</span></label>
+        <p class="hundredlog-help">꺼두면 JEV 키 없이 기억 수집·청소·주입을 사용할 수 있고, 답변은 실리태번에서 바로 보여줘요. 기억 수집과 AI 청소에는 정리용 AI 연결이 필요해요.</p>
+        <p class="hundredlog-help">켜두면 사실 주입 → 실리태번 정상 생성 → 받은 답변 검수 순서로 동작해요. 통과하면 원문 그대로, 충돌하면 한 번 수정 요청한 뒤 다시 검사해요. 스트리밍 본문도 검수가 끝나면 보여줘요. 검수·수정 요청 실패 시 받은 답변을 보존하고 검수 미완료로 남겨요. 429다이를 함께 켜면 해당 단계만 재시도해요.</p>
         <label for="hundredlog-key" class="hundredlog-label">Jev API 키</label><input id="hundredlog-key" type="password" autocomplete="off" spellcheck="false" placeholder="TypeSafe API 키">
         <div class="hundredlog-row hundredlog-connection-actions"><button type="button" id="hundredlog-test" class="menu_button">연결 확인</button><button type="button" id="hundredlog-clearkey" class="menu_button">키 삭제</button><span id="hundredlog-server" class="hundredlog-state" aria-live="polite">API 키를 입력해 주세요</span></div>
         <p id="hundredlog-connection-error" class="hundredlog-help hundredlog-connection-error" role="alert" hidden></p>

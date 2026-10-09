@@ -60,7 +60,7 @@ function harness(handler) {
     const sandbox={...continuity,messageSignature,AbortController,structuredClone,URL,
         sourceChatId:()=> 'chat-a',activeCollectionJob:null,translationBackgroundSafe:false,activeReviewJob:null,nativeReview:null,
         memoryHooksInstalled:false,extracting:false,translating:false,apiKey:()=> 'fake-key',context:()=>ctx,chatKey:c=>c.chatId,
-        settings:()=>({autoMemory:true}),queueSourceMutation(){},
+        settings:()=>({autoMemory:true,reviewEnabled:true}),queueSourceMutation(){},
         traceGeneration:async(_stage,action)=>{const result=await action();if(!result?.trim())throw Error('빈 응답');return result;},
         chatState:v=>(v.chatState??={}),renderReviewReport(){},diagnostic(){},diagnosticError(){},traceDiagnostic:async(_s,a)=>a(),
         diagnosticFetch:(...args)=>sandbox.fetch(...args),ST_JEV_ROUTE:'/relay',JEV_URL:'https://example.invalid/jev',ST_STRIP:[],lastJevTransport:'',
@@ -127,6 +127,63 @@ test('100LOG never calls generateQuietPrompt before receiving a native reply', a
     const h=harness(()=>reply()); h.ctx.generateQuietPrompt=()=>{throw Error('must not generate');};
     await h.prepare(); assert.equal(h.aborted(),0); assert.equal(h.requests.length,0);
     await h.deliver(); assert.equal(h.requests.length,1);
+});
+
+for (const mode of ['normal', 'swipe', 'regenerate']) for (const hasKey of [false, true]) {
+    test(`JEV disabled, ${mode}, key=${hasKey}: inject normally without mask, JEV or rewrite`, async () => {
+        const h = harness(() => { throw Error('JEV must not be called'); });
+        h.sandbox.settings = () => ({ autoMemory: true, reviewEnabled: false });
+        h.sandbox.apiKey = () => hasKey ? 'fake-key' : '';
+        await h.prepare(mode);
+        assert.ok(h.injections.some(args => args[1] === 'facts'));
+        assert.equal(h.masks.size, 0); assert.equal(h.sandbox.busy, false);
+        assert.equal(h.sandbox.activeReviewJob, null); assert.equal(h.aborted(), 0);
+        const message = await h.deliver('native unchanged', mode, true);
+        assert.equal(message.mes, 'native unchanged');
+        assert.equal(h.requests.length, 0); assert.equal(h.generationCount(), 0);
+        assert.equal(h.sandbox.data().chatState.lastReview.status, 'review_disabled');
+        assert.equal(h.injections.at(-1)[1], '');
+    });
+}
+
+test('missing JEV key never suppresses fact injection even when review is configured on', async () => {
+    const h = harness(() => { throw Error('JEV must not be called'); }); h.sandbox.apiKey = () => '';
+    await h.prepare();
+    assert.ok(h.injections.some(args => args[1] === 'facts'));
+    assert.equal(h.masks.size, 0); assert.equal(h.sandbox.busy, false);
+    await h.deliver('native'); assert.equal(h.requests.length, 0);
+    assert.equal(h.sandbox.data().chatState.lastReview.status, 'review_unavailable');
+});
+
+test('settings migration preserves existing JEV users; no-key or new installations do not require JEV', () => {
+    const settingsCode = source.slice(source.indexOf('function positiveInteger('), source.indexOf('function cleanUuid('));
+    for (const [initial, key, expected] of [[{autoMemory:true},'key',true], [{autoMemory:true},'',false], [{},'key',false], [{autoMemory:true,reviewEnabled:false},'key',false]]) {
+        const ctx = { extensionSettings: { hundredlog: initial } };
+        const box = { NAME:'hundredlog', LEGACY_NAME:'memorybean', MAX_FACTS:40, context:()=>ctx,
+            apiKey:()=>key, normalizeMemoryLimit:v=>Math.max(1,Math.min(40,Number(v)||30)) };
+        vm.createContext(box); vm.runInContext(settingsCode,box);
+        const config = box.settings();
+        assert.equal(config.reviewEnabled, expected); assert.equal(config.autoEvict, false);
+        assert.equal(config.memoryLimit, 30);
+        config.reviewEnabled = false; assert.equal(box.settings().reviewEnabled, false);
+    }
+});
+
+test('usage toggle works without a key and deleting a JEV key only disables review', async () => {
+    const listeners = new Map(), config = {autoMemory:false, enabled:false, reviewEnabled:false, developerMemorySelection:true};
+    const box = { $id:id=>({ addEventListener:(event,fn)=>listeners.set(id,fn) }), settings:()=>config,
+        context:()=>({saveSettingsDebounced(){}}), ctx:{saveSettingsDebounced(){}}, localStorage:{removeItem(){}},
+        KEY_STORAGE:'key', LEGACY_KEY_STORAGE:'old-key', memoryEpoch:0, memoryPending:false,
+        stopCollection(){}, stopReviewJob(){}, clearLegacyPrompt:async()=>{}, connectionError(){}, render(){}, status(){}, scheduleMemory(){}, apiKey:()=>'' };
+    vm.createContext(box);
+    vm.runInContext(source.slice(source.indexOf("    $id('auto-memory')?.addEventListener"),source.indexOf("    $id('auto-cleanup')?.addEventListener")),box);
+    vm.runInContext(source.slice(source.indexOf("    $id('clearkey')?.addEventListener"),source.indexOf("    $id('add')?.addEventListener")),box);
+    await listeners.get('auto-memory')({target:{checked:true}});
+    assert.equal(config.autoMemory,true); assert.equal(config.enabled,true);
+    config.reviewEnabled=true;
+    listeners.get('clearkey')();
+    assert.equal(config.reviewEnabled,false); assert.equal(config.autoMemory,true);
+    assert.equal(config.enabled,true); assert.equal(config.developerMemorySelection,true);
 });
 test('stop while selecting facts aborts the pending native request instead of resuming it',async()=>{
     const h=harness(()=>reply());h.sandbox.settings=()=>({autoMemory:true,developerMemorySelection:true});
@@ -470,3 +527,4 @@ test('review status never overwrites collection progress',()=>{
  box.setCollectionStatus('collection 3/6');box.status('reviewing reply');assert.equal(box.collectionStatusText,'collection 3/6');
  box.setCollectionStatus('collection 6/6');assert.equal(box.statusText,'reviewing reply');
 });
+

@@ -182,3 +182,96 @@ test('deferred additions are never replayed against edited or missing sources', 
     h.ctx.chat = [];
     assert.equal(memory.retryCapacityOperations(h.value, deferred, h.ctx.chat, 'chat').recovered, 0);
 });
+
+test('FIFO eviction uses collection order, preserves locked/manual records and paused history', () => {
+    const value = { facts: [fact('first', { sourceId: 999, createdAt: 999 }), fact('locked', { pinned: true }),
+        fact('manual', { origin: 'manual' }), fact('second', { sourceId: 1, createdAt: 1 }),
+        fact('paused', { active: false }), fact('old-history', { active: false, archived: 'completed' })] };
+    const r = memory.evictOldestMemories(value, 2, 'chat');
+    assert.equal(r.evicted, 2); assert.equal(r.blocked, 0);
+    assert.deepEqual(r.changes.map(c => c.id), ['first', 'second']);
+    assert.deepEqual(value.facts.filter(f => f.active).map(f => f.id), ['locked', 'manual']);
+    assert.equal(value.facts.length, 6);
+    assert.equal(value.facts[4].archived, undefined);
+});
+
+test('enabled FIFO makes room for additions before 100 messages and records rollback changes', () => {
+    const h = harness(40);
+    const op = { action: 'add', kind: 'fact', text: 'newest', sourceId: 0, knowledge: {},
+        sourceSignature: memory.messageSignature(h.ctx.chat[0]) };
+    const r = memory.applyMemoryOperations(h.value, [op], 'chat', { autoEvict: true, memoryLimit: 30 });
+    assert.equal(r.added, 1); assert.equal(r.evicted, 11); assert.equal(r.skipped, 0);
+    assert.equal(h.value.facts.filter(f => f.active).length, 30);
+    assert.equal(h.value.facts.at(-1).text, 'newest');
+    assert.ok(h.value.facts.slice(0, 11).every(f => f.archived === 'oldest_evicted'));
+    memory.recordMemoryBatch(h.state, { rows: [], start: 0, offset: 0, nextCursor: 0, nextOffset: 0, changes: r.changes });
+    memory.undoLatestMemoryBatch(h.value, h.state);
+    assert.equal(h.value.facts.filter(f => f.active).length, 40);
+    assert.equal(h.value.facts.length, 40);
+});
+
+test('FIFO off retains all 40 memories and uses existing capacity handling', () => {
+    const h = harness();
+    const r = memory.applyMemoryOperations(h.value, [{ action: 'add', text: 'new', kind: 'fact' }], 'chat', { autoEvict: false, memoryLimit: 10 });
+    assert.equal(r.evicted, 0); assert.equal(r.added, 0); assert.equal(r.capacityDeferred.length, 1);
+    assert.equal(h.value.facts.filter(f => f.active).length, 40);
+});
+
+test('protected memories filling the FIFO limit prevent new additions without deleting protection', () => {
+    const h = harness(3); h.value.facts.forEach(f => f.pinned = true);
+    const r = memory.applyMemoryOperations(h.value, [{ action: 'add', text: 'new', kind: 'fact' }], 'chat', { autoEvict: true, memoryLimit: 2 });
+    assert.equal(r.evicted, 0); assert.equal(r.added, 0);
+    assert.equal(r.exclusions[0].code, 'protected_capacity');
+    assert.equal(h.value.facts.filter(f => f.active).length, 3);
+});
+
+test('FIFO opt-in can archive an old unpinned secret or unfinished promise without marking it completed', () => {
+    const value = { facts: [fact('secret', { knowledge: { A: 'unknown' } }),
+        fact('promise', { kind: 'commitment', commitment: { status: 'planned' } }), fact('new')] };
+    const r = memory.evictOldestMemories(value, 1);
+    assert.equal(r.evicted, 2);
+    assert.equal(value.facts[1].archived, 'oldest_evicted');
+    assert.equal(value.facts[1].commitment.status, 'planned');
+    assert.equal(value.facts[0].knowledge.A, 'unknown');
+});
+
+test('FIFO applies updates before removing old targets to make space for new additions', () => {
+    const h = harness(2);
+    const r = memory.applyMemoryOperations(h.value, [
+        { action: 'add', text: 'newest', kind: 'fact', knowledge: {} },
+        { action: 'update', id: 'f0', text: 'updated fact', kind: 'fact', knowledge: {}, sourceId: 0 },
+    ], 'chat', { autoEvict: true, memoryLimit: 2 });
+    assert.equal(r.updated, 1); assert.equal(r.added, 1); assert.equal(r.skipped, 0);
+    assert.equal(h.value.facts.filter(f => f.active).length, 2);
+});
+
+test('turning FIFO on applies immediately, creates undo history and makes no AI request', async () => {
+    const h = harness(40); h.config.autoEvict = true; h.config.memoryLimit = 30;
+    h.sandbox.status = text => h.statuses.push(text);
+    await h.sandbox.applyEvictionSetting();
+    assert.equal(h.requests.length, 0);
+    assert.equal(h.value.facts.filter(f => f.active).length, 30);
+    assert.match(h.value.lastEvictionSummary, /10개/);
+    memory.undoLatestMemoryBatch(h.value, h.state);
+    assert.equal(h.value.facts.filter(f => f.active).length, 40);
+});
+
+test('normal collection uses configured FIFO limit before capacity can reject new memory', async () => {
+    const h = harness(40); h.config.autoEvict = true; h.config.memoryLimit = 20;
+    h.sandbox.rawGenerateUtility = async (_ctx, prompt) => {
+        h.requests.push(prompt);
+        return JSON.stringify({ operations: [{ action: 'add', kind: 'temporary', text: '새 사건', sourceId: 0,
+            evidence: h.ctx.chat[0].mes, evidenceType: 'occurred', knowledge: {} }] });
+    };
+    await h.sandbox.syncMemories({ force: true });
+    assert.equal(h.errors.length, 0); assert.equal(h.requests.length, 1);
+    assert.equal(h.value.facts.filter(f => f.active).length, 20);
+    assert.equal(h.state.collectionExclusions.total, 0);
+    assert.match(h.value.lastEvictionSummary, /21개/);
+});
+
+test('memory limit is clamped to the supported active memory bound', () => {
+    assert.equal(memory.normalizeMemoryLimit(999), 40);
+    assert.equal(memory.normalizeMemoryLimit(1), 1);
+    assert.equal(memory.normalizeMemoryLimit('bad'), 30);
+});
