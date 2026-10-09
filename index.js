@@ -1,10 +1,10 @@
-import { createNativeReview } from './native-review.js?v=1.9.29';
-import { retryCapacityOperations, evictOldestMemories, normalizeMemoryLimit } from './memory-engine.js?v=1.9.29';
-import { availableSupportingEvidence, normalizeAliases, canonicalName, linkAlias, resolveFactNames, normalizeSupportingEvidence, addRejectedMemory } from './continuity-tools.js?v=1.9.29';
-import { applyManualKnowledgeDraft, collectedCharacterNames, sortMemoriesByCollection, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, omissionReviewRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js?v=1.9.29';
-import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, supportsBackgroundUtility, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js?v=1.9.29';
-import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js?v=1.9.29';
-import { normalizeKnowledgeEvidence, KNOWLEDGE_LABELS, COMMITMENT_LABELS, commitmentState } from './core.js?v=1.9.29';
+import { createNativeReview } from './native-review.js?v=1.9.30';
+import { retryCapacityOperations, evictOldestMemories, normalizeMemoryLimit } from './memory-engine.js?v=1.9.30';
+import { availableSupportingEvidence, normalizeAliases, canonicalName, linkAlias, resolveFactNames, normalizeSupportingEvidence, addRejectedMemory } from './continuity-tools.js?v=1.9.30';
+import { applyManualKnowledgeDraft, collectedCharacterNames, sortMemoriesByCollection, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, omissionReviewRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js?v=1.9.30';
+import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, supportsBackgroundUtility, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js?v=1.9.30';
+import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js?v=1.9.30';
+import { normalizeKnowledgeEvidence, KNOWLEDGE_LABELS, COMMITMENT_LABELS, commitmentState } from './core.js?v=1.9.30';
 
 const NAME = 'hundredlog';
 const LEGACY_NAME = 'memorybean';
@@ -945,7 +945,7 @@ function renderReviewReport() {
     const prefix = report.mode === 'swipe' ? '스와이프 · ' : report.mode === 'regenerate' ? '재생성 · ' : '';
     const labels = {
         running: `${report.stage} 중…`,
-        passed: `기억 ${report.checked}개 확인 · ${report.uncertain ? '명확한 충돌 없음' : '모순 없음'}`,
+        passed: `마지막 검수 당시 기억 ${report.checked}개 확인 · ${report.uncertain ? '명확한 충돌 없음' : '모순 없음'}`,
         corrected: `충돌 ${report.issues?.length || 0}개 수정 · 재검수 후 표시`,
         background_skipped: '수집·번역 중 · 이번 답변은 실리태번 기본 생성으로 진행',
         review_disabled: '기억 주입 · JEV 답변 검수 끔',
@@ -1340,7 +1340,7 @@ function renderContent() {
     $id('auto-cleanup').disabled = working;
     if ($id('auto-evict')) { $id('auto-evict').checked = Boolean(settings().autoEvict); $id('auto-evict').disabled = working || normalGenerating; }
     if ($id('memory-limit')) { $id('memory-limit').value = String(settings().memoryLimit); $id('memory-limit').disabled = working || normalGenerating; }
-    if ($id('eviction-summary')) $id('eviction-summary').textContent = value?.lastEvictionSummary || '';
+    if ($id('eviction-summary')) $id('eviction-summary').textContent = (value?.lastEvictionSummary || '').replace(' · 현재 ', ' · 밀어내기 직후 ').replace(' / 유지 기준 ', ' / 당시 유지 기준 ');
     if ($id('review-enabled')) { $id('review-enabled').checked = Boolean(settings().reviewEnabled); $id('review-enabled').disabled = working || normalGenerating; }
     if ($id('cleanup-now')) $id('cleanup-now').disabled = working || normalGenerating || !currentFacts.some(fact => fact.active);
     if ($id('cleanup-stop')) $id('cleanup-stop').hidden = !extracting;
@@ -1595,7 +1595,7 @@ function cleanupSummaryText(review) {
 
 function evictionSummaryText(value, evicted, limit) {
     const active = value.facts.filter(fact => fact.active && isCurrent(fact)).length;
-    return `오래된 기억 ${evicted}개를 보관으로 옮겼어요 · 현재 ${active}개 / 유지 기준 ${limit}개`
+    return `오래된 기억 ${evicted}개를 보관으로 옮겼어요 · 밀어내기 직후 ${active}개 / 당시 유지 기준 ${limit}개`
         + (active > limit ? ' · 직접 저장·잠금한 기억은 유지해요.' : '');
 }
 
@@ -2447,7 +2447,7 @@ async function main() {
     const ctx = context();
     installMemoryHooks(ctx);
     if ($id('key')) { registerDeveloperTitle($id('title')); addWandButton(); return; }
-    const response = await diagnosticFetch(new URL('./settings.html?v=1.9.29', import.meta.url), { credentials: 'same-origin' });
+    const response = await diagnosticFetch(new URL('./settings.html?v=1.9.30', import.meta.url), { credentials: 'same-origin' });
     if (!response.ok) throw new Error(`설정 화면 파일을 읽지 못했어요 (${response.status}).`);
     const html = await response.text();
     // Keep the panel mounted for event bindings, but expose it only through the wand.

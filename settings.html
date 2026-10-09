@@ -52,15 +52,15 @@
         </div>
         <p class="hundredlog-help">약속·비밀·정정은 모든 강도에서 수집해요. 세세하게는 작은 부탁·제안·취향·경험·변화까지 넓게 모으며, 미확정 계획은 미확정으로 기록해요. 규칙이 많아지면 검수량도 늘어요. 갱신 주기는 AI 답변 수 기준이에요. 수집 강도 변경은 다음 수집·누락 재확인에 적용돼요. ‘지금 청소’는 재수집이 아니에요. 기존 기억을 바뀐 강도로 다시 모으려면 ‘최근 100개 재수집’을 사용해 주세요.</p>
         <p id="hundredlog-interval-warning" class="hundredlog-help hundredlog-warning" hidden>갱신 주기가 50 이상이면 정리되기 전에 오래된 메시지가 최근 100개 범위에서 빠질 수 있어요.</p>
-        <label class="hundredlog-toggle hundredlog-setting-toggle"><input id="hundredlog-auto-evict" type="checkbox"><span>오래된 기억 자동 밀어내기</span></label>
-        <div class="hundredlog-setting-grid"><label for="hundredlog-memory-limit"><span>유지할 기억 개수</span><span class="hundredlog-number-field"><input id="hundredlog-memory-limit" type="number" min="1" max="40" step="1" inputmode="numeric"><span>개</span></span></label></div>
-        <p class="hundredlog-help">켜거나 개수를 줄이면 바로 적용하고, 이후 수집할 때도 유지해요. 대화가 100개 미만이어도 오래된 수집 순서로 현재 목록에서 빼고 보관 기록에 남겨요. 직접 저장·잠금한 기억은 유지하며, 잠그지 않은 자동 수집 기억은 약속·비밀도 밀려날 수 있어요. 보호된 기억만으로 개수가 차면 새 기억은 저장하지 못해요. AI 추가 호출은 없어요.</p>
-        <p id="hundredlog-eviction-summary" class="hundredlog-help" aria-live="polite"></p>
         <label class="hundredlog-toggle hundredlog-setting-toggle"><input id="hundredlog-auto-cleanup" type="checkbox"><span>수집 후 규칙 자동 청소</span></label>
         <p class="hundredlog-help">5~40개부터 정리 AI가 청소해요. 원문 인용·잠금·병합 조건을 코드로 검사한 뒤 적용하며 직접 추가·잠금한 규칙은 유지해요.</p>
         <div class="hundredlog-actions"><button type="button" id="hundredlog-cleanup-now" class="menu_button">지금 청소</button><button type="button" id="hundredlog-cleanup-stop" class="menu_button" hidden>중단</button></div>
         <p class="hundredlog-help">‘지금 청소’는 자동 청소 설정·개수와 관계없이 정리용 AI로 다시 검사해요. 필요한 기억은 억지로 줄이지 않아요. 이전에 한도로 빠진 기억은 청소 후 ‘누락 재확인’으로 다시 수집할 수 있어요.</p>
         <p id="hundredlog-cleanup-summary" class="hundredlog-help" aria-live="polite"></p>
+        <label class="hundredlog-toggle hundredlog-setting-toggle"><input id="hundredlog-auto-evict" type="checkbox"><span>오래된 기억 자동 밀어내기</span></label>
+        <div class="hundredlog-setting-grid"><label for="hundredlog-memory-limit"><span>유지할 기억 개수</span><span class="hundredlog-number-field"><input id="hundredlog-memory-limit" type="number" min="1" max="40" step="1" inputmode="numeric"><span>개</span></span></label></div>
+        <p class="hundredlog-help">켜거나 개수를 줄이면 바로 적용하고, 이후 수집할 때도 유지해요. 대화가 100개 미만이어도 오래된 수집 순서로 현재 목록에서 빼고 보관 기록에 남겨요. 직접 저장·잠금한 기억은 유지하며, 잠그지 않은 자동 수집 기억은 약속·비밀도 밀려날 수 있어요. 보호된 기억만으로 개수가 차면 새 기억은 저장하지 못해요. AI 추가 호출은 없어요.</p>
+        <p id="hundredlog-eviction-summary" class="hundredlog-help" aria-live="polite"></p>
       </section>
       <section class="hundredlog-settings-block">
         <div class="hundredlog-section-title"><strong>집중해서 수집할 항목</strong><button type="button" id="hundredlog-collection-preferences-reset" class="menu_button">기본으로</button></div>
