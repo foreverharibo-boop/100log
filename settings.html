@@ -54,6 +54,8 @@
         <p id="hundredlog-interval-warning" class="hundredlog-help hundredlog-warning" hidden>갱신 주기가 50 이상이면 정리되기 전에 오래된 메시지가 최근 100개 범위에서 빠질 수 있어요.</p>
         <label class="hundredlog-toggle hundredlog-setting-toggle"><input id="hundredlog-auto-cleanup" type="checkbox"><span>수집 후 규칙 자동 청소</span></label>
         <p class="hundredlog-help">5~40개부터 정리 AI가 청소해요. 원문 인용·잠금·병합 조건을 코드로 검사한 뒤 적용하며 직접 추가·잠금한 규칙은 유지해요.</p>
+        <div class="hundredlog-actions"><button type="button" id="hundredlog-cleanup-now" class="menu_button">지금 청소</button><button type="button" id="hundredlog-cleanup-stop" class="menu_button" hidden>중단</button></div>
+        <p class="hundredlog-help">‘지금 청소’는 자동 청소 설정·개수와 관계없이 정리용 AI로 다시 검사해요. 필요한 기억은 억지로 줄이지 않아요. 이전에 한도로 빠진 기억은 청소 후 ‘누락 재확인’으로 다시 수집할 수 있어요.</p>
         <p id="hundredlog-cleanup-summary" class="hundredlog-help" aria-live="polite"></p>
       </section>
       <section class="hundredlog-settings-block">
@@ -127,3 +129,4 @@
     </div>
   </div>
 </section>
+

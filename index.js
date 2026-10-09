@@ -1,9 +1,10 @@
-import { createNativeReview } from './native-review.js?v=1.9.27';
-import { availableSupportingEvidence, normalizeAliases, canonicalName, linkAlias, resolveFactNames, normalizeSupportingEvidence, addRejectedMemory } from './continuity-tools.js?v=1.9.27';
-import { applyManualKnowledgeDraft, collectedCharacterNames, sortMemoriesByCollection, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, omissionReviewRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js?v=1.9.27';
-import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, supportsBackgroundUtility, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js?v=1.9.27';
-import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js?v=1.9.27';
-import { normalizeKnowledgeEvidence, KNOWLEDGE_LABELS, COMMITMENT_LABELS, commitmentState } from './core.js?v=1.9.27';
+import { createNativeReview } from './native-review.js?v=1.9.28';
+import { retryCapacityOperations } from './memory-engine.js?v=1.9.28';
+import { availableSupportingEvidence, normalizeAliases, canonicalName, linkAlias, resolveFactNames, normalizeSupportingEvidence, addRejectedMemory } from './continuity-tools.js?v=1.9.28';
+import { applyManualKnowledgeDraft, collectedCharacterNames, sortMemoriesByCollection, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, omissionReviewRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js?v=1.9.28';
+import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, supportsBackgroundUtility, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js?v=1.9.28';
+import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js?v=1.9.28';
+import { normalizeKnowledgeEvidence, KNOWLEDGE_LABELS, COMMITMENT_LABELS, commitmentState } from './core.js?v=1.9.28';
 
 const NAME = 'hundredlog';
 const LEGACY_NAME = 'memorybean';
@@ -1332,6 +1333,8 @@ function renderContent() {
     $id('cleanup-threshold').value = String(settings().cleanupThreshold);
     $id('auto-cleanup').checked = Boolean(settings().autoCleanup);
     $id('auto-cleanup').disabled = working;
+    if ($id('cleanup-now')) $id('cleanup-now').disabled = working || normalGenerating || !currentFacts.some(fact => fact.active);
+    if ($id('cleanup-stop')) $id('cleanup-stop').hidden = !extracting;
     const intervalWarning = $id('interval-warning');
     if (intervalWarning) intervalWarning.hidden = settings().analysisInterval < 50;
     if ($id('activity')) $id('activity').textContent = value?.lastActivity?.text || '아직 기록된 작업이 없어요.';
@@ -1396,9 +1399,10 @@ function renderContent() {
         const conflicts = value?.cleanupConflicts?.length ?? 0;
         const warnings = value?.cleanupWarnings?.length ?? 0;
         const review = value?.lastCleanupReview;
-        cleanupSummary.textContent = conflicts ? `확인이 필요한 충돌 ${conflicts}쌍을 남겼어요.`
+        cleanupSummary.textContent = review?.proposed !== undefined ? cleanupSummaryText(review)
+            : conflicts ? `확인이 필요한 충돌 ${conflicts}쌍을 남겼어요.`
             : warnings ? `이전 청소에서 확인이 필요했던 제안 ${warnings}개가 있어요.`
-            : review?.mode === 'collector' ? `마지막 자동 청소: AI 제안 ${review.checked}개를 코드 검사 후 적용했어요.`
+            : review?.mode === 'collector' ? `이전 청소: 검사 통과 ${review.checked}개. 이전 기록에는 AI 원래 제안 수와 제외 이유가 없어요.`
             : `규칙이 ${settings().cleanupThreshold}개 이상이면 정리 AI가 청소해요. 원문 인용·잠금·병합 조건은 코드로 검사해요.`;
 
     }
@@ -1565,29 +1569,51 @@ function recentCleanupRows(ctx) {
     return result.reverse();
 }
 
-function cleanupSignature(facts) {
-    return JSON.stringify(facts.filter((fact) => fact.active && isCurrent(fact)).map((fact) => [fact.id, fact.text, fact.kind, fact.importance, fact.sourceId]));
+function cleanupSignature(facts, ctx, rows) {
+    return JSON.stringify([sourceChatId(ctx),
+        facts.filter((fact) => fact.active && isCurrent(fact)),
+        rows.map(row => [row.id, messageSignature(ctx.chat[row.id])])]);
 }
 
-async function runAutomaticCleanup(value, ctx, profileId, sameChat, job = null) {
+function cleanupSummaryText(review) {
+    const reasons = Object.entries(review.reasons || {}).map(([reason, count]) => `${reason} ${count}개`).join(', ');
+    return `마지막 ${review.manual ? '수동' : '자동'} 청소: AI 제안 ${review.proposed}개 → 병합으로 ${review.merged}개 정리 · 보관 ${review.archived}개 · 충돌 확인 ${review.pending}쌍 · 제외 ${review.excluded}개`
+        + (reasons ? ` (${reasons})` : '')
+        + (review.proposed === 0 ? '. AI가 정리할 항목을 제안하지 않았어요.' : '')
+        + (review.recovered ? ` · 자리 부족으로 빠졌던 기억 ${review.recovered}개 저장` : '')
+        + (review.capacityRemaining ? ` · 자리가 부족해 새 기억 ${review.capacityRemaining}개를 저장하지 못했어요.` : '');
+}
+
+async function runAutomaticCleanup(value, ctx, profileId, sameChat, job = null, { force = false } = {}) {
     const active = value.facts.filter((fact) => fact.active && isCurrent(fact));
-    if (!settings().autoCleanup || active.length < settings().cleanupThreshold) return { merged: 0, archived: 0, conflicts: 0, changes: [], skipped: true };
-    const signature = cleanupSignature(active);
-    if (value.lastCleanupSignature === signature) return { merged: 0, archived: 0, conflicts: value.cleanupConflicts?.length ?? 0, changes: [], skipped: true };
+    if (!active.length || (!force && (!settings().autoCleanup || active.length < settings().cleanupThreshold))) return { merged: 0, archived: 0, conflicts: 0, changes: [], skipped: true };
     const rows = recentCleanupRows(ctx);
-    setCollectionStatus(`규칙 ${active.length}개에서 중복·종료·충돌을 자동 청소 중이에요…`);
+    const signature = cleanupSignature(active, ctx, rows);
+    if (!force && value.lastCleanupSignature === signature) return { merged: 0, archived: 0, conflicts: value.cleanupConflicts?.length ?? 0, changes: [], skipped: true };
+    const sources = rows.map(row => ({ id: row.id, signature: messageSignature(ctx.chat[row.id]) }));
+    setCollectionStatus(`규칙 ${active.length}개에서 중복·종료·충돌을 ${force ? '수동' : '자동'} 청소 중이에요…`);
     const raw = await traceDiagnostic('규칙 청소', () => collectUtility(ctx, cleanupRequest(value.facts.map(fact => resolveFactNames(fact, value.nameAliases)), rows), profileId, job), { rules: active.length });
     if (!sameChat()) return null;
-    const actions = await traceDiagnostic('청소 파싱', () => parseCleanupActions(raw, value, rows));
+    if (cleanupSignature(value.facts, ctx, rows) !== signature
+        || sources.some(row => messageSignature(context().chat[row.id]) !== row.signature)) {
+        throw new Error('청소 도중 기억이나 원문이 바뀌어 적용하지 않았어요. 다시 청소해 주세요.');
+    }
+    const report = {};
+    const actions = parseCleanupActions(raw, value, rows, report);
     // The collector owns cleanup; deterministic guards in parseCleanupActions
     // preserve protected records, valid references, evidence and knowledge boundaries.
     const result = { ...applyCleanupActions(value, actions, sourceChatId(ctx)), cleanupChecked: actions.length };
     value.cleanupWarnings = [];
     value.lastCleanupAt = Date.now();
-    value.lastCleanupReview = { mode: 'collector', checked: actions.length, pending: result.conflicts, at: value.lastCleanupAt };
-    value.lastCleanupSignature = cleanupSignature(value.facts);
-    const journal = chatState(value, ctx, false)?.autoMemory?.journal;
-    if (result.changes.length && Array.isArray(journal) && journal.length) journal.at(-1).changes.push(...result.changes);
+    value.lastCleanupReview = { mode: 'collector', manual: force, ...report, checked: actions.length,
+        merged: result.merged, archived: result.archived, pending: result.conflicts, at: value.lastCleanupAt };
+    value.lastCleanupSignature = cleanupSignature(value.facts, ctx, rows);
+    const state = chatState(value, ctx, false);
+    if (result.changes.length && state?.autoMemory) {
+        const auto = state.autoMemory;
+        recordMemoryBatch(state, { rows: sources, start: auto.cursor, offset: auto.offset,
+            nextCursor: auto.cursor, nextOffset: auto.offset, changes: result.changes });
+    }
     return result;
 }
 
@@ -1648,6 +1674,7 @@ function scheduleMemory({ force = false } = {}) {
 }
 
 export function syncMemories(options = {}) {
+    if (options.cleanupOnly && (busy || normalGenerating || extracting || translating || memoryRun)) return Promise.resolve();
     if (memoryRun) return memoryRun;
     if (extracting || translating || !chatKey(context())) return Promise.resolve();
     if ((busy || normalGenerating) && !supportsBackgroundUtility(context(), settings().extractionProfileId || '')) {
@@ -1708,11 +1735,11 @@ function queueSourceMutation() {
     }, 900);
 }
 
-async function performMemorySync({ rebuildRecent = false, force = false, reviewOnly = false } = {}) {
+async function performMemorySync({ rebuildRecent = false, force = false, reviewOnly = false, cleanupOnly = false } = {}) {
     const ctx = context();
     const key = chatKey(ctx);
     const value = data();
-    if (!value || (!settings().autoMemory && !rebuildRecent)) return;
+    if (!value || (!settings().autoMemory && !rebuildRecent && !cleanupOnly)) return;
     const state = chatState(value, ctx);
     const currentSourceChatId = sourceChatId(ctx);
     const epoch = memoryEpoch;
@@ -1721,7 +1748,7 @@ async function performMemorySync({ rebuildRecent = false, force = false, reviewO
     const sameOrigin = () => chatKey(context()) === key && data(false) === value && epoch === memoryEpoch;
     const sameChat = () => sameOrigin() && !job.controller.signal.aborted;
     let auto = initializeAuto(state, ctx.chat);
-    if (!rebuildRecent && !force && !memoryDue(value, ctx)) return;
+    if (!rebuildRecent && !force && !cleanupOnly && !memoryDue(value, ctx)) return;
     memoryPending = false;
     extracting = true; stopExtractionRequested = false;
     activeCollectionJob = job;
@@ -1732,8 +1759,17 @@ async function performMemorySync({ rebuildRecent = false, force = false, reviewO
     const analyzedAssistantIds = new Set();
     let proposedCount = 0, structuralRejected = 0, storeSkipped = 0;
     const exclusionReport = { createdAt: Date.now(), total: 0, items: [] };
+    const capacityDeferred = [];
     let cleanupResult = { merged: 0, archived: 0, conflicts: 0, changes: [], skipped: true };
     try {
+        if (cleanupOnly) {
+            cleanupResult = await collectionStep(job, () => runAutomaticCleanup(value, ctx, profileId, sameChat, job, { force: true }));
+            if (!sameChat()) return;
+            const text = cleanupResult?.skipped ? '청소할 현재 규칙이 없어요.' : cleanupSummaryText(value.lastCleanupReview);
+            value.lastActivity = { text, at: Date.now(), type: 'manual-cleanup' };
+            await save(); render(); setCollectionStatus(text);
+            return;
+        }
         if (!reviewOnly) {
             if (rebuildRecent) resetRecentWindow(value, state, ctx.chat, currentSourceChatId);
             else pruneToRecentWindow(value, state, ctx.chat, currentSourceChatId);
@@ -1781,6 +1817,7 @@ async function performMemorySync({ rebuildRecent = false, force = false, reviewO
             // Apply only after the request and source checks succeed.
             const staged = { facts: JSON.parse(JSON.stringify(value.facts)), nameAliases:value.nameAliases, rejectedMemories:value.rejectedMemories };
             const result = applyMemoryOperations(staged, parsed.operations, currentSourceChatId);
+            capacityDeferred.push(...result.capacityDeferred);
             if (!sameChat()) return;
             value.facts = staged.facts;
             value.aliasSuggestions ??= [];
@@ -1804,13 +1841,31 @@ async function performMemorySync({ rebuildRecent = false, force = false, reviewO
             state.extractionCursor = auto.cursor; state.extractionOffset = auto.offset;
             await save(); render();
         }
-        if (!reviewOnly && sameChat() && !stopExtractionRequested) {
+        if ((!reviewOnly || capacityDeferred.length) && sameChat() && !stopExtractionRequested) {
             cleanupResult = await collectionStep(job, () => runAutomaticCleanup(value, { ...ctx, chat: ctx.chat.slice(0, end) }, profileId, sameChat, job)) ?? cleanupResult;
             if (!sameChat()) return;
             if (!cleanupResult.skipped) { await save(); render(); }
         }
+        if (capacityDeferred.length && sameChat() && !stopExtractionRequested) {
+            const retry = retryCapacityOperations(value, capacityDeferred, context().chat, currentSourceChatId);
+            const resolved = new Set(retry.resolvedIds);
+            exclusionReport.total -= resolved.size;
+            exclusionReport.items = exclusionReport.items.filter(entry => !resolved.has(entry.id));
+            appendCollectionExclusions(exclusionReport, retry.exclusions);
+            state.collectionExclusions = exclusionReport;
+            added += retry.recovered; changed += retry.recovered;
+            storeSkipped += retry.exclusions.length - resolved.size;
+            uncertain += retry.exclusions.length - resolved.size;
+            if (retry.changes.length) recordMemoryBatch(state, { rows: retry.sources, start: auto.cursor, offset: auto.offset,
+                nextCursor: auto.cursor, nextOffset: auto.offset, changes: retry.changes });
+            if (!cleanupResult.skipped && value.lastCleanupReview) Object.assign(value.lastCleanupReview,
+                { recovered: retry.recovered, capacityRemaining: retry.remaining });
+            await save(); render();
+        }
         if (sameChat()) {
-            const cleanupText = cleanupResult.skipped ? '' : ` · AI 자동 청소: 병합 ${cleanupResult.merged}개, 보관 ${cleanupResult.archived}개${cleanupResult.conflicts ? `, 충돌 확인 필요 ${cleanupResult.conflicts}쌍` : ''}`;
+            const capacityCount = exclusionReport.items.filter(entry => entry.code === 'capacity').length;
+            const cleanupText = (cleanupResult.skipped ? '' : ` · ${cleanupSummaryText(value.lastCleanupReview)}`)
+                + (cleanupResult.skipped && capacityCount ? ` · 자리가 부족해 새 기억 ${capacityCount}개를 저장하지 못했어요.` : '');
             if (!stopExtractionRequested && (analyzedAssistantIds.size || !cleanupResult.skipped)) {
                 const activity = [`${analyzedAssistantIds.size}개 답변 분석`, `규칙 ${added}개 추가`, `${updated}개 갱신`];
                 if (archived) activity.push(`${archived}개 종료`);
@@ -1825,10 +1880,10 @@ async function performMemorySync({ rebuildRecent = false, force = false, reviewO
         }
     } catch (error) {
         if (job.controller.signal.aborted || error?.hundredlogCancelled) {
-            if (sameOrigin()) setCollectionStatus(`${reviewOnly ? '누락 재확인을' : '수집을'} 중단했어요 · 규칙 ${changed}개 반영. ‘${reviewOnly ? '누락 재확인' : '새 대화 갱신'}’으로 다시 시도할 수 있어요.`);
+            if (sameOrigin()) setCollectionStatus(`${cleanupOnly ? '수동 청소를' : reviewOnly ? '누락 재확인을' : '수집을'} 중단했어요 · 규칙 ${changed}개 반영. ‘${cleanupOnly ? '지금 청소' : reviewOnly ? '누락 재확인' : '새 대화 갱신'}’으로 다시 시도할 수 있어요.`);
         } else {
             diagnosticError('규칙 수집', error, { site: 1626 });
-            if (sameChat()) setCollectionStatus(`기억 정리를 멈췄어요: ${error.message} ‘${reviewOnly ? '누락 재확인' : '새 대화 갱신'}’으로 다시 시도할 수 있어요.`);
+            if (sameChat()) setCollectionStatus(`기억 정리를 멈췄어요: ${error.message} ‘${cleanupOnly ? '지금 청소' : reviewOnly ? '누락 재확인' : '새 대화 갱신'}’으로 다시 시도할 수 있어요.`);
         }
     }
     finally {
@@ -2349,7 +2404,7 @@ async function main() {
     const ctx = context();
     installMemoryHooks(ctx);
     if ($id('key')) { registerDeveloperTitle($id('title')); addWandButton(); return; }
-    const response = await diagnosticFetch(new URL('./settings.html?v=1.9.27', import.meta.url), { credentials: 'same-origin' });
+    const response = await diagnosticFetch(new URL('./settings.html?v=1.9.28', import.meta.url), { credentials: 'same-origin' });
     if (!response.ok) throw new Error(`설정 화면 파일을 읽지 못했어요 (${response.status}).`);
     const html = await response.text();
     // Keep the panel mounted for event bindings, but expose it only through the wand.
@@ -2593,6 +2648,8 @@ async function main() {
         render();
         status(event.target.checked ? `규칙이 ${settings().cleanupThreshold}개 이상이면 수집을 마친 뒤 중복·종료·충돌을 자동 청소해요.` : '수집 후 규칙 자동 청소를 껐어요.');
     });
+    $id('cleanup-now')?.addEventListener('click', () => { void syncMemories({ cleanupOnly: true, force: true }); });
+    $id('cleanup-stop')?.addEventListener('click', stopCollection);
     const saveCollectionPreferences = async () => {
         if (busy || extracting || translating) return;
         const value = data(); if (!value) return;
@@ -2672,3 +2729,4 @@ if (appReady) {
 } else {
     void main().catch((error) => diagnosticError('초기화', error, { site: 2437 }));
 }
+

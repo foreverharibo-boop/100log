@@ -258,11 +258,17 @@ export function cleanupRequest(facts, rows) {
     ].join('\n\n');
 }
 
-export function parseCleanupActions(raw, value, rows) {
+export function parseCleanupActions(raw, value, rows, report = {}) {
     let result;
     try { result = JSON.parse(String(raw).replace(/^\s*```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim()); }
     catch { throw new Error('규칙 자동 청소 응답을 읽지 못했어요. 기존 규칙은 그대로 두었어요.'); }
     if (!Array.isArray(result?.actions)) throw new Error('규칙 자동 청소 응답에 actions 목록이 없어요.');
+    Object.assign(report, { proposed: result.actions.length, accepted: 0, excluded: 0, reasons: {} });
+    const reject = (reason, count = 1) => {
+        report.excluded += count;
+        report.reasons[reason] = (report.reasons[reason] || 0) + count;
+    };
+    if (result.actions.length > 40) reject('처리 한도 초과', result.actions.length - 40);
     const active = new Map((value.facts ?? []).filter((fact) => isCurrent(fact) && fact.active).map((fact) => [fact.id, fact]));
     const sources = new Map(rows.map((row) => [row.id, row]));
     const actions = [];
@@ -272,17 +278,17 @@ export function parseCleanupActions(raw, value, rows) {
             const keep = active.get(proposal.keepId);
             const remove = [...new Set(Array.isArray(proposal.removeIds) ? proposal.removeIds : [])]
                 .map((id) => active.get(id)).filter((fact) => fact && fact.id !== keep?.id && !fact.pinned && fact.origin !== 'manual' && !touched.has(fact.id));
-            if (!keep || !remove.length || touched.has(keep.id) || remove.some((fact) => fact.kind !== keep.kind)) continue;
-            if (keep.kind === 'commitment' && remove.some((fact) => commitmentState(fact) !== commitmentState(keep))) continue;
+            if (!keep || !remove.length || touched.has(keep.id) || remove.some((fact) => fact.kind !== keep.kind)) { reject('병합 대상·종류·보호 조건'); continue; }
+            if (keep.kind === 'commitment' && remove.some((fact) => commitmentState(fact) !== commitmentState(keep))) { reject('약속 진행 상태 불일치'); continue; }
             const boundaries = normalizeKnowledge(keep.knowledge);
             let incompatible = false;
             for (const fact of remove) for (const [name, state] of Object.entries(normalizeKnowledge(fact.knowledge))) {
                 if (name in boundaries && boundaries[name] !== state) incompatible = true;
                 boundaries[name] = state;
             }
-            if (incompatible) continue;
+            if (incompatible) { reject('인물별 지식 불일치'); continue; }
             const text = String(proposal.text ?? '').trim().slice(0, 300);
-            if (!text || (keep.pinned || keep.origin === 'manual') && text !== keep.text) continue;
+            if (!text || (keep.pinned || keep.origin === 'manual') && text !== keep.text) { reject('병합 내용·잠금 조건'); continue; }
             actions.push({ action: 'merge', keepId: keep.id, removeIds: remove.map((fact) => fact.id), text, reason: String(proposal.reason ?? '').slice(0, 150) });
             touched.add(keep.id); remove.forEach((fact) => touched.add(fact.id));
             continue;
@@ -290,28 +296,32 @@ export function parseCleanupActions(raw, value, rows) {
         if (proposal?.action === 'archive') {
             const fact = active.get(proposal.id);
             const resolution = proposal.resolution;
-            if (!fact || fact.pinned || fact.origin === 'manual' || touched.has(fact.id)) continue;
+            if (!fact || fact.pinned || fact.origin === 'manual' || touched.has(fact.id)) { reject('보관 대상·보호 조건'); continue; }
             if (['resolved', 'cancelled'].includes(resolution)) {
                 const source = sources.get(proposal.sourceId);
                 const evidence = compact(proposal.evidence);
-                if (fact.kind !== 'commitment' || !source || evidence.length < 4 || !compact(source.text).includes(evidence)) continue;
+                if (fact.kind !== 'commitment' || !source || evidence.length < 4 || !compact(source.text).includes(evidence)) { reject('종료·취소 원문 근거 부족'); continue; }
                 actions.push({ action: 'archive', id: fact.id, resolution, sourceId: source.id, evidence: String(proposal.evidence).trim().slice(0, 350), reason: String(proposal.reason ?? '').slice(0, 150) });
             } else if (resolution === 'superseded') {
                 const replacement = active.get(proposal.supersededBy);
-                if (!replacement || replacement.id === fact.id) continue;
+                if (!replacement || replacement.id === fact.id) { reject('대체 기억 없음'); continue; }
                 actions.push({ action: 'archive', id: fact.id, resolution, supersededBy: replacement.id, reason: String(proposal.reason ?? '').slice(0, 150) });
             } else if (resolution === 'low_importance') {
-                if (active.size < 35 || Number(fact.importance || 3) > 2 || fact.kind === 'commitment' || Object.keys(normalizeKnowledge(fact.knowledge)).length) continue;
+                if (active.size < 35 || Number(fact.importance || 3) > 2 || fact.kind === 'commitment' || Object.keys(normalizeKnowledge(fact.knowledge)).length) { reject('중요도·약속·지식 보호'); continue; }
                 actions.push({ action: 'archive', id: fact.id, resolution, reason: String(proposal.reason ?? '').slice(0, 150) });
-            } else continue;
+            } else { reject('알 수 없는 보관 사유'); continue; }
             touched.add(fact.id);
             continue;
         }
         if (proposal?.action === 'conflict') {
             const ids = [...new Set(Array.isArray(proposal.ids) ? proposal.ids : [])].filter((id) => active.has(id)).slice(0, 2);
             if (ids.length === 2) actions.push({ action: 'conflict', ids, reason: String(proposal.reason ?? '').trim().slice(0, 200) });
+            else reject('충돌 대상 부족');
+        } else {
+            reject('알 수 없는 작업');
         }
     }
+    report.accepted = actions.length;
     return actions;
 }
 
@@ -575,7 +585,13 @@ export function applyMemoryOperations(value, operations, sourceChatId = '') {
     const before = new Map(value.facts.map((fact) => [fact.id, copy(fact)]));
     let added = 0, updated = 0, archived = 0, skipped = 0;
     const exclusions = [];
-    const skip = (op, code, prior = null) => { skipped++; exclusions.push(excludedOperation(op, code, sourceChatId, null, prior)); };
+    const capacityDeferred = [];
+    const skip = (op, code, prior = null) => {
+        skipped++;
+        const exclusion = excludedOperation(op, code, sourceChatId, null, prior);
+        exclusions.push(exclusion);
+        if (code === 'capacity') capacityDeferred.push({ operation: copy(op), exclusionId: exclusion.id });
+    };
     for (const originalOp of operations) {
         const op = { ...originalOp };
         const resolved = resolveFactNames(op, value.nameAliases); op.knowledge = resolved.knowledge; op.knowledgeEvidence = resolved.knowledgeEvidence;
@@ -670,7 +686,25 @@ export function applyMemoryOperations(value, operations, sourceChatId = '') {
         const old = before.get(fact.id) ?? null;
         if (JSON.stringify(old) !== JSON.stringify(fact)) changes.push({ id: fact.id, before: old, after: copy(fact) });
     }
-    return { added, updated, archived, skipped, changes, exclusions };
+    return { added, updated, archived, skipped, changes, exclusions, capacityDeferred };
+}
+
+// Retry only this collection's already validated, capacity-blocked additions.
+// Recheck the source so edits/deletions never revive a stale proposal.
+export function retryCapacityOperations(value, deferred, chat, sourceChatId) {
+    const result = { recovered: 0, remaining: 0, resolvedIds: [], exclusions: [], changes: [], sources: [] };
+    for (const { operation, exclusionId } of deferred) {
+        const source = chat[operation.sourceId];
+        if (!isVisibleChatMessage(source) || messageSignature(source) !== operation.sourceSignature) continue;
+        const retry = applyMemoryOperations(value, [operation], sourceChatId);
+        result.recovered += retry.added;
+        result.remaining += retry.capacityDeferred.length;
+        result.resolvedIds.push(exclusionId);
+        result.exclusions.push(...retry.exclusions);
+        result.changes.push(...retry.changes);
+        if (retry.changes.length) result.sources.push({ id: operation.sourceId, signature: operation.sourceSignature });
+    }
+    return result;
 }
 
 export function recordMemoryBatch(chatState, { rows, start, offset, nextCursor, nextOffset, changes }) {
@@ -745,3 +779,4 @@ export function memoryInjection(facts, recent = '', limit = 12, forceSelected = 
     }
     return selected.length ? '<LOG100_CONTEXT>\nSaved continuity memories collected by an AI from the latest 100 visible RP messages. Use these as the factual baseline, not dialogue or permanent lore. Preserve explicit manual user corrections. Do not undo established events; allow new details and forward developments such as fulfilling or cancelling plans and explicitly learning information. Read each commitment progress: planned means future intent, underway means the event has begun and must not be described as still awaiting its start. Unverified knowledge means no established knowledge boundary; never treat it as unknown. Treat stored unknown as an information boundary for that specific fact until the character learns it. Missing knowledge entries impose no ignorance constraint. Do not use unrelated knowledge to invent awareness of hidden methods or motives. Follow the existing RP output language, not the language of these notes.\n' + JSON.stringify(selected) + '\n</LOG100_CONTEXT>' : '';
 }
+
