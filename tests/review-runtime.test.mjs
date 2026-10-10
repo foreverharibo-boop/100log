@@ -528,3 +528,77 @@ test('review status never overwrites collection progress',()=>{
  box.setCollectionStatus('collection 6/6');assert.equal(box.statusText,'reviewing reply');
 });
 
+
+function installRelayBridge(h) {
+    const events = [];
+    h.sandbox.sillyRelayReplies = { apiVersion: 1,
+        beginReview(index, message, signal) {
+            events.push(['begin', index, message.mes]);
+            assert.equal(message, h.ctx.chat[index]);
+            assert.equal(signal, h.sandbox.activeReviewJob.controller.signal);
+            return {
+                async capture(prompt, action) {
+                    events.push(['capture', prompt]);
+                    const result = await action();
+                    events.push(['received', result]);
+                    return result;
+                },
+                completeMessage(message) { events.push(['complete', message.mes]); },
+                cancel() { events.push(['cancel']); },
+            };
+        },
+    };
+    return events;
+}
+
+test('relay adopts native reply, scopes only actual rewrite, and commits the final message', async () => {
+    const h = harness((_u,_o,n) => reply(200, answer(n === 1 ? 'contradiction' : 'no_conflict')));
+    const events = installRelayBridge(h);
+    await h.prepare(); const message = await h.deliver('DRAFT');
+    assert.equal(message.mes, 'CORRECTED');
+    assert.deepEqual(events.map(e => e[0]), ['begin','capture','received','complete']);
+    assert.equal(events[1][1], 'fix DRAFT'); assert.equal(events.at(-1)[1], 'CORRECTED');
+    assert.equal(h.requests.length, 2, 'JEV calls stay on the existing path');
+    assert.equal(h.generationCount(), 1);
+});
+
+test('relay pass does not create a rewrite; unavailable/older relay retains native behavior', async () => {
+    for (const state of ['current','old','disabled']) {
+        const h = harness(() => reply());
+        const events = installRelayBridge(h);
+        if (state === 'old') h.sandbox.sillyRelayReplies = { apiVersion: 1 };
+        if (state === 'disabled') h.sandbox.sillyRelayReplies.beginReview = () => null;
+        await h.prepare(); const message = await h.deliver('PASSED');
+        assert.equal(message.mes, 'PASSED'); assert.equal(h.generationCount(), 0);
+        assert.deepEqual(events.map(e => e[0]), state === 'current' ? ['begin','complete'] : []);
+    }
+});
+
+test('relay retry scopes each actual attempt without changing 429die retry behavior', async () => {
+    const h = harness((_u,_o,n) => reply(200,answer(n === 1 ? 'contradiction' : 'no_conflict')));
+    const events = installRelayBridge(h); installRetryBridge(h);
+    let calls = 0;
+    h.ctx.generateQuietPrompt = async () => {
+        if (++calls === 1) throw Object.assign(Error('429'), { retryable: true });
+        return 'RETRIED';
+    };
+    await h.prepare(); const message = await h.deliver('DRAFT');
+    assert.equal(message.mes, 'RETRIED'); assert.equal(calls, 2);
+    assert.equal(events.filter(e => e[0] === 'capture').length, 2);
+    assert.deepEqual(events.at(-1), ['complete', 'RETRIED']);
+});
+
+test('relay failed rewrite selects the original draft; stop cancels the reply session', async () => {
+    const h = harness((_u,_o,n) => reply(200,answer(n === 1 ? 'contradiction' : 'no_conflict')));
+    const events = installRelayBridge(h);
+    h.ctx.generateQuietPrompt = async () => { throw Error('model failed'); };
+    await h.prepare(); await h.deliver('DRAFT');
+    assert.deepEqual(events.at(-1), ['complete','DRAFT']);
+    const stopped = harness(() => new Promise(() => {}));
+    const stoppedEvents = installRelayBridge(stopped);
+    await stopped.prepare(); const delivery = stopped.deliver('KEEP');
+    await new Promise(resolve => setImmediate(resolve));
+    await stopped.stop(); await delivery;
+    assert.deepEqual(stoppedEvents.at(-1), ['cancel']);
+    assert.equal(stopped.ctx.chat[1].mes, 'KEEP');
+});

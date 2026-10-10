@@ -1,10 +1,10 @@
-import { createNativeReview } from './native-review.js?v=1.9.30';
-import { retryCapacityOperations, evictOldestMemories, normalizeMemoryLimit } from './memory-engine.js?v=1.9.30';
-import { availableSupportingEvidence, normalizeAliases, canonicalName, linkAlias, resolveFactNames, normalizeSupportingEvidence, addRejectedMemory } from './continuity-tools.js?v=1.9.30';
-import { applyManualKnowledgeDraft, collectedCharacterNames, sortMemoriesByCollection, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, omissionReviewRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js?v=1.9.30';
-import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, supportsBackgroundUtility, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js?v=1.9.30';
-import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js?v=1.9.30';
-import { normalizeKnowledgeEvidence, KNOWLEDGE_LABELS, COMMITMENT_LABELS, commitmentState } from './core.js?v=1.9.30';
+import { createNativeReview } from './native-review.js?v=1.9.31';
+import { retryCapacityOperations, evictOldestMemories, normalizeMemoryLimit } from './memory-engine.js?v=1.9.31';
+import { availableSupportingEvidence, normalizeAliases, canonicalName, linkAlias, resolveFactNames, normalizeSupportingEvidence, addRejectedMemory } from './continuity-tools.js?v=1.9.31';
+import { applyManualKnowledgeDraft, collectedCharacterNames, sortMemoriesByCollection, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, omissionReviewRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js?v=1.9.31';
+import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, supportsBackgroundUtility, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js?v=1.9.31';
+import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js?v=1.9.31';
+import { normalizeKnowledgeEvidence, KNOWLEDGE_LABELS, COMMITMENT_LABELS, commitmentState } from './core.js?v=1.9.31';
 
 const NAME = 'hundredlog';
 const LEGACY_NAME = 'memorybean';
@@ -2136,6 +2136,15 @@ async function applyReviewedReply(text, job, message) {
 async function runReceivedReview(job, message) {
     const { key, mode, selectionStats, activeContext, facts } = job;
     const draft = String(message.mes ?? '');
+    // Adopt this received reply's existing relay journal before any awaited
+    // review. Only the actual quiet rewrite below joins it; JEV and memory
+    // collection keep their original request paths.
+    let relay = null;
+    try {
+        if (globalThis.sillyRelayReplies?.apiVersion === 1) {
+            relay = globalThis.sillyRelayReplies.beginReview?.(job.index, message, job.controller.signal) ?? null;
+        }
+    } catch (error) { diagnosticError('릴레이 연동', error); }
     job.retryContext = { owner: job, validate: job.validate };
     activeReviewJob = job;
     let stage = '생성 준비';
@@ -2186,7 +2195,12 @@ async function runReceivedReview(job, message) {
             updateReport({ stage, rewriteRequested: true });
             status(`설정 충돌 ${flagged.length}곳을 발견했어요. 메인 AI에게 수정 요청 중이에요…`);
             try {
-                const rewritten = await runReplyRetry(job, stage, () => traceGeneration(stage, () => reviewStep(job, () => ctx.generateQuietPrompt({ quietPrompt: correctionPrompt(draft, flagged, activeContext) })), { mode, rules: facts.length }));
+                const quietPrompt = correctionPrompt(draft, flagged, activeContext);
+                const rewrite = () => {
+                    const generate = () => ctx.generateQuietPrompt({ quietPrompt });
+                    return relay ? relay.capture(quietPrompt, generate) : generate();
+                };
+                const rewritten = await runReplyRetry(job, stage, () => traceGeneration(stage, () => reviewStep(job, rewrite), { mode, rules: facts.length }));
                 if (!rewritten?.trim()) throw new Error('수정 답변이 비어 있어 게시하지 않았어요.');
                 final = rewritten;
                 if (!job.validate()) throw reviewCancelledError();
@@ -2235,6 +2249,10 @@ async function runReceivedReview(job, message) {
         }
     }
     finally {
+        try {
+            if (job.controller.signal.aborted || !job.validate()) relay?.cancel();
+            else relay?.completeMessage(message);
+        } catch (error) { diagnosticError('릴레이 연동', error); }
         try { if (nativeReview?.current() === job) await clearLegacyPrompt(); } catch (error) { diagnosticError('기타', error, { site: 1925 }); console.error('[100LOG] 오류·진단 기록을 확인해 주세요.'); }
         if (activeReviewJob === job) activeReviewJob = null;
         render();
@@ -2447,7 +2465,7 @@ async function main() {
     const ctx = context();
     installMemoryHooks(ctx);
     if ($id('key')) { registerDeveloperTitle($id('title')); addWandButton(); return; }
-    const response = await diagnosticFetch(new URL('./settings.html?v=1.9.30', import.meta.url), { credentials: 'same-origin' });
+    const response = await diagnosticFetch(new URL('./settings.html?v=1.9.31', import.meta.url), { credentials: 'same-origin' });
     if (!response.ok) throw new Error(`설정 화면 파일을 읽지 못했어요 (${response.status}).`);
     const html = await response.text();
     // Keep the panel mounted for event bindings, but expose it only through the wand.
