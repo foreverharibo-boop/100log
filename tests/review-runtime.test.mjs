@@ -602,3 +602,109 @@ test('relay failed rewrite selects the original draft; stop cancels the reply se
     assert.deepEqual(stoppedEvents.at(-1), ['cancel']);
     assert.equal(stopped.ctx.chat[1].mes, 'KEEP');
 });
+
+
+function installNotificationBridge(h) {
+    const events=[];
+    h.sandbox.sillyPopNotifications={apiVersion:1,beginReview(owner,options) {
+        assert.equal(owner,'hundredlog');assert.equal(options.index,h.ctx.chat.length);
+        events.push('begin');
+        return {finish(message){events.push(['finish',message.mes]);},cancel(){events.push('cancel');}};
+    }};
+    return events;
+}
+
+test('notification waits through JEV and actual rewrite before releasing the final message', async()=>{
+    let resumeJudge;
+    const h=harness((_u,_o,n)=>n===1?new Promise(resolve=>{resumeJudge=()=>resolve(reply(200,answer('contradiction')));}):reply());
+    const events=installNotificationBridge(h);
+    await h.prepare();assert.deepEqual(events,['begin']);
+    const pending=h.deliver('DRAFT');
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.deepEqual(events,['begin'],'pending JEV cannot complete the notification');
+    resumeJudge();await pending;
+    assert.deepEqual(events,['begin',['finish','CORRECTED']]);
+});
+
+test('notification cancellation does not announce the retained draft',async()=>{
+    const h=harness(()=>new Promise(()=>{})); const events=installNotificationBridge(h);
+    await h.prepare();const pending=h.deliver('DRAFT');
+    await new Promise(resolve=>setImmediate(resolve));await h.stop();await pending;
+    assert.equal(events[0],'begin');assert(events.includes('cancel'));
+    assert(!events.some(e=>Array.isArray(e)&&e[0]==='finish'));
+});
+
+test('notification finish accepts the actual fallback only after rewrite failure is handled',async()=>{
+    const h=harness(()=>reply(200,answer('contradiction')));const events=installNotificationBridge(h);
+    h.ctx.generateQuietPrompt=async()=>{assert.deepEqual(events,['begin']);throw Error('rewrite failed');};
+    await h.prepare();await h.deliver('DRAFT');
+    assert.deepEqual(events,['begin',['finish','DRAFT']]);
+});
+
+test('review disabled does not defer ordinary server notifications',async()=>{
+    const h=harness(()=>reply());const events=installNotificationBridge(h);
+    h.sandbox.settings=()=>({autoMemory:true,reviewEnabled:false});
+    await h.prepare();await h.deliver('DRAFT');assert.deepEqual(events,[]);
+});
+
+// Optional companion checkout fixtures; ordinary tests need no other repository.
+test('real ttotto and 100LOG wait together for final native render',
+    {skip:!process.env.SILLY_POP_TEST_INDEX || !process.env.TTOTTO_TEST_INDEX}, async()=>{
+    let release100log;
+    const h=harness((_u,_o,n)=>n===1?new Promise(resolve=>{release100log=()=>resolve(reply(200,answer('contradiction')));}):reply());
+    const ctx=h.ctx;
+    Object.assign(ctx,{characterId:0,characters:[{avatar:'test.png',name:'Speaker'}],groups:[],name1:'User',
+        extensionSettings:{ttotto:{enabled:true,responseGuardEnabled:true,globalBans:['jaw'],globalStructureBans:[],
+            echoPreventionEnabled:false,responseGuardMaxRewrites:1}},
+        chatMetadata:{ttotto:{enabled:true,banOffenseVersion:3,smart:{patterns:[],messageKeys:[]}}},
+        oaiSettings:{prompts:[],prompt_order:[]},saveMetadataDebounced(){}});
+    Object.assign(ctx.eventTypes,{GENERATION_STARTED:'start',GENERATION_STOPPED:'stop',CHAT_CHANGED:'changed',CHAT_COMPLETION_SETTINGS_READY:'settings'});
+    const completions=[];
+    const pop={console,URL,URLSearchParams,Headers,Request,Date,Math,setTimeout,clearTimeout,
+        location:{href:'http://local.test/'},sessionStorage:{getItem:()=> 'fixture'},
+        document:{readyState:'loading',visibilityState:'hidden',hasFocus:()=>false,addEventListener(){},getElementById:()=>null},
+        SillyTavern:{getContext:()=>ctx},
+        fetch:async(url,init)=>{
+            if(String(url).includes('/review-completed'))completions.push(JSON.parse(init.body));
+            return {ok:true,json:async()=>({accepted:true})};
+        }};
+    pop.globalThis=pop;
+    const popSource=readFileSync(process.env.SILLY_POP_TEST_INDEX,'utf8').replaceAll('import.meta.url',JSON.stringify('http://local.test/pop.js'));
+    vm.runInNewContext(popSource+'\nsettings=getSettings();globalThis.api={apiVersion:1,beginReview:beginReviewedReply};globalThis.start=handleGenerationStarted;globalThis.rendered=reviewedReplyRendered;',pop);
+    h.sandbox.sillyPopNotifications=pop.api;
+    ctx.eventSource.on('rendered',pop.rendered);
+    const previous={fetch:globalThis.fetch,SillyTavern:globalThis.SillyTavern,localStorage:globalThis.localStorage,
+        toastr:globalThis.toastr,sillyPopNotifications:globalThis.sillyPopNotifications};
+    let module, drafts=0;
+    try {
+        globalThis.SillyTavern={getContext:()=>ctx};globalThis.sillyPopNotifications=pop.api;
+        globalThis.localStorage={getItem:()=>null,setItem(){},removeItem(){}};
+        globalThis.toastr={info(){},warning(){},error(){},success(){}};
+        globalThis.fetch=async(_url,init)=>{
+            const marker=JSON.parse(decodeURIComponent(new Headers(init.headers).get('X-Silly-Pop')));
+            assert.equal(marker.reviewPending,true);assert.equal(marker.enabled,false);
+            assert.equal(completions.length,0);
+            return Response.json({choices:[{message:{content:++drafts===1?'His jaw tightened.':'He opened the door.'}}]});
+        };
+        module=await import(process.env.TTOTTO_TEST_INDEX+'?notification-integration');
+        module.onEnable();module.installPresetPlacementFetchHook();
+        pop.start('normal',{},false);await ctx.eventSource.emit('start','normal');await h.prepare();
+        function sendOpenAIRequest(){return globalThis.fetch('/api/backends/chat-completions/generate',{
+            method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'normal',model:'test',stream:false,
+                chat_completion_source:'custom',messages:[{role:'user',content:'Reply'}]})});}
+        function sendGenerationRequest(){return sendOpenAIRequest();}
+        const accepted=(await (await sendGenerationRequest()).json()).choices[0].message.content;
+        assert.equal(accepted,'He opened the door.');assert.equal(drafts,2);assert.equal(completions.length,0);
+        const pending=h.deliver(accepted);
+        await new Promise(resolve=>setImmediate(resolve));
+        assert.equal(completions.length,0,'ttotto finish must still wait for 100LOG');
+        release100log();await pending;
+        await new Promise(resolve=>setImmediate(resolve));
+        assert.equal(h.ctx.chat.at(-1).mes,'CORRECTED');assert.equal(completions.length,1);
+        assert.equal(completions[0].reviewCompleted,true);
+    } finally {
+        module?.onDisable();for(const [key,value] of Object.entries(previous)){
+            if(value===undefined)delete globalThis[key];else globalThis[key]=value;
+        }
+    }
+});
