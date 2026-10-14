@@ -188,6 +188,49 @@ test('actual UI: separate empty, restore shared, resume, reset and import all ta
     h.box.data().facts[0].text = 'edited copy'; assert.notEqual(other.facts[0].text, 'edited copy');
 });
 
+test('scope toggle visibly waits for a choice and only checks after applying it', async () => {
+    const h = uiHarness(), toggle = h.get('separate-memory'), panel = h.get('memory-scope-choice');
+    let scrolled = 0, focused = 0;
+    panel.scrollIntoView = () => scrolled++;
+    panel.focus = () => focused++;
+    toggle.checked = true; await toggle.fire('change');
+    assert.equal(toggle.checked, false);
+    assert.equal(toggle.indeterminate, true);
+    assert.equal(panel.hidden, false);
+    assert.equal(scrolled, 1); assert.equal(focused, 1);
+    assert.equal(h.box.data(), h.root);
+    h.box.render(); assert.equal(toggle.indeterminate, true);
+    await h.confirm('취소');
+    assert.equal(toggle.indeterminate, false); assert.equal(toggle.checked, false);
+    toggle.checked = true; await toggle.fire('change'); await h.confirm('빈 기억으로 시작');
+    assert.equal(toggle.indeterminate, false); assert.equal(toggle.checked, true);
+    assert.equal(panel.hidden, true); assert.equal(h.box.data().facts.length, 0);
+    assert.equal(h.root.facts.length, 1);
+});
+
+test('scope confirmation is placed immediately after the toggle for narrow screens', () => {
+    const html = readFileSync(new URL('../settings.html', import.meta.url), 'utf8');
+    assert.match(html, /id="hundredlog-separate-memory"[^]*?<\/label>\s*<div id="hundredlog-memory-scope-choice"/);
+});
+
+test('automatic collection ignores an empty or greeting-only room, then follows the reply interval', () => {
+    const h = storageHarness();
+    h.box.positiveInteger = (n, fallback) => Math.max(1, Number(n) || fallback);
+    vm.runInContext(index.slice(index.indexOf('function completedAssistantCount('), index.indexOf('function scheduleMemory(')), h.box);
+    const root = h.box.data(); h.config.analysisInterval = 1;
+    h.ctx.chat = []; assert.equal(h.box.memoryDue(root, h.ctx), false);
+    h.ctx.chat = [{ is_user: false, mes: 'greeting' }];
+    assert.equal(h.box.memoryDue(root, h.ctx), false);
+    h.ctx.chat.unshift({ is_system: true, mes: 'system' }, { is_hidden: true, mes: 'hidden' });
+    assert.equal(h.box.memoryDue(root, h.ctx), false);
+    h.ctx.chat.push({ is_user: true, mes: 'hello' }, { is_user: false, mes: 'reply' });
+    root.chats.a.autoMemory = { cursor: 4, offset: 0, journal: [] };
+    assert.equal(h.box.memoryDue(root, h.ctx), true);
+    h.config.analysisInterval = 2; assert.equal(h.box.memoryDue(root, h.ctx), false);
+    h.ctx.chat.push({ is_user: true, mes: 'next' }, { is_user: false, mes: 'second reply' });
+    assert.equal(h.box.memoryDue(root, h.ctx), true);
+});
+
 test('reset on shared UI separates first and leaves other shared rooms untouched', async () => {
     const h = uiHarness(); h.root.facts[0].pinned = true;
     await h.get('memory-reset').fire('click'); await h.confirm('이 방만 초기화');

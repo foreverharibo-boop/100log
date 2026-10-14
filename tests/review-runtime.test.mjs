@@ -509,6 +509,24 @@ test('legacy nonisolated utility does not start alongside reply generation',()=>
  box.scheduleMemory();timers.shift()();assert.equal(called,0);assert.equal(box.memoryPending,true);
 });
 
+test('collection completion rerenders after releasing its promise so scope controls unlock',async()=>{
+ for (const fails of [false,true]) {
+  const {box}=backgroundScheduler(); const renders=[]; let resolve,reject;
+  box.render=()=>renders.push(Boolean(box.memoryRun));
+  box.performMemorySync=()=>new Promise((yes,no)=>{resolve=yes;reject=no;});
+  const run=box.syncMemories();box.render();assert.equal(renders.at(-1),true);
+  if(fails) { reject(Error('collector failed'));await assert.rejects(run,/collector failed/); }
+  else { resolve();await run; }
+  await Promise.resolve();assert.equal(box.memoryRun,null);assert.equal(renders.at(-1),false);
+ }
+});
+
+test('explicit manual collection bypasses the automatic due gate',async()=>{
+ const {box}=backgroundScheduler();let options;
+ box.memoryDue=()=>false;box.performMemorySync=async value=>{options=value;};
+ await box.syncMemories({force:true});assert.equal(options.force,true);
+});
+
 test('collection stop aborts only its own request, not the reply review',()=>{
  const h=harness(()=>reply());h.sandbox.activeCollectionJob={controller:new AbortController()};h.sandbox.activeReviewJob={controller:new AbortController()};
  Object.assign(h.sandbox,{stopExtractionRequested:false,memoryTimer:null,memoryForcePending:true});

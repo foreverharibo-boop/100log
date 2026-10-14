@@ -1,11 +1,11 @@
-import { roomScope, selectedMemoryStore, separateRoomMemory, resumeRoomMemory, shareRoomMemory, resetRoomMemory, memoryCopySources } from './memory-scope.js?v=1.9.33';
-import { createNativeReview } from './native-review.js?v=1.9.33';
-import { retryCapacityOperations, evictOldestMemories, normalizeMemoryLimit } from './memory-engine.js?v=1.9.33';
-import { availableSupportingEvidence, normalizeAliases, canonicalName, linkAlias, resolveFactNames, normalizeSupportingEvidence, addRejectedMemory } from './continuity-tools.js?v=1.9.33';
-import { applyManualKnowledgeDraft, collectedCharacterNames, sortMemoriesByCollection, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, omissionReviewRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js?v=1.9.33';
-import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, supportsBackgroundUtility, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js?v=1.9.33';
-import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js?v=1.9.33';
-import { normalizeKnowledgeEvidence, KNOWLEDGE_LABELS, COMMITMENT_LABELS, commitmentState } from './core.js?v=1.9.33';
+import { roomScope, selectedMemoryStore, separateRoomMemory, resumeRoomMemory, shareRoomMemory, resetRoomMemory, memoryCopySources } from './memory-scope.js?v=1.9.34';
+import { createNativeReview } from './native-review.js?v=1.9.34';
+import { retryCapacityOperations, evictOldestMemories, normalizeMemoryLimit } from './memory-engine.js?v=1.9.34';
+import { availableSupportingEvidence, normalizeAliases, canonicalName, linkAlias, resolveFactNames, normalizeSupportingEvidence, addRejectedMemory } from './continuity-tools.js?v=1.9.34';
+import { applyManualKnowledgeDraft, collectedCharacterNames, sortMemoriesByCollection, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, omissionReviewRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js?v=1.9.34';
+import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, supportsBackgroundUtility, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js?v=1.9.34';
+import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js?v=1.9.34';
+import { normalizeKnowledgeEvidence, KNOWLEDGE_LABELS, COMMITMENT_LABELS, commitmentState } from './core.js?v=1.9.34';
 
 const NAME = 'hundredlog';
 const LEGACY_NAME = 'memorybean';
@@ -1328,6 +1328,7 @@ function renderContinuityTools(value, working) {
 }
 
 let memoryScopeChoiceKey = '';
+let memoryScopeTogglePending = false;
 let memoryScopeChanging = false;
 
 function memoryScopeWorking() {
@@ -1336,6 +1337,9 @@ function memoryScopeWorking() {
 
 function clearMemoryScopeChoice() {
     memoryScopeChoiceKey = '';
+    memoryScopeTogglePending = false;
+    const toggle = $id('separate-memory');
+    if (toggle) toggle.indeterminate = false;
     const panel = $id('memory-scope-choice');
     if (panel) { panel.replaceChildren(); panel.hidden = true; }
 }
@@ -1346,9 +1350,12 @@ function renderMemoryScope(value, working) {
     const disabled = working || memoryScopeChanging || !value;
     const toggle = $id('separate-memory');
     if (!toggle) return;
+    if (memoryScopeChoiceKey && (memoryScopeChoiceKey !== chatKey(ctx) || disabled)) clearMemoryScopeChoice();
+    toggle.indeterminate = Boolean(memoryScopeChoiceKey && memoryScopeTogglePending);
     toggle.checked = Boolean(scope?.independent);
     toggle.disabled = disabled;
     $id('memory-scope-status').textContent = !value ? '캐릭터의 채팅을 먼저 열어 주세요.'
+        : toggle.indeterminate ? '저장 방식 선택 대기 · 선택 버튼을 눌러 적용해 주세요.'
         : scope?.independent ? '이 방의 독립 기억을 사용 중이에요. 다른 방에 반영되지 않아요.'
             : '이 캐릭터의 공용 기억을 사용 중이에요. 다른 공용 채팅과 함께 갱신돼요.';
     const select = $id('memory-source');
@@ -1364,15 +1371,17 @@ function renderMemoryScope(value, working) {
     select.disabled = disabled;
     $id('memory-import').disabled = disabled || !select.options.length;
     $id('memory-reset').disabled = disabled;
-    if (memoryScopeChoiceKey && (memoryScopeChoiceKey !== chatKey(ctx) || disabled)) clearMemoryScopeChoice();
 }
 
-function memoryScopeChoice(message, choices) {
+function memoryScopeChoice(message, choices, togglePending = false) {
     if (memoryScopeWorking()) return;
     const ctx = context(), key = chatKey(ctx), root = characterData(false), value = data(false);
     if (!key || !root || !value) return;
     const panel = $id('memory-scope-choice');
     panel.replaceChildren(); panel.hidden = false; memoryScopeChoiceKey = key;
+    memoryScopeTogglePending = togglePending;
+    $id('separate-memory').indeterminate = togglePending;
+    if (togglePending) $id('memory-scope-status').textContent = '저장 방식 선택 대기 · 선택 버튼을 눌러 적용해 주세요.';
     const description = document.createElement('p'); description.className = 'hundredlog-help'; description.textContent = message;
     const actions = document.createElement('div'); actions.className = 'hundredlog-actions';
     for (const choice of choices) actions.append(makeButton(choice.label, async () => {
@@ -1399,6 +1408,8 @@ function memoryScopeChoice(message, choices) {
     }));
     actions.append(makeButton('취소', () => { clearMemoryScopeChoice(); render(); }));
     panel.append(description, actions);
+    panel.scrollIntoView?.({ block: 'nearest', behavior: 'auto' });
+    panel.focus?.({ preventScroll: true });
 }
 
 function bindMemoryScope() {
@@ -1416,10 +1427,10 @@ function bindMemoryScope() {
                 done: '공용 기억을 이 방에 복사했어요. 이제 이 방에서만 갱신돼요.' });
             memoryScopeChoice(scope?.store
                 ? '보관된 독립 기억을 이어 쓰거나 새로 시작할 수 있어요. 빈 기억·공용 기억 복사를 선택하면 기존 독립 기억을 교체해요.'
-                : '이 방을 따로 관리할게요. 빈 기억으로 시작할까요, 공용 기억을 복사할까요? 다른 방은 바뀌지 않아요.', choices);
+                : '이 방을 따로 관리할게요. 빈 기억으로 시작할까요, 공용 기억을 복사할까요? 다른 방은 바뀌지 않아요.', choices, true);
         } else memoryScopeChoice('공용 기억으로 돌아갈까요? 이 방의 독립 기억은 보관하며 공용 기억에 합치지 않아요. 전환 이후 새 대화부터 공용 기억에 반영해요.', [
             { label: '공용 기억 사용', apply: shareRoomMemory, done: '공용 기억으로 돌아왔어요. 독립 기억은 따로 보관했어요.' },
-        ]);
+        ], true);
     });
     $id('memory-import')?.addEventListener('click', () => {
         const root = characterData(false);
@@ -1795,6 +1806,10 @@ function memoryProgressText(value, ctx) {
 
 function memoryDue(value = data(false), ctx = context()) {
     if (!value) return false;
+    // Opening a fresh room can render/receive its greeting; that is not a new exchange.
+    // Manual recollection remains available and bypasses this automatic-only gate.
+    const visible = ctx.chat.filter(isVisibleChatMessage);
+    if (!visible.some(message => message.is_user) && visible.length <= 1) return false;
     const auto = initializeAuto(chatState(value, ctx), ctx.chat);
     if (auto.offset > 0) return true;
     return completedAssistantCount(ctx, auto.cursor) >= positiveInteger(settings().analysisInterval, 1);
@@ -1835,6 +1850,8 @@ export function syncMemories(options = {}) {
     memoryRun = task;
     const finish = () => {
         memoryRun = null;
+        // performMemorySync renders before its promise settles. Re-enable controls now.
+        render();
         if (memoryPending) scheduleMemory();
     };
     void task.then(finish, finish);
@@ -2593,7 +2610,7 @@ async function main() {
     const ctx = context();
     installMemoryHooks(ctx);
     if ($id('key')) { registerDeveloperTitle($id('title')); addWandButton(); return; }
-    const response = await diagnosticFetch(new URL('./settings.html?v=1.9.33', import.meta.url), { credentials: 'same-origin' });
+    const response = await diagnosticFetch(new URL('./settings.html?v=1.9.34', import.meta.url), { credentials: 'same-origin' });
     if (!response.ok) throw new Error(`설정 화면 파일을 읽지 못했어요 (${response.status}).`);
     const html = await response.text();
     // Keep the panel mounted for event bindings, but expose it only through the wand.
