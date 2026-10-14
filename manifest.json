@@ -3,9 +3,10 @@
   "js": "index.js",
   "css": "style.css",
   "author": "담은",
-    "version": "1.9.32",
+    "version": "1.9.33",
   "minimum_client_version": "1.12.14",
   "generate_interceptor": "hundredlogGenerationInterceptor"
 }
+
 
 

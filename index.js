@@ -1,10 +1,11 @@
-import { createNativeReview } from './native-review.js?v=1.9.32';
-import { retryCapacityOperations, evictOldestMemories, normalizeMemoryLimit } from './memory-engine.js?v=1.9.32';
-import { availableSupportingEvidence, normalizeAliases, canonicalName, linkAlias, resolveFactNames, normalizeSupportingEvidence, addRejectedMemory } from './continuity-tools.js?v=1.9.32';
-import { applyManualKnowledgeDraft, collectedCharacterNames, sortMemoriesByCollection, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, omissionReviewRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js?v=1.9.32';
-import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, supportsBackgroundUtility, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js?v=1.9.32';
-import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js?v=1.9.32';
-import { normalizeKnowledgeEvidence, KNOWLEDGE_LABELS, COMMITMENT_LABELS, commitmentState } from './core.js?v=1.9.32';
+import { roomScope, selectedMemoryStore, separateRoomMemory, resumeRoomMemory, shareRoomMemory, resetRoomMemory, memoryCopySources } from './memory-scope.js?v=1.9.33';
+import { createNativeReview } from './native-review.js?v=1.9.33';
+import { retryCapacityOperations, evictOldestMemories, normalizeMemoryLimit } from './memory-engine.js?v=1.9.33';
+import { availableSupportingEvidence, normalizeAliases, canonicalName, linkAlias, resolveFactNames, normalizeSupportingEvidence, addRejectedMemory } from './continuity-tools.js?v=1.9.33';
+import { applyManualKnowledgeDraft, collectedCharacterNames, sortMemoriesByCollection, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, omissionReviewRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js?v=1.9.33';
+import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, supportsBackgroundUtility, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js?v=1.9.33';
+import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js?v=1.9.33';
+import { normalizeKnowledgeEvidence, KNOWLEDGE_LABELS, COMMITMENT_LABELS, commitmentState } from './core.js?v=1.9.33';
 
 const NAME = 'hundredlog';
 const LEGACY_NAME = 'memorybean';
@@ -705,7 +706,7 @@ function mergeLegacyChatData(value, legacy, chatId) {
     return Boolean((legacy.facts?.length ?? 0) || (legacy.candidates?.length ?? 0) || legacy.autoMemory);
 }
 
-function data(create = true) {
+function characterData(create = true) {
     const ctx = context();
     if (ctx.groupId || !ctx.chatId || ctx.characterId === undefined || ctx.characterId === null) return null;
     const uuid = ensureCharacterUuid(ctx);
@@ -723,13 +724,23 @@ function data(create = true) {
     value.facts ??= [];
     value.candidates ??= [];
     value.chats ??= {};
-    const state = chatState(value, ctx, create);
+    chatState(value, ctx, create);
     if (legacy && marker !== ownerKey) {
         mergeLegacyChatData(value, legacy, sourceChatId(ctx));
         ctx.chatMetadata.hundredlogCharacterStoreMigration = ownerKey;
         ctx.saveSettingsDebounced?.();
         void Promise.resolve(ctx.saveMetadata?.()).catch((error) => diagnosticError('초기화', error, { site: 651 }));
     }
+    return value;
+}
+
+function data(create = true) {
+    const ctx = context();
+    const root = characterData(create);
+    if (!root) return null;
+    const value = selectedMemoryStore(root, sourceChatId(ctx));
+    if (!value) return null;
+    const state = chatState(value, ctx, create);
     value.embeddingIndex ??= { provider: '', model: '', entries: {} };
     value.embeddingIndex.entries ??= {};
     for (const fact of value.facts) fact.knowledge ??= {};
@@ -1316,6 +1327,115 @@ function renderContinuityTools(value, working) {
     }
 }
 
+let memoryScopeChoiceKey = '';
+let memoryScopeChanging = false;
+
+function memoryScopeWorking() {
+    return busy || extracting || translating || normalGenerating || Boolean(memoryRun) || memoryScopeChanging;
+}
+
+function clearMemoryScopeChoice() {
+    memoryScopeChoiceKey = '';
+    const panel = $id('memory-scope-choice');
+    if (panel) { panel.replaceChildren(); panel.hidden = true; }
+}
+
+function renderMemoryScope(value, working) {
+    const ctx = context(), root = characterData(false), id = sourceChatId(ctx);
+    const scope = roomScope(root, id);
+    const disabled = working || memoryScopeChanging || !value;
+    const toggle = $id('separate-memory');
+    if (!toggle) return;
+    toggle.checked = Boolean(scope?.independent);
+    toggle.disabled = disabled;
+    $id('memory-scope-status').textContent = !value ? '캐릭터의 채팅을 먼저 열어 주세요.'
+        : scope?.independent ? '이 방의 독립 기억을 사용 중이에요. 다른 방에 반영되지 않아요.'
+            : '이 캐릭터의 공용 기억을 사용 중이에요. 다른 공용 채팅과 함께 갱신돼요.';
+    const select = $id('memory-source');
+    const selected = select.value;
+    select.replaceChildren();
+    for (const source of memoryCopySources(root, id)) {
+        const option = document.createElement('option'); option.value = source.key;
+        const count = (source.store.facts ?? []).filter(fact => fact.active && isCurrent(fact)).length;
+        option.textContent = `${source.label} · 현재 기억 ${count}개`;
+        select.append(option);
+    }
+    if ([...select.options].some(option => option.value === selected)) select.value = selected;
+    select.disabled = disabled;
+    $id('memory-import').disabled = disabled || !select.options.length;
+    $id('memory-reset').disabled = disabled;
+    if (memoryScopeChoiceKey && (memoryScopeChoiceKey !== chatKey(ctx) || disabled)) clearMemoryScopeChoice();
+}
+
+function memoryScopeChoice(message, choices) {
+    if (memoryScopeWorking()) return;
+    const ctx = context(), key = chatKey(ctx), root = characterData(false), value = data(false);
+    if (!key || !root || !value) return;
+    const panel = $id('memory-scope-choice');
+    panel.replaceChildren(); panel.hidden = false; memoryScopeChoiceKey = key;
+    const description = document.createElement('p'); description.className = 'hundredlog-help'; description.textContent = message;
+    const actions = document.createElement('div'); actions.className = 'hundredlog-actions';
+    for (const choice of choices) actions.append(makeButton(choice.label, async () => {
+        // A confirmation belonging to a previous room or store can never mutate this one.
+        if (memoryScopeChoiceKey !== key || chatKey(context()) !== key || characterData(false) !== root
+            || data(false) !== value || memoryScopeWorking()) return;
+        memoryScopeChanging = true;
+        try {
+            stopCollection(); stopReviewJob(); memoryEpoch++;
+            if (sourceMutationTimer !== null) { clearTimeout(sourceMutationTimer); sourceMutationTimer = null; }
+            await clearLegacyPrompt();
+            if (chatKey(context()) !== key || characterData(false) !== root || data(false) !== value) return;
+            // A native generation could have started while the prompt was clearing.
+            if (busy || extracting || translating || normalGenerating || memoryRun) return;
+            choice.apply(root, sourceChatId(ctx), ctx.chat.length);
+            collectionStatusText = ''; refreshCollectionStatus();
+            clearMemoryScopeChoice();
+            await save();
+            status(choice.done);
+        } catch (error) {
+            diagnosticError('규칙 저장', error);
+            status('기억 설정을 저장하지 못했어요. 연결을 확인하고 다시 시도해 주세요.');
+        } finally { memoryScopeChanging = false; render(); }
+    }));
+    actions.append(makeButton('취소', () => { clearMemoryScopeChoice(); render(); }));
+    panel.append(description, actions);
+}
+
+function bindMemoryScope() {
+    $id('separate-memory')?.addEventListener('change', event => {
+        const enable = event.target.checked;
+        render();
+        if (enable) {
+            const scope = roomScope(characterData(false), sourceChatId());
+            const choices = [];
+            if (scope?.store) choices.push({ label: '보관된 독립 기억 이어쓰기',
+                apply: (root, id) => resumeRoomMemory(root, id), done: '이 방의 독립 기억으로 돌아왔어요.' });
+            choices.push({ label: '빈 기억으로 시작', apply: (root, id, length) => resetRoomMemory(root, id, length),
+                done: '이 방을 분리했어요. 새 대화부터 기억을 모아요.' },
+            { label: '공용 기억 복사', apply: (root, id, length) => separateRoomMemory(root, id, length, root),
+                done: '공용 기억을 이 방에 복사했어요. 이제 이 방에서만 갱신돼요.' });
+            memoryScopeChoice(scope?.store
+                ? '보관된 독립 기억을 이어 쓰거나 새로 시작할 수 있어요. 빈 기억·공용 기억 복사를 선택하면 기존 독립 기억을 교체해요.'
+                : '이 방을 따로 관리할게요. 빈 기억으로 시작할까요, 공용 기억을 복사할까요? 다른 방은 바뀌지 않아요.', choices);
+        } else memoryScopeChoice('공용 기억으로 돌아갈까요? 이 방의 독립 기억은 보관하며 공용 기억에 합치지 않아요. 전환 이후 새 대화부터 공용 기억에 반영해요.', [
+            { label: '공용 기억 사용', apply: shareRoomMemory, done: '공용 기억으로 돌아왔어요. 독립 기억은 따로 보관했어요.' },
+        ]);
+    });
+    $id('memory-import')?.addEventListener('click', () => {
+        const root = characterData(false);
+        const source = memoryCopySources(root, sourceChatId()).find(item => item.key === $id('memory-source').value);
+        if (!source) return;
+        memoryScopeChoice(`‘${source.label}’을 복사할까요? 이 방은 독립 상태가 되며, 기존 독립 기억이 있다면 복사본으로 교체해요. 직접 저장·잠금·지난 규칙도 함께 복사하지만 원본 방은 바꾸지 않아요.${source.shared ? ' 선택한 원본은 공용 기억 전체예요.' : ''}`, [
+            { label: '복사해서 가져오기', apply: (owner, id, length) => separateRoomMemory(owner, id, length, source.store),
+                done: '기억을 복사했어요. 이 방과 원본 방은 서로 독립적으로 갱신돼요.' },
+        ]);
+    });
+    $id('memory-reset')?.addEventListener('click', () => memoryScopeChoice(
+        '이 채팅의 기억을 모두 비울까요? 직접 저장·잠금·지난 규칙, 이름 연결, 재수집 제외 및 검수·수집 기록도 초기화해요. 공용 기억을 쓰고 있었다면 이 방만 분리해 비워요. RP 대화와 다른 방은 그대로이며, 이후 새 대화부터 수집해요. 이 작업은 최근 갱신 취소로 되돌릴 수 없어요.', [
+            { label: '이 방만 초기화', apply: resetRoomMemory, done: '이 방의 기억만 초기화했어요. 다른 방의 기억은 그대로예요.' },
+        ]));
+}
+
 function render() {
     const restoreScroll = captureSettingsScroll();
     try { renderContent(); } finally { restoreScroll(); }
@@ -1328,6 +1448,7 @@ function renderContent() {
     renderReviewReport();
     const currentFacts = value?.facts.filter(isCurrent) ?? [];
     const working = busy || extracting || translating;
+    renderMemoryScope(value, working || normalGenerating || Boolean(memoryRun));
     renderCollectionOptions(value, working);
     renderCollectionExclusions(value, working);
     renderContinuityTools(value, working || normalGenerating);
@@ -2268,6 +2389,7 @@ globalThis.hundredlogGenerationInterceptor = async function (_promptChat, _size,
     const mode = type === 'swipe' ? 'swipe' : ['regenerate', 'regen', 'retry'].includes(type) ? 'regenerate' : [undefined, 'normal'].includes(type) ? 'normal' : null;
     diagnostic('generation', { mode: mode ?? type, busy, extracting, translating, enabled: Boolean(config.autoMemory) });
     if (!mode) return; // Quiet utility/rewrite calls never start a new reply review.
+    if (memoryScopeChanging) { abort(true); status('기억 설정을 적용 중이에요. 잠시 후 다시 전송해 주세요.'); return; }
     if (nativeReview?.current()?.receiving) { abort(true); status('받은 답변을 검수 중이에요. 중단한 뒤 새로 전송해 주세요.'); return; }
     stopReviewJob();
     await clearLegacyPrompt();
@@ -2471,7 +2593,7 @@ async function main() {
     const ctx = context();
     installMemoryHooks(ctx);
     if ($id('key')) { registerDeveloperTitle($id('title')); addWandButton(); return; }
-    const response = await diagnosticFetch(new URL('./settings.html?v=1.9.32', import.meta.url), { credentials: 'same-origin' });
+    const response = await diagnosticFetch(new URL('./settings.html?v=1.9.33', import.meta.url), { credentials: 'same-origin' });
     if (!response.ok) throw new Error(`설정 화면 파일을 읽지 못했어요 (${response.status}).`);
     const html = await response.text();
     // Keep the panel mounted for event bindings, but expose it only through the wand.
@@ -2481,6 +2603,7 @@ async function main() {
     document.body.append(container); settingsHome = container;
     container.insertAdjacentHTML('beforeend', html);
     bindDiagnosticPanel();
+    bindMemoryScope();
     registerDeveloperTitle($id('title'));
     for (const view of ['memory', 'candidates', 'settings']) {
         $id(`tab-${view}`).addEventListener('click', () => showView(view));
@@ -2775,6 +2898,7 @@ async function main() {
         diagnostic('event', { event: 'CHAT_CHANGED', busy, extracting, translating });
         stopReviewJob();
         stopCollection();
+        clearMemoryScopeChoice();
         memoryEpoch++; normalGenerating = false; memoryPending = false;
         memoryForcePending = false;
         collectionStatusText = ''; refreshCollectionStatus();
@@ -2803,4 +2927,5 @@ if (appReady) {
 } else {
     void main().catch((error) => diagnosticError('초기화', error, { site: 2437 }));
 }
+
 

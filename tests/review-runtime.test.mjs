@@ -59,7 +59,7 @@ function harness(handler) {
     const store={facts:[{id:'fact',text:'A plan was made.',active:true,knowledge:{}}]};
     const sandbox={...continuity,messageSignature,AbortController,structuredClone,URL,
         sourceChatId:()=> 'chat-a',activeCollectionJob:null,translationBackgroundSafe:false,activeReviewJob:null,nativeReview:null,
-        memoryHooksInstalled:false,extracting:false,translating:false,apiKey:()=> 'fake-key',context:()=>ctx,chatKey:c=>c.chatId,
+        memoryScopeChanging:false,memoryHooksInstalled:false,extracting:false,translating:false,apiKey:()=> 'fake-key',context:()=>ctx,chatKey:c=>c.chatId,
         settings:()=>({autoMemory:true,reviewEnabled:true}),queueSourceMutation(){},
         traceGeneration:async(_stage,action)=>{const result=await action();if(!result?.trim())throw Error('빈 응답');return result;},
         chatState:v=>(v.chatState??={}),renderReviewReport(){},diagnostic(){},diagnosticError(){},traceDiagnostic:async(_s,a)=>a(),
@@ -445,7 +445,7 @@ for (const running of [false, true]) test(`pre-send hook does not await pending 
 
 test('memory maintenance failure cannot reject pre-send event', async () => {
  const h=harness(()=>reply());const listeners=new Map();
- Object.assign(h.sandbox,{memoryHooksInstalled:false,extracting:false,translating:false,settings:()=>({autoMemory:true}),activeCollectionJob:null,
+ Object.assign(h.sandbox,{memoryScopeChanging:false,memoryHooksInstalled:false,extracting:false,translating:false,settings:()=>({autoMemory:true}),activeCollectionJob:null,
   sourceMutationTimer:null,queueSourceMutation(){},processSourceMutation:async()=>{throw Error('maintenance failure');}});
  h.ctx.eventTypes={GENERATION_AFTER_COMMANDS:'beforeSend'};h.ctx.eventSource={on:(e,fn)=>listeners.set(e,fn)};
  vm.runInContext(hookCode,h.sandbox);h.sandbox.installMemoryHooks(h.ctx);
@@ -707,4 +707,29 @@ test('real ttotto and 100LOG wait together for final native render',
             if(value===undefined)delete globalThis[key];else globalThis[key]=value;
         }
     }
+});
+
+
+test('scope change in progress defers native generation before any injection or review', async () => {
+    const h = harness(() => { throw Error('must not request'); });
+    h.sandbox.memoryScopeChanging = true;
+    await h.prepare();
+    assert.equal(h.aborted(), 1);
+    assert.equal(h.requests.length, 0);
+    assert.equal(h.masks.size, 0);
+    assert.equal(h.injections.length, 0);
+});
+
+test('native review uses only the selected independent store and keeps its report out of shared state', async () => {
+    const { separateRoomMemory, selectedMemoryStore } = await import('../memory-scope.js');
+    const root = { uuid: 'one-character', facts: [{ id: 'shared', text: 'shared-world-only', active: true, knowledge: {} }], candidates: [], chats: {} };
+    const privateStore = separateRoomMemory(root, 'chat-a', 1);
+    privateStore.facts.push({ id: 'private', text: 'private-world-only', active: true, knowledge: {} });
+    const h = harness(() => reply()); h.sandbox.data = () => selectedMemoryStore(root, h.ctx.chatId);
+    await h.prepare();
+    assert.deepEqual(Array.from(h.sandbox.activeReviewJob.facts, f => f.id), ['private']);
+    await h.deliver('private reply');
+    assert.equal(privateStore.chatState.lastReview.status, 'passed');
+    assert.equal(root.chatState, undefined);
+    assert.equal(root.facts[0].text, 'shared-world-only');
 });

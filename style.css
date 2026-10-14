@@ -251,3 +251,10 @@
 #hundredlog .hundredlog-support-history { margin:8px 0; font-size:12px; opacity:.85; }
 #hundredlog .hundredlog-support-history .hundredlog-help, #hundredlog .hundredlog-identity-suggestion p { white-space:pre-wrap; overflow-wrap:anywhere; }
 #hundredlog .hundredlog-delete-choice { display:flex; gap:6px; flex-wrap:wrap; margin-top:8px; }
+
+
+/* Room memory controls use the active SillyTavern theme. */
+#hundredlog .hundredlog-scope-choice { border-top: 1px solid var(--SmartThemeBorderColor); margin-top: 10px; padding-top: 8px; }
+#hundredlog .hundredlog-scope-choice[hidden] { display: none; }
+#hundredlog .hundredlog-scope-choice .hundredlog-actions { flex-wrap: wrap; }
+#hundredlog #hundredlog-memory-source { min-width: 0; max-width: 100%; }
