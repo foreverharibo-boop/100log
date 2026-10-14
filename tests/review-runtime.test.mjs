@@ -527,6 +527,35 @@ test('explicit manual collection bypasses the automatic due gate',async()=>{
  await box.syncMemories({force:true});assert.equal(options.force,true);
 });
 
+test('opening or rerendering a copied chat never schedules collection; a new reply still does',async()=>{
+ const h=harness(()=>reply());let scheduled=0;
+ h.sandbox.scheduleMemory=()=>{scheduled++;};
+ h.ctx.chat=Array.from({length:36},(_,i)=>({is_user:i%2===0,mes:`existing ${i}`}));
+ for(let i=0;i<h.ctx.chat.length;i++)await h.ctx.eventSource.emit(h.ctx.eventTypes.CHARACTER_MESSAGE_RENDERED,i);
+ assert.equal(scheduled,0);
+ await h.deliver('NEW REPLY');assert.equal(scheduled,1);
+ await h.ctx.eventSource.emit(h.ctx.eventTypes.CHARACTER_MESSAGE_RENDERED,36);
+ assert.equal(scheduled,1);
+});
+
+test('startup and chat change preserve uncollected history without starting a request',async()=>{
+ const h=harness(()=>reply());let scheduled=0,stopped=0;
+ const state={autoMemory:{cursor:0,offset:0,journal:[]}};
+ h.ctx.chat=Array.from({length:36},(_,i)=>({is_user:i%2===0,mes:`existing ${i}`}));
+ h.ctx.eventTypes.CHAT_CHANGED='changed';
+ Object.assign(h.sandbox,{ctx:h.ctx,chatState:()=>state,initializeAuto:s=>s.autoMemory,
+  memoryEpoch:0,memoryForcePending:true,memoryPending:true,collectionStatusText:'',
+  clearMemoryScopeChoice(){},refreshCollectionStatus(){},addWandButton(){},
+  stopCollection(){stopped++;h.sandbox.memoryPending=false;h.sandbox.memoryForcePending=false;},
+  scheduleMemory(){scheduled++;}});
+ const openCode=source.slice(source.indexOf('    ctx.eventSource.on((ctx.eventTypes ?? ctx.event_types).CHAT_CHANGED,'),source.indexOf('\nconst initialContext = context();'));
+ await vm.runInContext(`(async()=>{${openCode.trim().replace(/\}$/, '')}})()`,h.sandbox);
+ assert.equal(scheduled,0);assert.equal(state.autoMemory.cursor,0);
+ await h.ctx.eventSource.emit('changed');
+ assert.equal(scheduled,0);assert.equal(stopped,1);assert.equal(h.sandbox.memoryPending,false);
+ assert.equal(state.autoMemory.cursor,0);
+});
+
 test('collection stop aborts only its own request, not the reply review',()=>{
  const h=harness(()=>reply());h.sandbox.activeCollectionJob={controller:new AbortController()};h.sandbox.activeReviewJob={controller:new AbortController()};
  Object.assign(h.sandbox,{stopExtractionRequested:false,memoryTimer:null,memoryForcePending:true});
