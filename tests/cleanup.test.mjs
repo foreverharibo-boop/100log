@@ -53,6 +53,26 @@ test('automatic cleanup reruns on new or edited source, but skips identical inpu
     await h.run(); assert.equal(h.requests.length, 4);
 });
 
+test('collection accepts wrapped JSON and advances the cursor without a second AI request', async () => {
+    const h = harness(0); let requests = 0;
+    h.sandbox.rawGenerateUtility = async () => { requests++; return 'Here is the result:\n```JSON\n{"operations":[]}\n```\nDone.'; };
+    await h.sandbox.syncMemories({ force: true });
+    assert.equal(h.errors.length, 0, JSON.stringify(h.errors));
+    assert.equal(h.state.autoMemory.cursor, h.ctx.chat.length);
+    assert.equal(requests, 1);
+});
+
+test('incomplete collection does not advance its cursor or apply the broken batch', async () => {
+    const h = harness(2); const before = JSON.stringify(h.value.facts); let requests = 0;
+    h.sandbox.rawGenerateUtility = async () => { requests++; return '{"operations":['; };
+    await h.sandbox.syncMemories({ force: true });
+    assert.equal(h.errors.length, 1);
+    assert.equal(h.state.autoMemory.cursor, 0);
+    assert.equal(JSON.stringify(h.value.facts), before);
+    assert.equal(requests, 1);
+    assert.ok(h.statuses.some(text => text.includes('최대 출력 토큰')));
+});
+
 test('manual cleanup ignores threshold, disabled automation and unchanged input; no collection', async () => {
     const h = harness(2); h.config.autoMemory = false; h.config.autoCleanup = false;
     await h.run(); assert.equal(h.requests.length, 0);
@@ -275,3 +295,4 @@ test('memory limit is clamped to the supported active memory bound', () => {
     assert.equal(memory.normalizeMemoryLimit(1), 1);
     assert.equal(memory.normalizeMemoryLimit('bad'), 30);
 });
+

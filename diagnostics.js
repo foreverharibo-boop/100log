@@ -1,5 +1,5 @@
 // Diagnostics contain fixed labels and allowlisted metadata only. Never serialize payloads/errors.
-export const DIAGNOSTIC_VERSION = '1.9.36';
+export const DIAGNOSTIC_VERSION = '1.9.37';
 const STORAGE = 'hundredlog.diagnostics.v1';
 const LIMIT = 1;
 const labels = {
@@ -37,6 +37,10 @@ const reasonLabels = {
     aborted: '생성이 취소되거나 중단됨', timeout: '응답 대기 시간 초과',
     network: '네트워크 요청 실패', missing_function: '호출할 함수가 없거나 호환되지 않음',
     undefined_value: '없는 값의 속성에 접근함', invalid_json: '응답을 JSON으로 해석하지 못함',
+    json_incomplete: '수집 JSON의 괄호·문자열이 닫히지 않음 · 출력 잘림 가능성',
+    json_ambiguous: '수집 응답에 JSON이 여러 개 있음',
+    json_schema: '수집 JSON에 필요한 배열이 없음',
+    json_malformed: '수집 응답에 JSON이 없거나 문법이 잘못됨',
     http: 'HTTP 오류 코드 확인', context: '입력 또는 컨텍스트 길이 제한',
     blocked: '응답 차단 관련 오류 문구 확인', unknown: '전달된 오류만으로 세부 원인을 확인하지 못함',
     busy: '이미 생성 작업이 진행 중이라는 오류 문구 확인',
@@ -126,6 +130,9 @@ export function classifyDiagnosticError(error) {
         : /context.*(?:length|limit)|maximum.*tokens|too many tokens/i.test(message) ? 'context'
         : /safety|blocked|content.?filter/i.test(message) ? 'blocked'
         : category === 'JSON·판정 형식' ? 'invalid_json' : 'unknown';
+    if (!http && ['json_incomplete', 'json_ambiguous', 'json_schema', 'json_malformed'].includes(error?.hundredlogJsonIssue)) {
+        safe.category = 'JSON·판정 형식'; safe.detail = error.hundredlogJsonIssue;
+    }
     if (http) safe.http = http;
     const stack = String(error?.stack ?? '');
     // Keep only frame locations, never the message, URL, query, or function name.

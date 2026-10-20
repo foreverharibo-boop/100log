@@ -264,11 +264,62 @@ export function cleanupRequest(facts, rows) {
     ].join('\n\n');
 }
 
+function memoryJsonError(issue, field) {
+    const messages = {
+        json_incomplete: '수집 JSON의 괄호나 문자열이 끝까지 닫히지 않았어요. 정리용 모델의 최대 출력 토큰을 늘리거나 다른 정리용 연결 프로필로 다시 시도해 주세요.',
+        json_ambiguous: '수집 응답에 JSON이 여러 개 있어 결과를 고를 수 없어요. JSON 하나만 출력하는 정리용 연결 프로필로 다시 시도해 주세요.',
+        json_schema: `수집 JSON에 ${field} 배열이 없어요. 정리용 연결 프로필의 출력 형식 설정을 확인한 뒤 다시 시도해 주세요.`,
+        json_malformed: '수집 응답의 JSON 문법이 잘못됐거나 JSON이 없어요. 다시 시도하고 반복되면 정리용 연결 프로필·모델을 바꿔 주세요.',
+    };
+    const error = new Error(`${messages[issue]} 이번 응답은 저장하지 않았어요.`);
+    error.hundredlogJsonIssue = issue;
+    return error;
+}
+
+// Extract one complete JSON document, never repair quotes/brackets or salvage
+// nested operations from a broken outer response. Strings may contain braces.
+function readMemoryJson(raw, field) {
+    const text = String(raw ?? '').trim();
+    const validate = result => {
+        if (!result || Array.isArray(result) || !Array.isArray(result[field])) throw memoryJsonError('json_schema', field);
+        return result;
+    };
+    let direct;
+    try { direct = { value: JSON.parse(text) }; } catch { /* prose/fences may wrap the document */ }
+    if (direct) return validate(direct.value);
+    const documents = [];
+    let start = -1, stack = [], quoted = false, escaped = false;
+    for (let i = 0; i < text.length; i++) {
+        const char = text[i];
+        if (start < 0) {
+            if (char === '{' || char === '[') { start = i; stack = [char]; }
+            continue;
+        }
+        if (quoted) {
+            if (escaped) escaped = false;
+            else if (char === '\\') escaped = true;
+            else if (char === '"') quoted = false;
+            continue;
+        }
+        if (char === '"') quoted = true;
+        else if (char === '{' || char === '[') stack.push(char);
+        else if (char === '}' || char === ']') {
+            if (stack.pop() !== (char === '}' ? '{' : '[')) throw memoryJsonError('json_malformed', field);
+            if (!stack.length) {
+                try { documents.push(JSON.parse(text.slice(start, i + 1))); }
+                catch { throw memoryJsonError('json_malformed', field); }
+                start = -1;
+            }
+        }
+    }
+    if (start >= 0) throw memoryJsonError('json_incomplete', field);
+    if (documents.length > 1) throw memoryJsonError('json_ambiguous', field);
+    if (!documents.length) throw memoryJsonError('json_malformed', field);
+    return validate(documents[0]);
+}
+
 export function parseCleanupActions(raw, value, rows, report = {}) {
-    let result;
-    try { result = JSON.parse(String(raw).replace(/^\s*```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim()); }
-    catch { throw new Error('규칙 자동 청소 응답을 읽지 못했어요. 기존 규칙은 그대로 두었어요.'); }
-    if (!Array.isArray(result?.actions)) throw new Error('규칙 자동 청소 응답에 actions 목록이 없어요.');
+    const result = readMemoryJson(raw, 'actions');
     Object.assign(report, { proposed: result.actions.length, accepted: 0, excluded: 0, reasons: {} });
     const reject = (reason, count = 1) => {
         report.excluded += count;
@@ -503,10 +554,7 @@ export function compactBulkHiddenMessages(value, chatState, chat, sourceChatId, 
 }
 
 export function parseMemoryOperations(raw, rows, facts, sourceChatId = '', contextRows = [], { deferConfidenceToJev = false, collectorOnly = false } = {}) {
-    let result;
-    try { result = JSON.parse(String(raw).replace(/^\s*```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim()); }
-    catch { throw new Error('기억 정리 응답을 읽지 못했어요. 기존 기억은 그대로 두었어요.'); }
-    if (!Array.isArray(result?.operations)) throw new Error('기억 정리 응답에 operations 목록이 없어요.');
+    const result = readMemoryJson(raw, 'operations');
     const sources = new Map(rows.map((row) => [row.id, row]));
     const byId = new Map(facts.map((fact) => [fact.id, fact]));
     const used = new Map();
