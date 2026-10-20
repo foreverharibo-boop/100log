@@ -1,11 +1,11 @@
-import { roomScope, selectedMemoryStore, separateRoomMemory, resumeRoomMemory, shareRoomMemory, resetRoomMemory, memoryCopySources } from './memory-scope.js?v=1.9.35';
-import { createNativeReview } from './native-review.js?v=1.9.35';
-import { retryCapacityOperations, evictOldestMemories, normalizeMemoryLimit } from './memory-engine.js?v=1.9.35';
-import { availableSupportingEvidence, normalizeAliases, canonicalName, linkAlias, resolveFactNames, normalizeSupportingEvidence, addRejectedMemory } from './continuity-tools.js?v=1.9.35';
-import { applyManualKnowledgeDraft, collectedCharacterNames, sortMemoriesByCollection, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, omissionReviewRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js?v=1.9.35';
-import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, supportsBackgroundUtility, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js?v=1.9.35';
-import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js?v=1.9.35';
-import { normalizeKnowledgeEvidence, KNOWLEDGE_LABELS, COMMITMENT_LABELS, commitmentState } from './core.js?v=1.9.35';
+import { roomScope, selectedMemoryStore, separateRoomMemory, resumeRoomMemory, shareRoomMemory, resetRoomMemory, memoryCopySources } from './memory-scope.js?v=1.9.36';
+import { createNativeReview } from './native-review.js?v=1.9.36';
+import { retryCapacityOperations, evictOldestMemories, normalizeMemoryLimit } from './memory-engine.js?v=1.9.36';
+import { availableSupportingEvidence, normalizeAliases, canonicalName, linkAlias, resolveFactNames, normalizeSupportingEvidence, addRejectedMemory } from './continuity-tools.js?v=1.9.36';
+import { applyManualKnowledgeDraft, collectedCharacterNames, sortMemoriesByCollection, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, omissionReviewRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js?v=1.9.36';
+import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, supportsBackgroundUtility, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js?v=1.9.36';
+import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js?v=1.9.36';
+import { normalizeKnowledgeEvidence, KNOWLEDGE_LABELS, COMMITMENT_LABELS, commitmentState } from './core.js?v=1.9.36';
 
 const NAME = 'hundredlog';
 const LEGACY_NAME = 'memorybean';
@@ -1495,8 +1495,8 @@ function renderContent() {
     $id('translation-provider').disabled = working;
     $id('translation-profile-setting').hidden = translationProvider() === 'google';
     $id('translation-help').textContent = translationProvider() === 'google'
-        ? 'Google 번역으로 저장된 규칙과 출처를 번역해요. AI 프로필은 호출하지 않으며 원문과 RP 채팅은 바꾸지 않아요.'
-        : '선택한 AI 연결 프로필로 저장된 규칙과 출처를 자연스럽게 번역해요. 원문과 RP 채팅은 바꾸지 않아요.';
+        ? 'Google 번역으로 규칙과 출처의 화면 표시만 한국어로 바꿔요. AI 프로필은 호출하지 않으며 저장 원문·AI 주입·검수에는 번역문을 사용하지 않아요.'
+        : '선택한 AI 연결 프로필로 규칙과 출처의 화면 표시만 한국어로 바꿔요. 저장 원문·AI 주입·검수에는 번역문을 사용하지 않아요.';
     $id('translate-all').disabled = working || !allRecords.length;
     $id('translate-missing').disabled = working || !missing;
     $id('translate-stop').disabled = !translating;
@@ -2611,7 +2611,7 @@ async function main() {
     const ctx = context();
     installMemoryHooks(ctx);
     if ($id('key')) { registerDeveloperTitle($id('title')); addWandButton(); return; }
-    const response = await diagnosticFetch(new URL('./settings.html?v=1.9.35', import.meta.url), { credentials: 'same-origin' });
+    const response = await diagnosticFetch(new URL('./settings.html?v=1.9.36', import.meta.url), { credentials: 'same-origin' });
     if (!response.ok) throw new Error(`설정 화면 파일을 읽지 못했어요 (${response.status}).`);
     const html = await response.text();
     // Keep the panel mounted for event bindings, but expose it only through the wand.
@@ -2943,5 +2943,6 @@ if (appReady) {
 } else {
     void main().catch((error) => diagnosticError('초기화', error, { site: 2437 }));
 }
+
 
 
