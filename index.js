@@ -1,11 +1,13 @@
-import { roomScope, selectedMemoryStore, separateRoomMemory, resumeRoomMemory, shareRoomMemory, resetRoomMemory, memoryCopySources } from './memory-scope.js?v=1.9.37';
-import { createNativeReview } from './native-review.js?v=1.9.37';
-import { retryCapacityOperations, evictOldestMemories, normalizeMemoryLimit } from './memory-engine.js?v=1.9.37';
-import { availableSupportingEvidence, normalizeAliases, canonicalName, linkAlias, resolveFactNames, normalizeSupportingEvidence, addRejectedMemory } from './continuity-tools.js?v=1.9.37';
-import { applyManualKnowledgeDraft, collectedCharacterNames, sortMemoriesByCollection, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, omissionReviewRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js?v=1.9.37';
-import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, supportsBackgroundUtility, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js?v=1.9.37';
-import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js?v=1.9.37';
-import { normalizeKnowledgeEvidence, KNOWLEDGE_LABELS, COMMITMENT_LABELS, commitmentState } from './core.js?v=1.9.37';
+import { createFileStorage } from './file-storage.js?v=1.10.0';
+import { compactConfig, shortSignature, pruneDeletedRoomProgress, renameRoom } from './retention.js?v=1.10.0';
+import { roomScope, selectedMemoryStore, separateRoomMemory, resumeRoomMemory, shareRoomMemory, resetRoomMemory, memoryCopySources } from './memory-scope.js?v=1.10.0';
+import { createNativeReview } from './native-review.js?v=1.10.0';
+import { retryCapacityOperations, evictOldestMemories, normalizeMemoryLimit } from './memory-engine.js?v=1.10.0';
+import { availableSupportingEvidence, normalizeAliases, canonicalName, linkAlias, resolveFactNames, normalizeSupportingEvidence, addRejectedMemory } from './continuity-tools.js?v=1.10.0';
+import { applyManualKnowledgeDraft, collectedCharacterNames, sortMemoriesByCollection, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, omissionReviewRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js?v=1.10.0';
+import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, supportsBackgroundUtility, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js?v=1.10.0';
+import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js?v=1.10.0';
+import { normalizeKnowledgeEvidence, KNOWLEDGE_LABELS, COMMITMENT_LABELS, commitmentState } from './core.js?v=1.10.0';
 
 const NAME = 'hundredlog';
 const LEGACY_NAME = 'memorybean';
@@ -54,6 +56,88 @@ let developerTitleTimer = null;
 
 const context = () => SillyTavern.getContext();
 const $id = (id) => document.getElementById(`hundredlog-${id}`);
+
+
+let storageInit = null;
+let storageTimer = null;
+let storageToastCode = '';
+function storageNotice(error = fileStorage.error) {
+    const messages = {
+        conflict: '다른 화면에서 기억이 변경되어 덮어쓰기를 멈췄어요. 이 화면의 미저장 변경을 확인한 뒤 새로고침해 주세요.',
+        invalid_file: '기억 파일을 읽을 수 없어 100LOG를 멈췄어요. 파일과 기존 설정은 지우지 않았어요.',
+        missing_file: '기억 파일을 찾지 못했어요. 빈 기억으로 덮어쓰지 않았어요.',
+    };
+    const message = error && !fileStorage.ready ? '100LOG 이관을 완료하지 못했어요. 기존 설정은 유지됩니다. 서버 연결·저장 공간을 확인한 뒤 새로고침해 주세요.' : error ? (messages[error.storageCode] || '100LOG 파일 저장·확인에 실패했어요. 새로고침 전에 저장 재시도를 눌러 주세요. 기존 설정은 이관 확인 전까지 유지해요.')
+        : '기억과 설정은 이 실리태번 서버의 files에 저장해요. 같은 서버·계정에서 이어 쓸 수 있어요.';
+    if ($id('storage-status')) $id('storage-status').textContent = message;
+    if ($id('storage-retry')) $id('storage-retry').hidden = !error || error.storageCode === 'conflict';
+    if (error && storageToastCode !== (error.storageCode || 'failed')) {
+        storageToastCode = error.storageCode || 'failed';
+        globalThis.toastr?.error(message, '100LOG 저장 확인', { timeOut: 0, extendedTimeOut: 0 });
+        diagnosticError('파일 저장', error);
+    }
+    if (!error) storageToastCode = '';
+}
+const fileStorage = createFileStorage({
+    request: (...args) => fetch(...args), headers: () => context().getRequestHeaders(),
+    compact: compactConfig,
+    wasMigrated: () => { try { return context().accountStorage?.getItem('100log.filesMigrated') === '1'; } catch { return false; } },
+    markMigrated: () => context().accountStorage?.setItem('100log.filesMigrated', '1'),
+    prepare: config => pruneDeletedRoomProgress(config, listStoredRooms, String(context().chatId ?? '')),
+    changed: error => storageNotice(error),
+});
+async function listStoredRooms(avatar) {
+    // Raw filename enumeration includes unreadable files. Errors never mean deletion.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
+    try {
+        const response = await fetch('/api/characters/chats', { method: 'POST', signal: controller.signal, headers: context().getRequestHeaders(),
+            body: JSON.stringify({ avatar_url: avatar, simple: true }) });
+        if (!response.ok) throw new Error('room_list_failed');
+        return await response.json();
+    } finally { clearTimeout(timer); }
+}
+function installStorageHooks(ctx) {
+    const events = ctx.eventTypes ?? ctx.event_types;
+    if (events.CHAT_DELETED) ctx.eventSource.on(events.CHAT_DELETED, async () => {
+        try {
+            await pruneDeletedRoomProgress(fileStorage.value, listStoredRooms, String(context().chatId ?? ''));
+            await fileStorage.save();
+        } catch (error) { storageNotice(error); }
+    });
+    if (events.CHAT_RENAMED) ctx.eventSource.on(events.CHAT_RENAMED, async event => {
+        if (event?.groupId || !event?.avatarId || !event?.oldFileName || !event?.newFileName) return;
+        const config = fileStorage.value;
+        const uuid = config.characterIdentityRegistry?.byAvatar?.[event.avatarId];
+        const root = config.characterStores?.[`uuid:${uuid}`];
+        if (!root) return;
+        renameRoom(root, String(event.oldFileName).replace(/\.jsonl$/, ''), String(event.newFileName).replace(/\.jsonl$/, ''));
+        try { await fileStorage.save(); render(); } catch (error) { storageNotice(error); }
+    });
+}
+function initializeFileStorage() {
+    if (!storageInit) storageInit = (async () => {
+        const ctx = context();
+        await fileStorage.init(ctx.extensionSettings?.[NAME] ?? ctx.extensionSettings?.[LEGACY_NAME]);
+        // Never erase settings before upload + read-back validation succeeds.
+        const hadLegacy = Object.hasOwn(ctx.extensionSettings, NAME) || Object.hasOwn(ctx.extensionSettings, LEGACY_NAME);
+        delete ctx.extensionSettings[NAME]; delete ctx.extensionSettings[LEGACY_NAME];
+        if (hadLegacy) ctx.saveSettingsDebounced?.();
+    })().catch(error => { storageInit = null; storageNotice(error); throw error; });
+    return storageInit;
+}
+function scheduleStorageSave() {
+    clearTimeout(storageTimer);
+    storageTimer = setTimeout(() => { void fileStorage.save().catch(storageNotice); }, 120);
+}
+async function refreshFileStorage() {
+    if (!fileStorage.ready || busy || extracting || translating || normalGenerating || memoryRun) return;
+    try { await fileStorage.refresh(); render(); } catch (error) { storageNotice(error); }
+}
+globalThis.addEventListener?.('focus', () => { void refreshFileStorage(); });
+globalThis.addEventListener?.('beforeunload', event => {
+    if (fileStorage.dirty) { event.preventDefault(); event.returnValue = ''; }
+});
 
 // Only the current reply review owns this token. Collection/translation requests are separate.
 function reviewCancelledError() {
@@ -206,7 +290,7 @@ function diagnosticSnapshot() {
         snapshot.stageSeconds = Math.max(0, Math.floor((Date.now() - activeCollectionJob.stageStarted) / 1000));
     }
     try {
-        snapshot.enabled = Boolean(context().extensionSettings?.[NAME]?.autoMemory);
+        snapshot.enabled = Boolean(fileStorage.ready && fileStorage.value.autoMemory);
         snapshot.hasKey = Boolean(localStorage.getItem(KEY_STORAGE) || localStorage.getItem(LEGACY_KEY_STORAGE));
     } catch { /* the report already indicates whether diagnostic storage is available */ }
     return snapshot;
@@ -584,12 +668,7 @@ function cleanupThreshold(value, fallback = 20) {
 }
 
 function settings() {
-    const ctx = context();
-    if (!ctx.extensionSettings[NAME] && ctx.extensionSettings[LEGACY_NAME]) {
-        ctx.extensionSettings[NAME] = { ...ctx.extensionSettings[LEGACY_NAME], migratedFromMemorybean: true };
-    }
-    ctx.extensionSettings[NAME] ??= { enabled: false };
-    const config = ctx.extensionSettings[NAME];
+    const config = fileStorage.value;
     const legacyJevEnabled = Boolean(config.enabled);
     config.autoMemory ??= legacyJevEnabled;
     config.enabled = Boolean(config.autoMemory);
@@ -658,7 +737,7 @@ function ensureCharacterUuid(ctx = context()) {
                 .catch((error) => diagnosticError('초기화', error, { site: 577 }));
         }
     }
-    if (registryChanged) ctx.saveSettingsDebounced?.();
+    if (registryChanged) scheduleStorageSave();
     return uuid;
 }
 
@@ -728,8 +807,15 @@ function characterData(create = true) {
     if (legacy && marker !== ownerKey) {
         mergeLegacyChatData(value, legacy, sourceChatId(ctx));
         ctx.chatMetadata.hundredlogCharacterStoreMigration = ownerKey;
-        ctx.saveSettingsDebounced?.();
-        void Promise.resolve(ctx.saveMetadata?.()).catch((error) => diagnosticError('초기화', error, { site: 651 }));
+        scheduleStorageSave();
+    }
+    if (legacy) {
+        const metadata = ctx.chatMetadata;
+        void fileStorage.save().then(async () => {
+            if (context().chatMetadata !== metadata) return;
+            delete metadata[NAME]; delete metadata[LEGACY_NAME];
+            await ctx.saveMetadata?.();
+        }).catch(storageNotice);
     }
     return value;
 }
@@ -746,7 +832,7 @@ function data(create = true) {
     for (const fact of value.facts) fact.knowledge ??= {};
     if (state) {
         const pruned = pruneToRecentWindow(value, state, ctx.chat, sourceChatId(ctx));
-        if (pruned.changed) ctx.saveSettingsDebounced?.();
+        if (pruned.changed) scheduleStorageSave();
     }
     const currentIds = new Set(value.facts.filter((fact) => fact.active && isCurrent(fact)).map((fact) => fact.id));
     value.cleanupConflicts = (value.cleanupConflicts ?? []).filter((entry) => Array.isArray(entry.ids) && entry.ids.length === 2 && entry.ids.every((id) => currentIds.has(id)));
@@ -760,7 +846,7 @@ async function save() {
     const value = data(false);
     const state = chatState(value, ctx, false);
     if (value && state) pruneToRecentWindow(value, state, ctx.chat, sourceChatId(ctx));
-    ctx.saveSettingsDebounced?.();
+    await fileStorage.save();
     await ctx.saveMetadata();
     await clearLegacyPrompt();
     });
@@ -1190,7 +1276,7 @@ function renderCollectionExclusions(value, working) {
     if (sameScope && list.contains(document.activeElement)) return;
     list.dataset.chat = currentChat; list.dataset.owner = String(value?.uuid || '');
     list.replaceChildren();
-    if (report && removeSavedExclusions(report)) context().saveSettingsDebounced?.();
+    if (report && removeSavedExclusions(report)) scheduleStorageSave();
     const summary = $id('collection-exclusions-summary');
     summary.textContent = report
         ? `최근 수집에서 제외 ${report.total}개${report.saved ? ` · 직접 저장 ${report.saved}개` : ''} · 남은 표시 ${report.items.length}개`
@@ -1245,7 +1331,7 @@ function renderCollectionExclusions(value, working) {
                     if (savedRecord) {
                         value.facts = value.facts.filter((fact) => fact.id !== savedRecord.id);
                         delete entry.savedId; report.items = beforeItems; report.saved = beforeSaved;
-                        context().saveSettingsDebounced?.();
+                        scheduleStorageSave();
                     }
                     error.textContent = failure.message; restoreScroll();
                 }
@@ -1436,7 +1522,7 @@ function bindMemoryScope() {
         const root = characterData(false);
         const source = memoryCopySources(root, sourceChatId()).find(item => item.key === $id('memory-source').value);
         if (!source) return;
-        memoryScopeChoice(`‘${source.label}’을 복사할까요? 이 방은 독립 상태가 되며, 기존 독립 기억이 있다면 복사본으로 교체해요. 직접 저장·잠금·지난 규칙도 함께 복사하지만 원본 방은 바꾸지 않아요.${source.shared ? ' 선택한 원본은 공용 기억 전체예요.' : ''}`, [
+        memoryScopeChoice(`‘${source.label}’을 복사할까요? 이 방은 독립 상태가 되며, 기존 독립 기억이 있다면 복사본으로 교체해요. 현재 기억과 직접 저장·잠금한 규칙을 복사하지만 원본 방은 바꾸지 않아요.${source.shared ? ' 선택한 원본은 공용 기억 전체예요.' : ''}`, [
             { label: '복사해서 가져오기', apply: (owner, id, length) => separateRoomMemory(owner, id, length, source.store),
                 done: '기억을 복사했어요. 이 방과 원본 방은 서로 독립적으로 갱신돼요.' },
         ]);
@@ -1642,7 +1728,7 @@ function renderContent() {
         }));
         $id('history').append(item);
     }
-    if (!visibleHistory.length) { const empty = document.createElement('p'); empty.className = 'hundredlog-empty'; empty.textContent = history.length ? '이 분류에 해당하는 지난 규칙이 없어요.' : '완료된 약속이나 바뀌기 전의 상태가 여기에 남아요.'; $id('history').append(empty); }
+    if (!visibleHistory.length) { const empty = document.createElement('p'); empty.className = 'hundredlog-empty'; empty.textContent = history.length ? '이 분류에 해당하는 지난 규칙이 없어요.' : '직접 저장·잠금한 지난 규칙만 남아요. 자동으로 정리된 기억은 보관하지 않아요.'; $id('history').append(empty); }
     if (!value.candidates.length) {
         const empty = document.createElement('p'); empty.className = 'hundredlog-empty'; empty.textContent = '검토할 후보가 없어요.'; $id('candidates').append(empty);
     }
@@ -1711,14 +1797,14 @@ function recentCleanupRows(ctx) {
 }
 
 function cleanupSignature(facts, ctx, rows) {
-    return JSON.stringify([sourceChatId(ctx),
+    return shortSignature(JSON.stringify([sourceChatId(ctx),
         facts.filter((fact) => fact.active && isCurrent(fact)),
-        rows.map(row => [row.id, messageSignature(ctx.chat[row.id])])]);
+        rows.map(row => [row.id, messageSignature(ctx.chat[row.id])])]));
 }
 
 function cleanupSummaryText(review) {
     const reasons = Object.entries(review.reasons || {}).map(([reason, count]) => `${reason} ${count}개`).join(', ');
-    return `마지막 ${review.manual ? '수동' : '자동'} 청소: AI 제안 ${review.proposed}개 → 병합으로 ${review.merged}개 정리 · 보관 ${review.archived}개 · 충돌 확인 ${review.pending}쌍 · 제외 ${review.excluded}개`
+    return `마지막 ${review.manual ? '수동' : '자동'} 청소: AI 제안 ${review.proposed}개 → 병합으로 ${review.merged}개 정리 · 정리 ${review.archived}개 · 충돌 확인 ${review.pending}쌍 · 제외 ${review.excluded}개`
         + (reasons ? ` (${reasons})` : '')
         + (review.proposed === 0 ? '. AI가 정리할 항목을 제안하지 않았어요.' : '')
         + (review.recovered ? ` · 자리 부족으로 빠졌던 기억 ${review.recovered}개 저장` : '')
@@ -1727,7 +1813,7 @@ function cleanupSummaryText(review) {
 
 function evictionSummaryText(value, evicted, limit) {
     const active = value.facts.filter(fact => fact.active && isCurrent(fact)).length;
-    return `오래된 기억 ${evicted}개를 보관으로 옮겼어요 · 밀어내기 직후 ${active}개 / 당시 유지 기준 ${limit}개`
+    return `오래된 기억 ${evicted}개를 정리했어요 · 밀어내기 직후 ${active}개 / 당시 유지 기준 ${limit}개`
         + (active > limit ? ' · 직접 저장·잠금한 기억은 유지해요.' : '');
 }
 
@@ -1737,6 +1823,7 @@ async function applyEvictionSetting() {
     if (!config.autoEvict || !value) { render(); return; }
     const state = chatState(value, ctx);
     const auto = initializeAuto(state, ctx.chat);
+    auto.undoGroup = createUuid();
     const result = evictOldestMemories(value, config.memoryLimit, sourceChatId(ctx));
     if (result.changes.length) recordMemoryBatch(state, { rows: [], start: auto.cursor, offset: auto.offset,
         nextCursor: auto.cursor, nextOffset: auto.offset, changes: result.changes });
@@ -1880,7 +1967,7 @@ async function processSourceMutation({ queueCollection = true } = {}) {
         render();
         return { changed: true, compacted: true, ...compacted };
     }
-    const changed = reconcileMemory(value, state, ctx.chat);
+    const changed = reconcileMemory(value, state, ctx.chat, sourceChatId(ctx));
     if (changed) {
         await save();
         render();
@@ -1902,6 +1989,9 @@ function queueSourceMutation() {
 }
 
 async function performMemorySync({ rebuildRecent = false, force = false, reviewOnly = false, cleanupOnly = false } = {}) {
+    await initializeFileStorage();
+    await fileStorage.refresh();
+    if (fileStorage.error) throw fileStorage.error;
     const ctx = context();
     const key = chatKey(ctx);
     const value = data();
@@ -1914,6 +2004,7 @@ async function performMemorySync({ rebuildRecent = false, force = false, reviewO
     const sameOrigin = () => chatKey(context()) === key && data(false) === value && epoch === memoryEpoch;
     const sameChat = () => sameOrigin() && !job.controller.signal.aborted;
     let auto = initializeAuto(state, ctx.chat);
+    auto.undoGroup = createUuid();
     if (!rebuildRecent && !force && !cleanupOnly && !memoryDue(value, ctx)) return;
     memoryPending = false;
     extracting = true; stopExtractionRequested = false;
@@ -1937,12 +2028,12 @@ async function performMemorySync({ rebuildRecent = false, force = false, reviewO
             return;
         }
         if (!reviewOnly) {
-            if (rebuildRecent) resetRecentWindow(value, state, ctx.chat, currentSourceChatId);
+            if (rebuildRecent) { resetRecentWindow(value, state, ctx.chat, currentSourceChatId); state.autoMemory.undoGroup = auto.undoGroup; }
             else pruneToRecentWindow(value, state, ctx.chat, currentSourceChatId);
         }
         auto = initializeAuto(state, ctx.chat);
         const compacted = (rebuildRecent || reviewOnly) ? { applied: false } : applyDetectedSummaryCompaction(value, state, ctx);
-        if (!reviewOnly && (compacted.applied || reconcileMemory(value, state, ctx.chat))) await save();
+        if (!reviewOnly && (compacted.applied || reconcileMemory(value, state, ctx.chat, sourceChatId(ctx)))) await save();
         auto = initializeAuto(state, ctx.chat);
         // A user message alone is not a completed RP exchange.
         let end = ctx.chat.length;
@@ -2216,7 +2307,7 @@ async function ensureFactEmbeddings(facts, { announce = true } = {}) {
             if (announce && missing.length > batchSize) status(`${embeddingLabel(provider)} 규칙 임베딩 ${Math.min(start + batch.length, missing.length)}/${missing.length}`);
         }
     }
-    if (changed) context().saveSettingsDebounced?.();
+    if (changed) scheduleStorageSave();
     return index;
 }
 
@@ -2294,7 +2385,7 @@ async function runReceivedReview(job, message) {
     const updateReport = (patch) => {
         Object.assign(report, patch);
         if (reportState) reportState.lastReview = report;
-        context().saveSettingsDebounced?.();
+        scheduleStorageSave();
         renderReviewReport();
     };
     const recoverReply = (error) => {
@@ -2368,7 +2459,7 @@ async function runReceivedReview(job, message) {
                 text: `${mode === 'swipe' ? '스와이프 · ' : mode === 'regenerate' ? '재생성 · ' : ''}관련 규칙 ${injected}개 주입 · 검수 대상 ${facts.length}개 · ${report.reviewIncomplete ? '검수 미완료 · 받은 답변 표시' : report.remaining ? `한 번 재작성 · 충돌 ${report.remaining}개 남음` : flagged.length ? `충돌 ${flagged.length}개 수정` : '충돌 없음'}`,
                 at: Date.now(), type: 'review',
             };
-            context().saveSettingsDebounced?.();
+            scheduleStorageSave();
         }
         try { await traceDiagnostic('답변 표시·저장', () => applyReviewedReply(final, job, message), { mode, chars: final.length }); }
         catch (error) { diagnosticError('기타', error, { site: 1904 }); if (store) store.lastActivity = previousActivity; throw error; }
@@ -2403,6 +2494,11 @@ async function runReceivedReview(job, message) {
 }
 
 globalThis.hundredlogGenerationInterceptor = async function (_promptChat, _size, abort, type) {
+    try {
+        await initializeFileStorage();
+        if (!busy && !extracting && !translating) await fileStorage.refresh();
+        if (fileStorage.error) throw fileStorage.error;
+    } catch (error) { storageNotice(error); abort(true); return; }
     const ctx = context(), config = settings();
     const mode = type === 'swipe' ? 'swipe' : ['regenerate', 'regen', 'retry'].includes(type) ? 'regenerate' : [undefined, 'normal'].includes(type) ? 'normal' : null;
     diagnostic('generation', { mode: mode ?? type, busy, extracting, translating, enabled: Boolean(config.autoMemory) });
@@ -2419,7 +2515,7 @@ globalThis.hundredlogGenerationInterceptor = async function (_promptChat, _size,
     if (useReview && ((extracting && !activeCollectionJob?.backgroundSafe) || (translating && !translationBackgroundSafe))) {
         const state = chatState(owner);
         if (state) state.lastReview = { at: Date.now(), mode, status: 'background_skipped', stage: '수집·번역 중', checked: 0, issues: [] };
-        context().saveSettingsDebounced?.(); renderReviewReport(); return;
+        scheduleStorageSave(); renderReviewReport(); return;
     }
     const job = { controller: new AbortController(), publishing: false, key: chatKey(ctx), mode };
     activeReviewJob = job;
@@ -2457,7 +2553,7 @@ globalThis.hundredlogGenerationInterceptor = async function (_promptChat, _size,
             // or rewrite. The native generation owns rendering and streaming.
             const state = chatState(owner);
             if (state) state.lastReview = { at: Date.now(), mode, status: config.reviewEnabled ? 'review_unavailable' : 'review_disabled', checked: 0, issues: [] };
-            context().saveSettingsDebounced?.();
+            scheduleStorageSave();
             if (activeReviewJob === job) activeReviewJob = null;
             busy = false;
             status(config.reviewEnabled ? '기억을 주입했어요. JEV 키·연결이 없어 답변 검수는 생략해요.' : '기억을 주입했어요. JEV 답변 검수는 꺼져 있어요.');
@@ -2516,6 +2612,7 @@ function installWandViewportTracking() {
 }
 
 function openWand() {
+    void refreshFileStorage();
     const panel = document.getElementById('hundredlog');
     if (!panel) return;
     let overlay = document.getElementById('hundredlog-wand-overlay');
@@ -2609,9 +2706,11 @@ function addWandButton() {
 
 async function main() {
     const ctx = context();
+    await initializeFileStorage();
     installMemoryHooks(ctx);
     if ($id('key')) { registerDeveloperTitle($id('title')); addWandButton(); return; }
-    const response = await diagnosticFetch(new URL('./settings.html?v=1.9.37', import.meta.url), { credentials: 'same-origin' });
+    installStorageHooks(ctx);
+    const response = await diagnosticFetch(new URL('./settings.html?v=1.10.0', import.meta.url), { credentials: 'same-origin' });
     if (!response.ok) throw new Error(`설정 화면 파일을 읽지 못했어요 (${response.status}).`);
     const html = await response.text();
     // Keep the panel mounted for event bindings, but expose it only through the wand.
@@ -2621,6 +2720,10 @@ async function main() {
     document.body.append(container); settingsHome = container;
     container.insertAdjacentHTML('beforeend', html);
     bindDiagnosticPanel();
+    $id('storage-retry')?.addEventListener('click', async () => {
+        try { await fileStorage.save(); storageNotice(); } catch (error) { storageNotice(error); }
+    });
+    storageNotice();
     bindMemoryScope();
     registerDeveloperTitle($id('title'));
     for (const view of ['memory', 'candidates', 'settings']) {
@@ -2634,14 +2737,14 @@ async function main() {
     for (const [id, key] of [['extraction-profile', 'extractionProfileId'], ['translation-profile', 'translationProfileId']]) {
         $id(id)?.addEventListener('change', (event) => {
             settings()[key] = event.target.value;
-            context().saveSettingsDebounced();
+            scheduleStorageSave();
             status('연결 프로필 선택을 저장했어요.');
         });
     }
     $id('profiles-refresh')?.addEventListener('click', () => { refreshProfiles(); status('연결 프로필 목록을 새로 불러왔어요.'); });
     $id('translation-provider')?.addEventListener('change', (event) => {
         settings().translationProvider = event.target.value === 'google' ? 'google' : 'profile';
-        context().saveSettingsDebounced();
+        scheduleStorageSave();
         render();
         status(settings().translationProvider === 'google' ? '한국어 번역 방식을 Google 번역으로 바꿨어요.' : '한국어 번역 방식을 AI 연결 프로필로 바꿨어요.');
     });
@@ -2663,7 +2766,7 @@ async function main() {
     }
     $id('embedding-provider')?.addEventListener('change', (event) => {
         settings().embeddingProvider = event.target.value === 'vertex-express' ? 'vertex-express' : 'google-ai-studio';
-        ctx.saveSettingsDebounced();
+        scheduleStorageSave();
         loadEmbeddingKeyUi();
         render();
         status(`${embeddingLabel()} 임베딩을 사용하도록 선택했어요.`);
@@ -2722,7 +2825,7 @@ async function main() {
         $id('embedding-key').value = '';
         $id('embedding-state').textContent = 'API 키를 입력해 주세요';
         settings().developerMemorySelection = false;
-        ctx.saveSettingsDebounced();
+        scheduleStorageSave();
         embeddingError();
         render();
         status(`${embeddingLabel()} 임베딩 키를 삭제했어요.`);
@@ -2730,14 +2833,14 @@ async function main() {
     $id('developer-memory')?.addEventListener('change', (event) => {
         if (event.target.checked && !embeddingKey()) { status(`${embeddingLabel()} 임베딩 키를 먼저 입력해 주세요.`); render(); return; }
         settings().developerMemorySelection = event.target.checked;
-        ctx.saveSettingsDebounced();
+        scheduleStorageSave();
         render();
         status(event.target.checked ? '임베딩으로 현재 장면과 가까운 규칙을 골라 주입해요.' : '맞춤 규칙 주입을 껐어요.');
     });
     $id('injection-limit')?.addEventListener('change', (event) => {
         settings().maxInjectedMemories = positiveInteger(event.target.value, 12);
         event.target.value = String(settings().maxInjectedMemories);
-        ctx.saveSettingsDebounced();
+        scheduleStorageSave();
         status(`한 번에 최대 ${settings().maxInjectedMemories}개 규칙을 주입해요.`);
     });
     $id('developer-lock')?.addEventListener('click', () => {
@@ -2790,7 +2893,7 @@ async function main() {
         connectionError();
         settings().reviewEnabled = false;
         stopReviewJob();
-        ctx.saveSettingsDebounced();
+        scheduleStorageSave();
         status('JEV 키를 삭제하고 답변 검수만 껐어요. 기억 수집·주입은 기존 설정대로 유지해요.');
         render();
     });
@@ -2833,14 +2936,14 @@ async function main() {
         settings().enabled = event.target.checked;
         memoryEpoch++; memoryPending = false;
         if (!settings().autoMemory) { stopCollection(); stopReviewJob(); }
-        context().saveSettingsDebounced();
+        scheduleStorageSave();
         await clearLegacyPrompt(); render();
         status(settings().autoMemory ? `기억 수집·주입을 시작해요. JEV 답변 검수는 ${settings().reviewEnabled ? '켜져' : '꺼져'} 있어요.` : '100LOG를 껐어요. 저장된 규칙은 유지돼요.');
         if (settings().autoMemory) scheduleMemory();
     });
     $id('auto-cleanup')?.addEventListener('change', (event) => {
         settings().autoCleanup = event.target.checked;
-        context().saveSettingsDebounced();
+        scheduleStorageSave();
         render();
         status(event.target.checked ? `규칙이 ${settings().cleanupThreshold}개 이상이면 수집을 마친 뒤 중복·종료·충돌을 자동 청소해요.` : '수집 후 규칙 자동 청소를 껐어요.');
     });
@@ -2848,21 +2951,21 @@ async function main() {
     $id('cleanup-stop')?.addEventListener('click', stopCollection);
     $id('auto-evict')?.addEventListener('change', async (event) => {
         settings().autoEvict = event.target.checked;
-        context().saveSettingsDebounced();
+        scheduleStorageSave();
         if (!event.target.checked) { render(); status('오래된 기억 자동 밀어내기를 껐어요.'); return; }
         try { await applyEvictionSetting(); } catch (error) { diagnosticError('규칙 저장', error); status(error.message); }
     });
     $id('memory-limit')?.addEventListener('change', async (event) => {
         settings().memoryLimit = normalizeMemoryLimit(event.target.value);
         event.target.value = String(settings().memoryLimit);
-        context().saveSettingsDebounced();
+        scheduleStorageSave();
         try { await applyEvictionSetting(); } catch (error) { diagnosticError('규칙 저장', error); status(error.message); }
     });
     $id('review-enabled')?.addEventListener('change', (event) => {
         if (event.target.checked && !apiKey()) { event.target.checked = false; status('JEV 답변 검수를 켜려면 아래에 JEV 키를 입력해 주세요. 기억 수집·주입은 키 없이 사용할 수 있어요.'); return; }
         settings().reviewEnabled = event.target.checked;
         if (!event.target.checked) stopReviewJob();
-        context().saveSettingsDebounced(); render();
+        scheduleStorageSave(); render();
         status(event.target.checked ? 'JEV 답변 검수를 켰어요. 다음 답변부터 검사해요.' : 'JEV 답변 검수를 껐어요. 기억 수집·주입은 계속 사용할 수 있어요.');
     });
     const saveCollectionPreferences = async () => {
@@ -2891,7 +2994,7 @@ async function main() {
     });
     $id('collection-intensity')?.addEventListener('change', (event) => {
         settings().collectionIntensity = ['detailed', 'balanced', 'meaningful'].includes(event.target.value) ? event.target.value : 'balanced';
-        context().saveSettingsDebounced();
+        scheduleStorageSave();
         render();
         const label = { detailed: '세세하게', balanced: '균형', meaningful: '의미 중심' }[settings().collectionIntensity];
         status(`규칙 수집 강도를 ‘${label}’로 바꿨어요. 명시적인 일정·약속은 모든 강도에서 반드시 수집해요.`);
@@ -2899,14 +3002,14 @@ async function main() {
     $id('cleanup-threshold')?.addEventListener('change', (event) => {
         settings().cleanupThreshold = cleanupThreshold(event.target.value, 20);
         event.target.value = String(settings().cleanupThreshold);
-        context().saveSettingsDebounced();
+        scheduleStorageSave();
         render();
         status(`현재 규칙이 ${settings().cleanupThreshold}개 이상 쌓이면 자동 청소를 시작해요.`);
     });
     $id('analysis-interval')?.addEventListener('change', (event) => {
         settings().analysisInterval = positiveInteger(event.target.value, 1);
         event.target.value = String(settings().analysisInterval);
-        context().saveSettingsDebounced();
+        scheduleStorageSave();
         render();
         scheduleMemory();
         status(`AI 답변 ${settings().analysisInterval}개마다 연속성 규칙을 자동 갱신해요.`);
@@ -2923,6 +3026,7 @@ async function main() {
         const value = data();
         const state = chatState(value, context(), false);
         if (state) initializeAuto(state, context().chat);
+        scheduleStorageSave();
         if (!extracting) status('준비됐어요.'); render();
         void clearLegacyPrompt();
     });
@@ -2932,6 +3036,7 @@ async function main() {
     await clearLegacyPrompt();
     render();
     addWandButton();
+    await fileStorage.save();
 }
 
 const initialContext = context();

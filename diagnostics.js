@@ -1,5 +1,5 @@
 // Diagnostics contain fixed labels and allowlisted metadata only. Never serialize payloads/errors.
-export const DIAGNOSTIC_VERSION = '1.9.37';
+export const DIAGNOSTIC_VERSION = '1.10.0';
 const STORAGE = 'hundredlog.diagnostics.v1';
 const LIMIT = 1;
 const labels = {
@@ -10,7 +10,7 @@ const labels = {
 };
 const stages = ['초기화', '메인 AI 초안 생성', '메인 AI 재작성', 'JEV 초안 검수', 'JEV 답변 검수', 'JEV 재검수', 'JEV 요청',
     '생성 준비', '답변 표시·저장', '규칙 수집', '규칙 청소', '규칙 파싱', '청소 파싱', '보조 AI', '규칙 저장',
-    '번역', '화면', '설정 저장', '미처리', '기타'];
+    '번역', '화면', '파일 저장', '설정 저장', '미처리', '기타'];
 const enums = {
     collectionStage: ['수집 준비', '정리 AI 응답 대기', 'JEV 사실·지식 검증', 'JEV 분리 규칙 검증', 'JEV 청소 검증'],
     stage: stages,
@@ -23,7 +23,7 @@ const enums = {
 };
 const numeric = new Set(['http', 'ms', 'attempt', 'waitMs', 'questions', 'rules', 'chars', 'count', 'site', 'line', 'column', 'id', 'requests', 'collectionSeconds', 'stageSeconds']);
 const boolean = new Set(['busy', 'extracting', 'translating', 'enabled', 'hasKey', 'retryable', 'dryRun', 'profile', 'pending']);
-const files = ['index.js', 'core.js', 'memory-engine.js', 'diagnostics.js'];
+const files = ['index.js', 'core.js', 'memory-engine.js', 'diagnostics.js', 'file-storage.js', 'retention.js'];
 let entries = [];
 let subscribers = new Set();
 let storageAvailable = true;
@@ -33,6 +33,9 @@ let clearEpoch = 0;
 const errorDetails = new WeakMap();
 const errorRecordedAt = new WeakMap();
 const reasonLabels = {
+    file_read_failed: '기억 파일 읽기 실패', file_write_failed: '기억 파일 저장 실패',
+    file_verify_failed: '저장 후 다시 읽은 내용이 일치하지 않음', file_conflict: '다른 화면에서 파일이 변경되어 덮어쓰기 중단',
+    file_invalid_file: '기억 파일 형식이 올바르지 않음', file_missing_file: '이관된 기억 파일을 찾지 못함', file_not_ready: '기억 파일 초기화 미완료',
     no_response: '실리태번에서 응답을 받지 못함', empty: '반환된 답변이 비어 있음',
     aborted: '생성이 취소되거나 중단됨', timeout: '응답 대기 시간 초과',
     network: '네트워크 요청 실패', missing_function: '호출할 함수가 없거나 호환되지 않음',
@@ -57,7 +60,7 @@ function metadata(input = {}) {
         else if (key === 'file' && files.includes(value)) safe.file = value;
         else if (key === 'detail' && Object.hasOwn(reasonLabels, value)) safe.detail = value;
         else if (key === 'frames' && Array.isArray(value)) safe.frames = value.slice(0, 8).filter((v) =>
-            /^(?:100LOG\/(?:index|core|memory-engine|diagnostics)\.js|SillyTavern\/(?:script|openai|extensions|utils)\.js|외부 스크립트):\d+:\d+$/.test(v));
+            /^(?:100LOG\/(?:index|core|memory-engine|diagnostics|file-storage|retention)\.js|SillyTavern\/(?:script|openai|extensions|utils)\.js|외부 스크립트):\d+:\d+$/.test(v));
         else if (['chain', 'causes', 'network'].includes(key) && Array.isArray(value)) safe[key] = value.slice(0, 6).map((item) => {
             const flat = { ...item }; delete flat.chain; delete flat.causes; delete flat.network;
             return metadata(flat);
@@ -132,6 +135,9 @@ export function classifyDiagnosticError(error) {
         : category === 'JSON·판정 형식' ? 'invalid_json' : 'unknown';
     if (!http && ['json_incomplete', 'json_ambiguous', 'json_schema', 'json_malformed'].includes(error?.hundredlogJsonIssue)) {
         safe.category = 'JSON·판정 형식'; safe.detail = error.hundredlogJsonIssue;
+    }
+    if (['read_failed', 'write_failed', 'verify_failed', 'conflict', 'invalid_file', 'missing_file', 'not_ready'].includes(error?.storageCode)) {
+        safe.category = '저장소'; safe.detail = `file_${error.storageCode}`;
     }
     if (http) safe.http = http;
     const stack = String(error?.stack ?? '');

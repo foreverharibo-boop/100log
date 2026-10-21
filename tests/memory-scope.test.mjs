@@ -110,7 +110,7 @@ const index = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 function storageHarness() {
     const config = { characterStores: {} };
     const ctx = { characterId: 0, chatId: 'a', chat: [{ is_user: false, mes: 'existing reply' }], chatMetadata: {}, saveSettingsDebounced() {}, saveMetadata() {} };
-    const box = { ...scope, ...memory, ...core, context: () => ctx, settings: () => config,
+    const box = { scheduleStorageSave(){}, fileStorage:{save:async()=>{}},storageNotice(){}, ...scope, ...memory, ...core, context: () => ctx, settings: () => config,
         ensureCharacterUuid: () => `character-${ctx.characterId}`, NAME: 'hundredlog', LEGACY_NAME: 'memorybean', diagnosticError() {} };
     vm.createContext(box);
     vm.runInContext(index.slice(index.indexOf('function sourceChatId('), index.indexOf('async function save(')), box);
@@ -258,3 +258,4 @@ test('chat change during asynchronous prompt clear also cancels reset', async ()
     await h.get('memory-reset').fire('click'); await h.confirm('이 방만 초기화');
     assert.equal(h.root.chatMemoryScopes, undefined);
 });
+

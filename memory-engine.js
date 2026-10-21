@@ -1,5 +1,6 @@
-import { canonicalName, resolveFactNames, normalizeAliases, normalizeSupportingEvidence, appendSupportingEvidence, rejectedMemoryMatch, aliasSuggestions } from './continuity-tools.js?v=1.9.24';
-import { MAX_FACTS, RECENT_MESSAGE_LIMIT, newId, approveFact, setKnowledge, normalizeKnowledge, normalizeKnowledgeEvidence, advanceCommitment, commitmentState, pickFacts, recentWindowStart, isVisibleChatMessage } from './core.js?v=1.9.24';
+import { boundJournal } from './retention.js?v=1.10.0';
+import { canonicalName, resolveFactNames, normalizeAliases, normalizeSupportingEvidence, appendSupportingEvidence, rejectedMemoryMatch, aliasSuggestions } from './continuity-tools.js?v=1.10.0';
+import { MAX_FACTS, RECENT_MESSAGE_LIMIT, newId, approveFact, setKnowledge, normalizeKnowledge, normalizeKnowledgeEvidence, advanceCommitment, commitmentState, pickFacts, recentWindowStart, isVisibleChatMessage } from './core.js?v=1.10.0';
 
 export const MEMORY_KINDS = {
     fact: '최근 핵심 사실',
@@ -459,7 +460,11 @@ export function pruneToRecentWindow(value, chatState, chat, sourceChatId, limit 
         || record?.sourceChatId !== sourceChatId
         || (record?.summaryCarryover && Number.isInteger(record.carryoverStartId) && chat.length - record.carryoverStartId < limit)
         || (!record?.summaryCarryover && (!Number.isInteger(record?.sourceId) || record.sourceId >= cutoff));
-    if (value.rejectedMemories) value.rejectedMemories = value.rejectedMemories.filter(row => row.sourceChatId !== sourceChatId || (row.sourceId >= cutoff && row.sourceId < chat.length));
+    const rejectedBefore = value.rejectedMemories?.length ?? 0;
+    if (value.rejectedMemories) value.rejectedMemories = value.rejectedMemories.filter(row => row.sourceChatId !== sourceChatId || (row.sourceId >= cutoff && row.sourceId < chat.length
+        && isVisibleChatMessage(chat[row.sourceId]) && (!row.sourceSignature || row.sourceSignature === messageSignature(chat[row.sourceId]))));
+    if (value.aliasSuggestions) value.aliasSuggestions = value.aliasSuggestions.filter(row => row.sourceChatId !== sourceChatId || row.sourceId >= cutoff);
+    if (chatState?.collectionExclusions?.items) chatState.collectionExclusions.items = chatState.collectionExclusions.items.filter(row => row.sourceChatId !== sourceChatId || row.sourceId >= cutoff);
     const factsBefore = value.facts?.length ?? 0;
     const candidatesBefore = value.candidates?.length ?? 0;
     value.facts = (value.facts ?? []).filter(keep);
@@ -477,7 +482,7 @@ export function pruneToRecentWindow(value, chatState, chat, sourceChatId, limit 
     chatState.extractionOffset = auto.offset;
     const removedFacts = factsBefore - value.facts.length;
     const removedCandidates = candidatesBefore - value.candidates.length;
-    return { removedFacts, removedCandidates, cutoff, changed: removedFacts > 0 || removedCandidates > 0 };
+    return { removedFacts, removedCandidates, cutoff, changed: removedFacts > 0 || removedCandidates > 0 || rejectedBefore !== (value.rejectedMemories?.length ?? 0) };
 }
 
 export function resetRecentWindow(value, chatState, chat, sourceChatId, limit = RECENT_MESSAGE_LIMIT) {
@@ -800,7 +805,19 @@ export function retryCapacityOperations(value, deferred, chat, sourceChatId) {
 
 export function recordMemoryBatch(chatState, { rows, start, offset, nextCursor, nextOffset, changes }) {
     const auto = chatState.autoMemory;
-    auto.journal.push({ sources: rows.map(({ id, signature }) => ({ id, signature })), start, offset, changes });
+    const previous = auto.journal.at(-1);
+    const sources = rows.map(({ id, signature }) => ({ id, signature }));
+    if (auto.undoGroup && previous?.group === auto.undoGroup && !previous.undoneAt) {
+        const known = new Set(previous.sources.map(row => row.id));
+        previous.sources.push(...sources.filter(row => !known.has(row.id)));
+        // One collection/cleanup cycle is one undo, including retries at capacity.
+        for (const change of changes) {
+            const existing = previous.changes.find(row => row.id === change.id);
+            if (existing) existing.after = change.after;
+            else previous.changes.push(change);
+        }
+    } else auto.journal.push({ sources, start, offset, changes, group: auto.undoGroup });
+    boundJournal(auto);
     auto.cursor = nextCursor; auto.offset = nextOffset;
 }
 
@@ -815,6 +832,7 @@ export function undoLatestMemoryBatch(value, chatState) {
     for (const change of [...entry.changes].reverse()) {
         const index = value.facts.findIndex((fact) => fact.id === change.id);
         const current = value.facts[index];
+        if (!current && change.before && (change.after?.archived || change.after?.supersededBy)) { value.facts.push(copy(change.before)); restored++; continue; }
         if (!current || current.pinned) continue;
         const comparable = { ...current }; delete comparable.translatedKo;
         const expected = { ...change.after }; delete expected.translatedKo;
@@ -829,7 +847,7 @@ export function undoLatestMemoryBatch(value, chatState) {
 }
 
 // Reverse only this extension's unchanged records. Manual edits survive rollbacks.
-export function reconcileMemory(value, chatState, chat) {
+export function reconcileMemory(value, chatState, chat, sourceChatId = '') {
     const auto = initializeAuto(chatState, chat);
     const first = auto.journal.findIndex((entry) => entry.sources.some(({ id, signature }) => messageSignature(chat[id]) !== signature));
     if (first < 0) { auto.cursor = Math.min(auto.cursor, chat.length); return false; }
@@ -837,6 +855,7 @@ export function reconcileMemory(value, chatState, chat) {
         for (const change of [...entry.changes].reverse()) {
             const index = value.facts.findIndex((fact) => fact.id === change.id);
             const current = value.facts[index];
+            if (!current && change.before && (change.after?.archived || change.after?.supersededBy)) { value.facts.push(copy(change.before)); continue; }
             if (!current || current.pinned) continue;
             const comparable = { ...current }; delete comparable.translatedKo;
             const expected = { ...change.after }; delete expected.translatedKo;
@@ -845,6 +864,15 @@ export function reconcileMemory(value, chatState, chat) {
             else value.facts.splice(index, 1);
         }
     }
+    // Older snapshots are intentionally gone. A stale source must not leave its
+    // automatically collected claim active after an edit/swipe. Manual corrections survive.
+    if (sourceChatId) value.facts = value.facts.filter(fact => {
+        if (fact.pinned || fact.origin !== 'auto' || fact.sourceChatId !== sourceChatId || !fact.sourceSignature || !Number.isInteger(fact.sourceId)) return true;
+        const message = chat[fact.sourceId];
+        // Bulk hiding is handled by compactBulkHiddenMessages, including summary carryovers.
+        if (message && !isVisibleChatMessage(message)) return true;
+        return messageSignature(message) === fact.sourceSignature;
+    });
     auto.cursor = Math.min(auto.journal[first].start, chat.length);
     auto.offset = auto.cursor < chat.length ? auto.journal[first].offset : 0;
     auto.journal = auto.journal.slice(0, first);

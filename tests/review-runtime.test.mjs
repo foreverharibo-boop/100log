@@ -1,3 +1,4 @@
+import { shortSignature, forgetFactCopies } from '../retention.js';
 import { createNativeReview } from '../native-review.js';
 import {messageSignature} from '../memory-engine.js';
 import * as continuity from '../continuity-tools.js';
@@ -57,7 +58,7 @@ function harness(handler) {
         setExtensionPrompt:(...args)=>injections.push(args),
         generateQuietPrompt:async()=>{generationCount++;return 'CORRECTED';},saveSettingsDebounced(){}};
     const store={facts:[{id:'fact',text:'A plan was made.',active:true,knowledge:{}}]};
-    const sandbox={...continuity,messageSignature,AbortController,structuredClone,URL,
+    const sandbox={initializeFileStorage:async()=>{},fileStorage:{refresh:async()=>{},save:async()=>{},error:null},storageNotice(){},scheduleStorageSave(){},forgetFactCopies,...continuity,messageSignature,AbortController,structuredClone,URL,
         sourceChatId:()=> 'chat-a',activeCollectionJob:null,translationBackgroundSafe:false,activeReviewJob:null,nativeReview:null,
         memoryScopeChanging:false,memoryHooksInstalled:false,extracting:false,translating:false,apiKey:()=> 'fake-key',context:()=>ctx,chatKey:c=>c.chatId,
         settings:()=>({autoMemory:true,reviewEnabled:true}),queueSourceMutation(){},
@@ -159,7 +160,7 @@ test('settings migration preserves existing JEV users; no-key or new installatio
     const settingsCode = source.slice(source.indexOf('function positiveInteger('), source.indexOf('function cleanUuid('));
     for (const [initial, key, expected] of [[{autoMemory:true},'key',true], [{autoMemory:true},'',false], [{},'key',false], [{autoMemory:true,reviewEnabled:false},'key',false]]) {
         const ctx = { extensionSettings: { hundredlog: initial } };
-        const box = { NAME:'hundredlog', LEGACY_NAME:'memorybean', MAX_FACTS:40, context:()=>ctx,
+        const box = { fileStorage:{value:initial}, NAME:'hundredlog', LEGACY_NAME:'memorybean', MAX_FACTS:40, context:()=>ctx,
             apiKey:()=>key, normalizeMemoryLimit:v=>Math.max(1,Math.min(40,Number(v)||30)) };
         vm.createContext(box); vm.runInContext(settingsCode,box);
         const config = box.settings();
@@ -171,7 +172,7 @@ test('settings migration preserves existing JEV users; no-key or new installatio
 
 test('usage toggle works without a key and deleting a JEV key only disables review', async () => {
     const listeners = new Map(), config = {autoMemory:false, enabled:false, reviewEnabled:false, developerMemorySelection:true};
-    const box = { $id:id=>({ addEventListener:(event,fn)=>listeners.set(id,fn) }), settings:()=>config,
+    const box = { scheduleStorageSave(){}, $id:id=>({ addEventListener:(event,fn)=>listeners.set(id,fn) }), settings:()=>config,
         context:()=>({saveSettingsDebounced(){}}), ctx:{saveSettingsDebounced(){}}, localStorage:{removeItem(){}},
         KEY_STORAGE:'key', LEGACY_KEY_STORAGE:'old-key', memoryEpoch:0, memoryPending:false,
         stopCollection(){}, stopReviewJob(){}, clearLegacyPrompt:async()=>{}, connectionError(){}, render(){}, status(){}, scheduleMemory(){}, apiKey:()=>'' };
@@ -780,3 +781,4 @@ test('native review uses only the selected independent store and keeps its repor
     assert.equal(root.chatState, undefined);
     assert.equal(root.facts[0].text, 'shared-world-only');
 });
+

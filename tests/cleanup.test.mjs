@@ -1,3 +1,4 @@
+import { shortSignature, forgetFactCopies } from '../retention.js';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -18,7 +19,7 @@ function harness(count = 40) {
     const state = { autoMemory: { cursor: 0, offset: 0, journal: [] } };
     const config = { autoMemory: true, autoCleanup: true, cleanupThreshold: 30, collectionIntensity: 'detailed' };
     const requests = [], statuses = [], errors = [];
-    const sandbox = { ...core, ...memory, ...continuity, AbortController, Date, console,
+    const sandbox = { createUuid:()=>core.newId(), shortSignature, initializeFileStorage:async()=>{}, fileStorage:{refresh:async()=>{},error:null}, ...core, ...memory, ...continuity, AbortController, Date, console,
         context: () => ctx, data: () => value, chatKey: c => c.chatId, sourceChatId: c => c.chatId,
         chatState: () => state, settings: () => config, memoryDue: () => true,
         busy: false, normalGenerating: false, extracting: false, translating: false, memoryRun: null,

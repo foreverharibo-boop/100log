@@ -1,4 +1,5 @@
-import { canonicalName, normalizeSupportingEvidence } from './continuity-tools.js?v=1.9.24';
+import { forgetFactCopies } from './retention.js?v=1.10.0';
+import { canonicalName, normalizeSupportingEvidence } from './continuity-tools.js?v=1.10.0';
 export const RECENT_MESSAGE_LIMIT = 100;
 export const MAX_FACTS = 40;
 export const MAX_HISTORY = 200;
@@ -204,6 +205,8 @@ export function approveFact(value, proposed, replacesId = null) {
 }
 
 export function removeFact(value, id) {
+    const removed = value.facts.find(fact => fact.id === id);
+    forgetFactCopies(value, id, removed?.text);
     value.facts = value.facts.filter((fact) => fact.id !== id);
     for (const fact of value.facts) {
         if (fact.previousId === id) delete fact.previousId;
@@ -432,3 +435,4 @@ export function parseTranslations(raw, inputs) {
         return { text: item.text.trim(), sourceText: input.sourceText.trim() ? item.sourceText.trim() : '', originalText: input.text, originalSource: input.sourceText };
     });
 }
+
