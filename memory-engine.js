@@ -1,6 +1,6 @@
-import { boundJournal } from './retention.js?v=1.10.1';
-import { canonicalName, resolveFactNames, normalizeAliases, normalizeSupportingEvidence, appendSupportingEvidence, rejectedMemoryMatch, aliasSuggestions } from './continuity-tools.js?v=1.10.1';
-import { MAX_FACTS, RECENT_MESSAGE_LIMIT, newId, approveFact, setKnowledge, normalizeKnowledge, normalizeKnowledgeEvidence, advanceCommitment, commitmentState, pickFacts, recentWindowStart, isVisibleChatMessage } from './core.js?v=1.10.1';
+import { boundJournal } from './retention.js?v=1.10.2';
+import { canonicalName, resolveFactNames, normalizeAliases, normalizeSupportingEvidence, appendSupportingEvidence, rejectedMemoryMatch, aliasSuggestions } from './continuity-tools.js?v=1.10.2';
+import { MAX_FACTS, RECENT_MESSAGE_LIMIT, newId, approveFact, setKnowledge, normalizeKnowledge, normalizeKnowledgeEvidence, advanceCommitment, commitmentState, pickFacts, recentWindowStart, isVisibleChatMessage } from './core.js?v=1.10.2';
 
 export const MEMORY_KINDS = {
     fact: '최근 핵심 사실',
@@ -157,7 +157,7 @@ export function saveExcludedMemory(value, entry, text, chat = [], sourceChatId =
     if (value.facts.some((fact) => isCurrent(fact) && compact(fact.text).toLowerCase() === compact(summary).toLowerCase())) throw new Error('같은 내용의 현재 기억이 이미 있어요. 기존 규칙을 확인해 주세요.');
     const kind = Object.hasOwn(MEMORY_KINDS, entry.kind) ? entry.kind : 'fact';
     const record = { id: newId(), text: summary, kind, scope: ['state', 'temporary'].includes(kind) ? 'scene' : 'always',
-        origin: 'manual', pinned: true, knowledge: {}, knowledgeEvidence: {}, createdAt: Date.now(),
+        origin: 'auto', pinned: false, knowledge: {}, knowledgeEvidence: {}, createdAt: Date.now(),
         retention: memoryRetention(kind, summary), reason: '제외된 제안을 사용자가 확인하고 직접 저장했어요.' };
     record.characterNames = collectedCharacterNames(null, [], entry);
     for (const [name, state] of Object.entries(manualKnowledge)) {

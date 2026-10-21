@@ -5,6 +5,34 @@ import * as m from '../memory-engine.js';
 import * as core from '../core.js';
 const fact=()=>({id:'f',text:'A에게 흉터가 생겼다.',kind:'fact',active:true,origin:'auto',sourceId:0,sourceChatId:'c',sourceText:'A was injured.',sourceSignature:'sig0',knowledge:{A:'known'},knowledgeEvidence:{},retention:'recent'});
 const rows=[{id:5,text:'A looked at the scar and showed it to B.',signature:'sig5'}];
+function restoredExcludedMemory() {
+ const chat=[{name:'A',is_user:false,mes:'A showed the scar to B.'}];
+ const value={facts:[]};
+ const entry={action:'add',kind:'fact',text:'A showed B the scar.',sourceChatId:'c',sourceId:0,sourceText:chat[0].mes,sourceSignature:m.messageSignature(chat[0])};
+ const saved=m.saveExcludedMemory(value,entry,entry.text,chat,'c',{B:'known'});
+ return {value,saved,chat};
+}
+test('a restored exclusion is eligible for cleanup and oldest-first eviction',()=>{
+ const cleanup=restoredExcludedMemory();
+ assert.equal(cleanup.saved.knowledge.B,'known');
+ assert.equal(cleanup.saved.sourceSignature,m.messageSignature(cleanup.chat[0]));
+ m.applyCleanupActions(cleanup.value,[{action:'archive',id:cleanup.saved.id,resolution:'low_importance',reason:'No longer useful.'}],'c');
+ assert.equal(m.isCurrent(cleanup.saved),false);
+ const eviction=restoredExcludedMemory();
+ eviction.value.facts.push({...fact(),id:'newer'});
+ assert.equal(m.evictOldestMemories(eviction.value,1,'c').evicted,1);
+ assert.equal(m.isCurrent(eviction.saved),false);
+ assert.equal(m.isCurrent(eviction.value.facts[1]),true);
+});
+test('restored exclusions expire with their source window unless subsequently locked',()=>{
+ const normal=restoredExcludedMemory(), locked=restoredExcludedMemory();
+ const recent=Array.from({length:101},(_,i)=>({name:'A',is_user:false,mes:`New message ${i}`}));
+ locked.saved.pinned=true;
+ m.pruneToRecentWindow(normal.value,{},[...normal.chat,...recent],'c');
+ m.pruneToRecentWindow(locked.value,{},[...locked.chat,...recent],'c');
+ assert.equal(normal.value.facts.length,0);
+ assert.equal(locked.value.facts.length,1);
+});
 const confirm=(extra={})=>({action:'confirm',id:'f',sourceId:5,evidence:rows[0].text,evidenceType:'occurred',reason:'직접 흉터를 확인하고 보여 줌',...extra});
 const parse=(value,operations,sourceRows=rows)=>m.parseMemoryOperations(JSON.stringify({operations}),sourceRows,value.facts.map(f=>c.resolveFactNames(f,value.nameAliases)),'c',[],{collectorOnly:true});
 test('alias links are scoped to supplied character, reversible and cycle-safe',()=>{
@@ -159,3 +187,4 @@ test('collector checklist includes carried unknown recipients without treating t
  assert.match(prompt,/NOT proof of learning/);assert.match(prompt,/original messages are hidden/);
  assert.match(m.omissionReviewRequest([f],rows),/KNOWLEDGE_RECHECK_TARGETS:/);
 });
+
