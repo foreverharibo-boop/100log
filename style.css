@@ -166,9 +166,6 @@
 #hundredlog .hundredlog-event-history { margin-top: 6px; font-size: .8em; }
 #hundredlog .hundredlog-event-history summary { opacity: .72; padding: 2px 0; }
 #hundredlog .hundredlog-event-step { padding: 8px 0 8px 9px; border-left: 1px solid var(--SmartThemeBorderColor); margin-top: 5px; overflow-wrap: anywhere; }
-#hundredlog .hundredlog-history-filters { display: flex; gap: 16px; margin-top: 14px; }
-#hundredlog .hundredlog-history-filters button { width: auto; padding: 5px 1px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: inherit; font: inherit; font-size: .85em; margin: 0; }
-#hundredlog .hundredlog-history-filters button[aria-pressed="true"] { border-bottom-color: var(--SmartThemeQuoteColor); font-weight: 600; }
 #hundredlog .hundredlog-setting-grid > label { grid-template-columns: minmax(110px, .8fr) minmax(0, 1fr); align-items: center; gap: 12px; }
 #hundredlog .hundredlog-setting-grid input, #hundredlog input[type="password"] { height: 32px; min-height: 32px; margin: 0; }
 #hundredlog .hundredlog-number-field input { width: 64px; flex: 0 1 64px; }
@@ -258,3 +255,4 @@
 #hundredlog .hundredlog-scope-choice[hidden] { display: none; }
 #hundredlog .hundredlog-scope-choice .hundredlog-actions { flex-wrap: wrap; }
 #hundredlog #hundredlog-memory-source { min-width: 0; max-width: 100%; }
+

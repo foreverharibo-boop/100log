@@ -16,7 +16,6 @@
     <p id="hundredlog-storage-status" class="hundredlog-help" role="status"></p><button type="button" id="hundredlog-storage-retry" class="menu_button" hidden>저장 재시도</button>
     <nav class="hundredlog-tabs" aria-label="100LOG 메뉴">
       <button type="button" id="hundredlog-tab-memory" class="hundredlog-tab" aria-pressed="true" aria-controls="hundredlog-view-memory">검수 규칙</button>
-      <button type="button" id="hundredlog-tab-candidates" class="hundredlog-tab" aria-pressed="false" aria-controls="hundredlog-view-candidates">보호된 지난 규칙</button>
       <button type="button" id="hundredlog-tab-settings" class="hundredlog-tab" aria-pressed="false" aria-controls="hundredlog-view-settings">설정</button>
     </nav>
     <div id="hundredlog-view-memory" class="hundredlog-view" role="region" aria-labelledby="hundredlog-tab-memory">
@@ -30,13 +29,6 @@
         <div class="hundredlog-add"><textarea id="hundredlog-newfact" rows="2" placeholder="예: 서연의 왼쪽 손목에는 오래된 흉터가 있다."></textarea><select id="hundredlog-replaces" class="hundredlog-select" aria-label="기존 기억 갱신 대상"></select><button type="button" id="hundredlog-add" class="menu_button">저장</button></div>
         <p class="hundredlog-help">직접 쓴 규칙은 자동 변경 잠금 상태로 저장해요. AI가 관리하게 하려면 잠금을 해제하세요.</p>
       </details>
-    </div>
-    <div id="hundredlog-view-candidates" class="hundredlog-view" role="region" aria-labelledby="hundredlog-tab-candidates" hidden>
-      <div class="hundredlog-section-title"><strong>보호된 지난 규칙</strong><span id="hundredlog-history-count"></span></div>
-      <p class="hundredlog-help">직접 저장·잠금한 지난 규칙만 보관해요. 자동으로 정리된 기억은 따로 쌓지 않으며 최근 자동 갱신 한 번만 취소할 수 있어요.</p>
-      <nav id="hundredlog-history-filters" class="hundredlog-history-filters" aria-label="보호된 지난 규칙 분류"><button type="button" data-filter="all" aria-pressed="true">전체</button><button type="button" data-filter="completed" aria-pressed="false">완료</button><button type="button" data-filter="cancelled" aria-pressed="false">취소</button><button type="button" data-filter="changed" aria-pressed="false">변경</button></nav>
-      <div id="hundredlog-history" class="hundredlog-list"></div>
-      <details class="hundredlog-fold" hidden><summary>이전 버전의 미승인 후보 <span id="hundredlog-candidate-count"></span></summary><p class="hundredlog-help">이전 버전의 미승인 후보는 정리했어요.</p><div id="hundredlog-candidates" class="hundredlog-list"></div></details>
     </div>
     <div id="hundredlog-view-settings" class="hundredlog-view" role="region" aria-labelledby="hundredlog-tab-settings" hidden>
       <div class="hundredlog-activity"><strong>최근 작업</strong><span id="hundredlog-activity">아직 기록된 작업이 없어요.</span></div>
@@ -106,7 +98,7 @@
         <select id="hundredlog-memory-source" class="hundredlog-profile-select"></select>
         <p class="hundredlog-help">100LOG에 기록된 같은 캐릭터의 채팅을 선택해요. 공용 채팅은 그 방만의 기록이 아닌 공용 기억 전체를 가져와요. 가져오면 이 방을 따로 관리하며, 이 방의 기억 목록을 복사본으로 교체해요. 원본 채팅은 바뀌지 않아요.</p>
         <div class="hundredlog-actions"><button type="button" id="hundredlog-memory-import" class="menu_button">다른 채팅의 기억 가져오기</button><button type="button" id="hundredlog-memory-reset" class="menu_button">이 채팅 기억 초기화</button></div>
-        <p class="hundredlog-help">초기화는 이 방을 독립 상태로 만들고 직접 저장·잠금·보호된 지난 규칙을 포함한 기억과 검수·수집 기록을 비워요. RP 대화와 다른 방의 기억은 유지해요. 빈 기억으로 시작하거나 초기화하면 이후 새 대화부터 수집해요. 이전 대화도 모으려면 ‘최근 100개 재수집’을 눌러 주세요.</p>
+        <p class="hundredlog-help">초기화는 이 방을 독립 상태로 만들고 직접 저장·잠금을 포함한 기억과 검수·수집 기록을 비워요. RP 대화와 다른 방의 기억은 유지해요. 빈 기억으로 시작하거나 초기화하면 이후 새 대화부터 수집해요. 이전 대화도 모으려면 ‘최근 100개 재수집’을 눌러 주세요.</p>
       </section>
       <section class="hundredlog-settings-block"><div class="hundredlog-fold-title"><strong>기억 관리</strong></div>
         <p class="hundredlog-help">자동으로 만든 기존 규칙을 비우고 최근 100개를 처음부터 다시 수집해요. 직접 추가하거나 자동 변경 잠금한 규칙은 유지해요.</p>

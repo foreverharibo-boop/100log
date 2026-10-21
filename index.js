@@ -1,13 +1,13 @@
-import { createFileStorage } from './file-storage.js?v=1.10.0';
-import { compactConfig, shortSignature, pruneDeletedRoomProgress, renameRoom } from './retention.js?v=1.10.0';
-import { roomScope, selectedMemoryStore, separateRoomMemory, resumeRoomMemory, shareRoomMemory, resetRoomMemory, memoryCopySources } from './memory-scope.js?v=1.10.0';
-import { createNativeReview } from './native-review.js?v=1.10.0';
-import { retryCapacityOperations, evictOldestMemories, normalizeMemoryLimit } from './memory-engine.js?v=1.10.0';
-import { availableSupportingEvidence, normalizeAliases, canonicalName, linkAlias, resolveFactNames, normalizeSupportingEvidence, addRejectedMemory } from './continuity-tools.js?v=1.10.0';
-import { applyManualKnowledgeDraft, collectedCharacterNames, sortMemoriesByCollection, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, omissionReviewRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js?v=1.10.0';
-import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, supportsBackgroundUtility, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js?v=1.10.0';
-import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js?v=1.10.0';
-import { normalizeKnowledgeEvidence, KNOWLEDGE_LABELS, COMMITMENT_LABELS, commitmentState } from './core.js?v=1.10.0';
+import { createFileStorage } from './file-storage.js?v=1.10.1';
+import { compactConfig, shortSignature, pruneDeletedRoomProgress, renameRoom } from './retention.js?v=1.10.1';
+import { roomScope, selectedMemoryStore, separateRoomMemory, resumeRoomMemory, shareRoomMemory, resetRoomMemory, memoryCopySources } from './memory-scope.js?v=1.10.1';
+import { createNativeReview } from './native-review.js?v=1.10.1';
+import { retryCapacityOperations, evictOldestMemories, normalizeMemoryLimit } from './memory-engine.js?v=1.10.1';
+import { availableSupportingEvidence, normalizeAliases, canonicalName, linkAlias, resolveFactNames, normalizeSupportingEvidence, addRejectedMemory } from './continuity-tools.js?v=1.10.1';
+import { applyManualKnowledgeDraft, collectedCharacterNames, sortMemoriesByCollection, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, omissionReviewRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js?v=1.10.1';
+import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, supportsBackgroundUtility, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js?v=1.10.1';
+import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js?v=1.10.1';
+import { normalizeKnowledgeEvidence, KNOWLEDGE_LABELS, COMMITMENT_LABELS, commitmentState } from './core.js?v=1.10.1';
 
 const NAME = 'hundredlog';
 const LEGACY_NAME = 'memorybean';
@@ -40,7 +40,6 @@ let wandMenuObserver = null;
 let wandViewportHandler = null;
 let lastJevTransport = '실리태번 API';
 let selectedView = 'memory';
-let historyFilter = 'all';
 let previousFocus = null;
 let memoryRun = null;
 let memoryTimer = null;
@@ -900,9 +899,9 @@ function registerDeveloperTitle(element) {
 }
 
 function showView(view) {
-    if (!['memory', 'candidates', 'settings'].includes(view)) return;
+    if (!['memory', 'settings'].includes(view)) return;
     selectedView = view;
-    for (const name of ['memory', 'candidates', 'settings']) {
+    for (const name of ['memory', 'settings']) {
         $id(`view-${name}`).hidden = name !== view;
         $id(`tab-${name}`).setAttribute('aria-pressed', String(name === view));
     }
@@ -1528,7 +1527,7 @@ function bindMemoryScope() {
         ]);
     });
     $id('memory-reset')?.addEventListener('click', () => memoryScopeChoice(
-        '이 채팅의 기억을 모두 비울까요? 직접 저장·잠금·지난 규칙, 이름 연결, 재수집 제외 및 검수·수집 기록도 초기화해요. 공용 기억을 쓰고 있었다면 이 방만 분리해 비워요. RP 대화와 다른 방은 그대로이며, 이후 새 대화부터 수집해요. 이 작업은 최근 갱신 취소로 되돌릴 수 없어요.', [
+        '이 채팅의 기억을 모두 비울까요? 직접 저장·잠금 기억, 이름 연결, 재수집 제외 및 검수·수집 기록도 초기화해요. 공용 기억을 쓰고 있었다면 이 방만 분리해 비워요. RP 대화와 다른 방은 그대로이며, 이후 새 대화부터 수집해요. 이 작업은 최근 갱신 취소로 되돌릴 수 없어요.', [
             { label: '이 방만 초기화', apply: resetRoomMemory, done: '이 방의 기억만 초기화했어요. 다른 방의 기억은 그대로예요.' },
         ]));
 }
@@ -1614,12 +1613,7 @@ function renderContent() {
     $id('replaces').disabled = working || !value;
     $id('endscene').disabled = working || !value;
     $id('facts').replaceChildren();
-    $id('candidates').replaceChildren();
-    $id('history').replaceChildren();
-    const history = value?.facts.filter((item) => !isCurrent(item)) ?? [];
     $id('count').textContent = value ? `${currentFacts.filter((item) => item.active).length}개 규칙 사용 중` : '채팅을 선택해 주세요';
-    $id('history-count').textContent = `${history.length}개`;
-    $id('candidate-count').textContent = value ? `${value.candidates.length}개` : '';
     $id('progress').textContent = value ? memoryProgressText(value, context()) : '';
     const cleanupSummary = $id('cleanup-summary');
     if (cleanupSummary) {
@@ -1702,61 +1696,6 @@ function renderContent() {
         if (identityConflicts.length) { const note = document.createElement("p"); note.className = "hundredlog-help"; note.textContent = `이름 연결 후 지식 확인 필요: ${identityConflicts.join(", ")}`; item.append(note); }
         item.append(knowledgeEditor(fact, async () => { if (data(false) !== value) return; await save(); render(); }));
         appendCommitmentHistory(item, fact);
-    }
-    for (const button of document.querySelectorAll('#hundredlog-history-filters button')) button.setAttribute('aria-pressed', String(button.dataset.filter === historyFilter));
-    const visibleHistory = history.filter((fact) => historyFilter === 'all' || (historyFilter === 'changed' ? !['completed', 'cancelled'].includes(fact.archived) : fact.archived === historyFilter));
-    for (const fact of [...visibleHistory].reverse()) {
-        const item = document.createElement('div'); item.className = 'hundredlog-item';
-        const title = document.createElement('div'); title.className = 'hundredlog-text'; title.textContent = displayText(fact);
-        const next = value.facts.find((entry) => entry.id === fact.supersededBy);
-        const meta = document.createElement('div'); meta.className = 'hundredlog-meta';
-        const reason = { completed: '완료됨', cancelled: '취소됨', past_scene: '지난 상황', updated: '새 상태로 갱신', merged: '비슷한 규칙에 병합', low_importance: '중요도가 낮아 자동 정리', oldest_evicted: '오래된 수집 순서로 밀어냄', restored: '이전 기억 복원' }[fact.archived] || '지난 상태';
-        meta.textContent = `${reason}${fact.archiveReason ? ` · ${fact.archiveReason}` : ''}${next ? ` → ${displayText(next)}` : ''}`;
-        item.append(title, meta); appendOriginal(item, fact); appendCommitmentHistory(item, fact);
-        if (fact.closedEvidence) { const evidence = document.createElement('div'); evidence.className = 'hundredlog-meta'; evidence.textContent = `변경 근거: ${fact.closedEvidence}`; item.append(evidence); }
-        item.append(makeButton('현재 기억으로 복원', async () => {
-            if (data(false) !== value) return;
-            const restored = { ...fact, id: newId(), active: true, pinned: true, origin: 'manual', restoredFrom: fact.id };
-            if (restored.commitment) restored.commitment = { ...restored.commitment, status: 'planned', history: [...(restored.commitment.history || [])] };
-            for (const name of ['archived', 'supersededBy', 'previousId', 'endedAtSourceId', 'closedEvidence', 'archiveReason']) delete restored[name];
-            let current = next;
-            for (let i = 0; current?.supersededBy && i < value.facts.length; i++) current = value.facts.find((entry) => entry.id === current.supersededBy);
-            try {
-                approveFact(value, restored, current?.active && isCurrent(current) ? current.id : null);
-                await save(); render(); status('현재 기억으로 복원하고 자동 변경 잠금했어요.');
-            } catch (error) { diagnosticError('기타', error, { site: 1318 }); status(error.message); }
-        }));
-        $id('history').append(item);
-    }
-    if (!visibleHistory.length) { const empty = document.createElement('p'); empty.className = 'hundredlog-empty'; empty.textContent = history.length ? '이 분류에 해당하는 지난 규칙이 없어요.' : '직접 저장·잠금한 지난 규칙만 남아요. 자동으로 정리된 기억은 보관하지 않아요.'; $id('history').append(empty); }
-    if (!value.candidates.length) {
-        const empty = document.createElement('p'); empty.className = 'hundredlog-empty'; empty.textContent = '검토할 후보가 없어요.'; $id('candidates').append(empty);
-    }
-    for (const candidate of value.candidates) {
-        const item = document.createElement('div'); item.className = 'hundredlog-item';
-        const title = document.createElement('div'); title.className = 'hundredlog-text'; title.textContent = displayText(candidate); item.append(title);
-        const meta = document.createElement('div'); meta.className = 'hundredlog-meta'; meta.textContent = `대화 #${candidate.sourceId}: ${hasTranslation(candidate) ? candidate.translatedKo.sourceText : candidate.sourceText}`; item.append(meta);
-        const replacement = replacementSelect(value, suggestReplacement(value, candidate), async (selected) => {
-            if (data(false) !== value) return;
-            candidate.replacesId = selected;
-            await save();
-        });
-        const replaceRow = document.createElement('div'); replaceRow.className = 'hundredlog-replace';
-        replaceRow.append(replacement); item.append(replaceRow);
-        const actions = document.createElement('div'); actions.className = 'hundredlog-actions';
-        actions.append(makeButton('승인', async () => {
-            if (data(false) !== value) return;
-            try {
-                approveFact(value, candidate, replacement.value || null);
-                value.candidates = value.candidates.filter((entry) => entry.id !== candidate.id);
-                await save(); render();
-            } catch (error) { diagnosticError('기타', error, { site: 1344 }); status(error.message); }
-        }));
-        actions.append(makeButton('제외', async () => { value.candidates = value.candidates.filter((entry) => entry.id !== candidate.id); await save(); render(); }));
-        item.append(actions);
-        appendOriginal(item, candidate);
-        item.append(knowledgeEditor(candidate, async () => { if (data(false) !== value) return; await save(); render(); }));
-        $id('candidates').append(item);
     }
     if ($id('status')) $id('status').textContent = statusText;
 }
@@ -2710,7 +2649,7 @@ async function main() {
     installMemoryHooks(ctx);
     if ($id('key')) { registerDeveloperTitle($id('title')); addWandButton(); return; }
     installStorageHooks(ctx);
-    const response = await diagnosticFetch(new URL('./settings.html?v=1.10.0', import.meta.url), { credentials: 'same-origin' });
+    const response = await diagnosticFetch(new URL('./settings.html?v=1.10.1', import.meta.url), { credentials: 'same-origin' });
     if (!response.ok) throw new Error(`설정 화면 파일을 읽지 못했어요 (${response.status}).`);
     const html = await response.text();
     // Keep the panel mounted for event bindings, but expose it only through the wand.
@@ -2726,13 +2665,10 @@ async function main() {
     storageNotice();
     bindMemoryScope();
     registerDeveloperTitle($id('title'));
-    for (const view of ['memory', 'candidates', 'settings']) {
+    for (const view of ['memory', 'settings']) {
         $id(`tab-${view}`).addEventListener('click', () => showView(view));
     }
     showView(selectedView);
-    for (const button of document.querySelectorAll('#hundredlog-history-filters button')) button.addEventListener('click', () => {
-        historyFilter = button.dataset.filter; render();
-    });
     refreshProfiles();
     for (const [id, key] of [['extraction-profile', 'extractionProfileId'], ['translation-profile', 'translationProfileId']]) {
         $id(id)?.addEventListener('change', (event) => {

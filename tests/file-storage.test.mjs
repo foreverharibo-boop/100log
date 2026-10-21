@@ -247,3 +247,20 @@ test('unchanged save cannot clear a read failure without checking the file again
     await assert.rejects(storage.save()); assert.ok(storage.error);
     remote.controls.failGet = false; await storage.save(); assert.equal(storage.error, null);
 });
+
+test('existing files discard protected past facts in shared/private scopes while keeping current locks and one undo', async () => {
+    const remote = server(), old = legacy();
+    const root = old.characterStores['uuid:identity'];
+    root.facts.push(fact('old-manual', { origin: 'manual', archived: 'updated', pinned: true }), fact('old-locked', { pinned: true, supersededBy: 'active' }));
+    root.chatMemoryScopes.private.store.facts.push(fact('private-past', { origin: 'manual', archived: 'completed', pinned: true }));
+    root.chats.room.autoMemory.journal = [{ sources: [], start: 0, offset: 0, changes: [{ id: 'active', before: fact('active'), after: fact('active') }] }];
+    remote.file = { format: '100LOG', schema: 1, revision: 'old-release', data: old };
+    const storage = client(remote); await storage.init();
+    const saved = remote.file.data.characterStores['uuid:identity'];
+    assert.deepEqual(saved.facts.map(f => f.id), ['active', 'manual']);
+    assert.equal(saved.facts[1].pinned, true);
+    assert.deepEqual(saved.chatMemoryScopes.private.store.facts.map(f => f.id), ['private']);
+    assert.equal(saved.chats.room.autoMemory.journal[0].changes.length, 1);
+    assert.equal(saved.chats.room.autoMemory.cursor, 5);
+    assert.equal(remote.uploads, 1);
+});

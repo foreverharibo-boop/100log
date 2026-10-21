@@ -1,6 +1,5 @@
 // Retain useful current memories, not a second permanent RP archive.
 const current = fact => !fact.archived && !fact.supersededBy;
-const protectedFact = fact => fact.pinned || fact.origin !== 'auto';
 export function shortSignature(text) {
     let a = 2166136261, b = 5381;
     for (let i = 0; i < text.length; i++) { const n = text.charCodeAt(i); a = Math.imul(a ^ n, 16777619); b = Math.imul(b, 33) ^ n; }
@@ -19,7 +18,7 @@ export function boundJournal(auto) {
 }
 export function compactMemoryStore(value) {
     if (!value || typeof value !== 'object') return;
-    value.facts = (value.facts ?? []).filter(fact => current(fact) || protectedFact(fact));
+    value.facts = (value.facts ?? []).filter(current);
     for (const row of value.rejectedMemories ?? []) if (row.sourceSignature) delete row.sourceText;
     value.candidates = []; // Obsolete approval queue; automatic collection has replaced it.
     const ids = new Set(value.facts.map(fact => fact.id));
