@@ -1,5 +1,5 @@
-import { forgetFactCopies } from './retention.js?v=1.10.4';
-import { canonicalName, normalizeSupportingEvidence } from './continuity-tools.js?v=1.10.4';
+import { forgetFactCopies } from './retention.js?v=1.10.5';
+import { canonicalName, normalizeSupportingEvidence } from './continuity-tools.js?v=1.10.5';
 export const RECENT_MESSAGE_LIMIT = 100;
 export const MAX_FACTS = 40;
 export const MAX_HISTORY = 200;

@@ -1,6 +1,6 @@
-import { boundJournal } from './retention.js?v=1.10.4';
-import { canonicalName, resolveFactNames, normalizeAliases, normalizeSupportingEvidence, appendSupportingEvidence, rejectedMemoryMatch, aliasSuggestions } from './continuity-tools.js?v=1.10.4';
-import { MAX_FACTS, RECENT_MESSAGE_LIMIT, newId, approveFact, setKnowledge, normalizeKnowledge, normalizeKnowledgeEvidence, advanceCommitment, commitmentState, pickFacts, recentWindowStart, isVisibleChatMessage } from './core.js?v=1.10.4';
+import { boundJournal } from './retention.js?v=1.10.5';
+import { canonicalName, resolveFactNames, normalizeAliases, normalizeSupportingEvidence, appendSupportingEvidence, rejectedMemoryMatch, aliasSuggestions } from './continuity-tools.js?v=1.10.5';
+import { MAX_FACTS, RECENT_MESSAGE_LIMIT, newId, approveFact, setKnowledge, normalizeKnowledge, normalizeKnowledgeEvidence, advanceCommitment, commitmentState, pickFacts, recentWindowStart, isVisibleChatMessage } from './core.js?v=1.10.5';
 
 export const MEMORY_KINDS = {
     fact: '최근 핵심 사실',
@@ -48,7 +48,7 @@ export const COLLECTION_FOCUS = {
     secrets: { label: '비밀·정보 전달', instruction: 'Prioritize secrets, lies, misunderstandings, corrections and who actually received or learned information. Distinguish knowing a fact from knowing a hidden interception method.' },
     preferences: { label: '취향·경험', instruction: 'Preserve newly disclosed likes, dislikes, habits and personal experiences, including small details; distinguish a disclosure from independently established truth.' },
     exchanges: { label: '선물·거래', instruction: 'Preserve meaningful gifts, loans, payments, trades, ownership transfers and return obligations as events, not current inventory.' },
-    events: { label: '사건·결과', instruction: 'Preserve concrete actions and their supported consequences, discoveries, injuries and recovery, including small events useful for later references. Do not collect routine live posture or location.' },
+    events: { label: '사건·결과', instruction: 'Preserve who did what or what happened, linked to what changed as a result. Include discoveries, injuries and recovery, other changes that affect later developments, and small events worth referring to again. Link outcomes and causal relationships only when supported by the source; otherwise record only the event. Do not treat plans or proposals as events that have already happened. Exclude mere lists of current location, posture, clothing or possessions, but include context needed to understand the event.' },
     agreements: { label: '부탁·합의', instruction: 'Preserve requests, offers, acceptances, refusals, conditions and decisions, including ordinary ones. Do not turn a request into an agreement without acceptance.' },
 };
 
