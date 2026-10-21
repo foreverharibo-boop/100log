@@ -90,10 +90,10 @@
       </section>
       <section class="hundredlog-settings-block">
         <div class="hundredlog-section-title"><strong>이 채팅의 기억</strong></div>
-        <label class="hundredlog-toggle hundredlog-setting-toggle"><input id="hundredlog-separate-memory" type="checkbox"><span>이 채팅 기억 따로 관리</span></label>
+        <button type="button" id="hundredlog-separate-memory" class="menu_button">이 채팅의 기억 분리하기</button>
         <div id="hundredlog-memory-scope-choice" class="hundredlog-scope-choice" role="group" tabindex="-1" aria-label="기억 관리 확인" hidden></div>
         <p id="hundredlog-memory-scope-status" class="hundredlog-help" aria-live="polite"></p>
-        <p class="hundredlog-help">기본은 같은 캐릭터의 모든 공용 채팅이 기억을 함께 사용해요. 새챗·분기 채팅·기존 채팅을 열거나 새로고침하는 것만으로 자동 수집하지 않으니 대화 전에 기억 방식을 선택할 수 있어요. 페르소나를 바꿔 새 이야기를 시작한다면 따로 관리를 켜 주세요. 처음 분리할 때 빈 기억으로 시작하거나 공용 기억을 복사할 수 있어요. 끄면 공용 기억으로 돌아가며 독립 기억은 별도로 보관해요.</p>
+        <p class="hundredlog-help">기본은 같은 캐릭터의 공용 채팅끼리 기억을 함께 사용해요. 다른 이야기로 분기하려면 ‘이 채팅의 기억 분리하기’를 눌러 기존 공용 기억을 이어받거나 빈 기억으로 시작하세요. 이후 새 대화부터 이 방에서만 수집하며 다른 방의 기억은 바뀌지 않아요. 분리 후 공용으로 돌아가는 기능은 없어요. 이미 있는 대화도 모으려면 ‘최근 100개 재수집’을 사용하세요. 방을 열거나 새로고침하는 것만으로는 자동 수집하지 않아요.</p>
         <label for="hundredlog-memory-source" class="hundredlog-label">가져올 기억</label>
         <select id="hundredlog-memory-source" class="hundredlog-profile-select"></select>
         <p class="hundredlog-help">100LOG에 기록된 같은 캐릭터의 채팅을 선택해요. 공용 채팅은 그 방만의 기록이 아닌 공용 기억 전체를 가져와요. 가져오면 이 방을 따로 관리하며, 이 방의 기억 목록을 복사본으로 교체해요. 원본 채팅은 바뀌지 않아요.</p>

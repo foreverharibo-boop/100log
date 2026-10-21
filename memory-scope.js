@@ -36,23 +36,6 @@ export function separateRoomMemory(root, chatId, length, source = null) {
     return store;
 }
 
-export function resumeRoomMemory(root, chatId) {
-    const scope = roomScope(root, chatId);
-    if (!scope?.store) throw new Error('이 방에 보관된 독립 기억이 없어요.');
-    scope.independent = true;
-    return scope.store;
-}
-
-export function shareRoomMemory(root, chatId, length) {
-    const scope = roomScope(root, chatId);
-    if (!scope) return root;
-    scope.independent = false;
-    root.chats ??= {};
-    // Do not feed the private period back into the shared world or reuse stale undo.
-    put(root.chats, String(chatId), freshState(length));
-    return root;
-}
-
 export function resetRoomMemory(root, chatId, length) {
     const previous = selectedMemoryStore(root, chatId);
     const store = separateRoomMemory(root, chatId, length);
@@ -74,3 +57,4 @@ export function memoryCopySources(root, currentChatId) {
     }
     return sources;
 }
+

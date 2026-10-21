@@ -59,18 +59,6 @@ test('copying a separate room replaces only the target and later cleanup does no
     assert.equal(b.facts.filter(f => f.active && memory.isCurrent(f)).length, 1);
 });
 
-test('sharing again preserves private snapshot and skips private backlog in shared collector', () => {
-    const root = fixture();
-    const isolated = scope.separateRoomMemory(root, 'a', 3); isolated.facts.push(fact('private'));
-    scope.shareRoomMemory(root, 'a', 50);
-    assert.equal(scope.selectedMemoryStore(root, 'a'), root);
-    assert.equal(root.chats.a.autoMemory.cursor, 50);
-    assert.deepEqual(root.chats.a.autoMemory.journal, []);
-    assert.equal(root.facts.length, 1);
-    assert.equal(scope.resumeRoomMemory(root, 'a'), isolated);
-    assert.equal(scope.selectedMemoryStore(root, 'a').facts[0].id, 'private');
-});
-
 for (const independent of [false, true]) test(`reset, independent=${independent}: clears only target including locked facts and undo`, () => {
     const root = fixture();
     const other = scope.separateRoomMemory(root, 'other', 7, root);
@@ -170,17 +158,18 @@ function uiHarness() {
     return h;
 }
 
-test('actual UI: separate empty, restore shared, resume, reset and import all target the chosen scope', async () => {
-    const h = uiHarness(), toggle = h.get('separate-memory');
-    toggle.checked = true; await toggle.fire('change'); await h.confirm('빈 기억으로 시작');
+test('actual UI: empty separation stays independent through reset and import', async () => {
+    const h = uiHarness(), button = h.get('separate-memory');
+    await button.fire('click'); await h.confirm('빈 기억으로 시작');
     assert.equal(h.box.data().facts.length, 0); assert.equal(h.root.facts.length, 1);
     h.box.data().facts.push(fact('private'));
-    toggle.checked = false; await toggle.fire('change'); await h.confirm('공용 기억 사용');
-    assert.equal(h.box.data(), h.root);
-    toggle.checked = true; await toggle.fire('change'); await h.confirm('보관된 독립 기억 이어쓰기');
+    assert.equal(button.hidden, true); assert.equal(button.disabled, true);
+    await button.fire('click'); // Even a synthetic click cannot overwrite a separated room.
+    assert.equal(h.get('memory-scope-choice').hidden, true);
     assert.equal(h.box.data().facts[0].id, 'private');
     await h.get('memory-reset').fire('click'); await h.confirm('이 방만 초기화');
     assert.equal(h.box.data().facts.length, 0); assert.equal(h.root.facts.length, 1);
+    assert.equal(scope.roomScope(h.root, 'a').independent, true);
     const other = scope.separateRoomMemory(h.root, 'other', 1); other.facts.push(fact('other','other'));
     h.box.render(); h.get('memory-source').value = 'room:other';
     await h.get('memory-import').fire('click'); await h.confirm('복사해서 가져오기');
@@ -188,29 +177,46 @@ test('actual UI: separate empty, restore shared, resume, reset and import all ta
     h.box.data().facts[0].text = 'edited copy'; assert.notEqual(other.facts[0].text, 'edited copy');
 });
 
-test('scope toggle visibly waits for a choice and only checks after applying it', async () => {
-    const h = uiHarness(), toggle = h.get('separate-memory'), panel = h.get('memory-scope-choice');
+test('separation offers only two starting modes and cancel leaves shared memories untouched', async () => {
+    const h = uiHarness(), button = h.get('separate-memory'), panel = h.get('memory-scope-choice');
     let scrolled = 0, focused = 0;
     panel.scrollIntoView = () => scrolled++;
     panel.focus = () => focused++;
-    toggle.checked = true; await toggle.fire('change');
-    assert.equal(toggle.checked, false);
-    assert.equal(toggle.indeterminate, true);
-    assert.equal(panel.hidden, false);
+    const before = JSON.stringify(h.root);
+    await button.fire('click');
+    assert.equal(button.disabled, true); assert.equal(panel.hidden, false);
+    assert.deepEqual(panel.children[1].children.map(b => b.textContent), ['기존 기억 이어받기', '빈 기억으로 시작', '취소']);
     assert.equal(scrolled, 1); assert.equal(focused, 1);
     assert.equal(h.box.data(), h.root);
-    h.box.render(); assert.equal(toggle.indeterminate, true);
+    h.box.render(); assert.equal(button.disabled, true);
     await h.confirm('취소');
-    assert.equal(toggle.indeterminate, false); assert.equal(toggle.checked, false);
-    toggle.checked = true; await toggle.fire('change'); await h.confirm('빈 기억으로 시작');
-    assert.equal(toggle.indeterminate, false); assert.equal(toggle.checked, true);
-    assert.equal(panel.hidden, true); assert.equal(h.box.data().facts.length, 0);
-    assert.equal(h.root.facts.length, 1);
+    assert.equal(button.disabled, false); assert.equal(button.hidden, false);
+    assert.equal(JSON.stringify(h.root), before);
+    await button.fire('click'); await h.confirm('기존 기억 이어받기');
+    const privateStore = h.box.data();
+    assert.notEqual(privateStore, h.root);
+    assert.equal(privateStore.facts[0].id, 'shared');
+    privateStore.facts[0].text = 'new branch';
+    assert.notEqual(h.root.facts[0].text, 'new branch');
+    assert.equal(privateStore.chats.a.autoMemory.cursor, h.ctx.chat.length);
+    assert.equal(button.hidden, true); assert.equal(panel.hidden, true);
+    assert.match(h.get('memory-scope-status').textContent, /기억을 따로 사용 중/);
 });
 
-test('scope confirmation is placed immediately after the toggle for narrow screens', () => {
+test('existing separated rooms retain their memory and do not offer a switch to shared mode', () => {
+    const h = uiHarness();
+    const privateStore = scope.separateRoomMemory(h.root, 'a', h.ctx.chat.length);
+    privateStore.facts.push(fact('keep'));
+    h.box.render();
+    assert.equal(h.box.data(), privateStore);
+    assert.equal(h.get('separate-memory').hidden, true);
+    assert.equal(h.get('separate-memory').listeners.change, undefined);
+    assert.equal(scope.shareRoomMemory, undefined); assert.equal(scope.resumeRoomMemory, undefined);
+});
+
+test('separation confirmation is next to a button, not a toggle, on narrow screens', () => {
     const html = readFileSync(new URL('../settings.html', import.meta.url), 'utf8');
-    assert.match(html, /id="hundredlog-separate-memory"[^]*?<\/label>\s*<div id="hundredlog-memory-scope-choice"/);
+    assert.match(html, /<button[^>]*id="hundredlog-separate-memory"[^]*?<\/button>\s*<div id="hundredlog-memory-scope-choice"/);
 });
 
 test('automatic collection ignores an empty or greeting-only room, then follows the reply interval', () => {

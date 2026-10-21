@@ -38,7 +38,12 @@ export function compactMemoryStore(value) {
     if (typeof value.lastCleanupSignature === 'string' && !value.lastCleanupSignature.startsWith('h1:')) value.lastCleanupSignature = shortSignature(value.lastCleanupSignature);
     if (value.embeddingIndex?.entries) for (const id of Object.keys(value.embeddingIndex.entries)) if (!ids.has(id)) delete value.embeddingIndex.entries[id];
     for (const key of ['cleanupWarnings', 'cleanupConflicts']) if (Array.isArray(value[key])) value[key] = value[key].filter(row => row.ids?.every(id => ids.has(id)));
-    for (const scope of Object.values(value.chatMemoryScopes ?? {})) if (scope?.store) compactMemoryStore(scope.store);
+    for (const [id, scope] of Object.entries(value.chatMemoryScopes ?? {})) {
+        // Legacy shared-mode rooms may retain an unused private store. The new
+        // one-way separation has no resume path; active independent rooms survive.
+        if (scope?.independent === false) delete value.chatMemoryScopes[id];
+        else if (scope?.store) compactMemoryStore(scope.store);
+    }
 }
 export function compactConfig(config) {
     for (const value of Object.values(config.characterStores ?? {})) compactMemoryStore(value);

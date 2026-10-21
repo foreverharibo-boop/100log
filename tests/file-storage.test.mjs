@@ -79,6 +79,26 @@ test('reload after migration uses the file even if settings deletion was interru
     assert.equal(remote.uploads, 2);
 });
 
+test('upgrade removes only unused legacy private stores and keeps active independent rooms and shared data', async () => {
+    const remote = server(), initial = client(remote);
+    await initial.init(legacy());
+    const saved = remote.file;
+    const root = saved.data.characterStores['uuid:identity'];
+    root.chatMemoryScopes.dormant = { independent: false, store: { facts: [fact('unused')], chats: { dormant: { extractionCursor: 30 } } } };
+    const activeBefore = clone(root.chatMemoryScopes.private);
+    const sharedBefore = clone(root.facts), progressBefore = clone(root.chats);
+    remote.file = saved;
+    const upgraded = client(remote); await upgraded.init();
+    const after = upgraded.value.characterStores['uuid:identity'];
+    assert.equal(after.chatMemoryScopes.dormant, undefined);
+    assert.deepEqual(after.chatMemoryScopes.private, activeBefore);
+    assert.deepEqual(after.facts, sharedBefore); assert.deepEqual(after.chats, progressBefore);
+    await upgraded.save();
+    assert.equal(remote.file.data.characterStores['uuid:identity'].chatMemoryScopes.dormant, undefined);
+    const reopened = client(remote); await reopened.init();
+    assert.deepEqual(reopened.value.characterStores['uuid:identity'].chatMemoryScopes.private, activeBefore);
+});
+
 test('save queue preserves edits made while upload is in flight and final queued save persists them', async () => {
     const remote = server(), storage = client(remote); await storage.init(legacy());
     storage.value.analysisInterval = 4;
@@ -178,7 +198,7 @@ test('recollection rejection expires beyond last 100 visible messages, without r
     chat[104].mes = 'edited'; pruneToRecentWindow(value, {}, chat, 'room'); assert.equal(value.rejectedMemories.length, 0);
 });
 
-test('only successful raw room enumeration prunes deleted progress; shared facts and dormant separate worlds survive', async () => {
+test('only successful raw room enumeration prunes deleted progress; shared facts and active independent worlds survive', async () => {
     for (const listing of [null, { error: true }, [{ file_name: 'live.jsonl' }]]) {
         const config = legacy(); await pruneDeletedRoomProgress(config, async () => listing);
         assert.ok(config.characterStores['uuid:identity'].chats.room);

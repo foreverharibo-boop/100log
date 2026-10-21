@@ -1,13 +1,13 @@
-import { createFileStorage } from './file-storage.js?v=1.10.3';
-import { compactConfig, shortSignature, pruneDeletedRoomProgress, renameRoom } from './retention.js?v=1.10.3';
-import { roomScope, selectedMemoryStore, separateRoomMemory, resumeRoomMemory, shareRoomMemory, resetRoomMemory, memoryCopySources } from './memory-scope.js?v=1.10.3';
-import { createNativeReview } from './native-review.js?v=1.10.3';
-import { retryCapacityOperations, evictOldestMemories, normalizeMemoryLimit } from './memory-engine.js?v=1.10.3';
-import { availableSupportingEvidence, normalizeAliases, canonicalName, linkAlias, resolveFactNames, normalizeSupportingEvidence, addRejectedMemory } from './continuity-tools.js?v=1.10.3';
-import { applyManualKnowledgeDraft, collectedCharacterNames, sortMemoriesByCollection, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, omissionReviewRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js?v=1.10.3';
-import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, supportsBackgroundUtility, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js?v=1.10.3';
-import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js?v=1.10.3';
-import { normalizeKnowledgeEvidence, KNOWLEDGE_LABELS, COMMITMENT_LABELS, commitmentState } from './core.js?v=1.10.3';
+import { createFileStorage } from './file-storage.js?v=1.10.4';
+import { compactConfig, shortSignature, pruneDeletedRoomProgress, renameRoom } from './retention.js?v=1.10.4';
+import { roomScope, selectedMemoryStore, separateRoomMemory, resetRoomMemory, memoryCopySources } from './memory-scope.js?v=1.10.4';
+import { createNativeReview } from './native-review.js?v=1.10.4';
+import { retryCapacityOperations, evictOldestMemories, normalizeMemoryLimit } from './memory-engine.js?v=1.10.4';
+import { availableSupportingEvidence, normalizeAliases, canonicalName, linkAlias, resolveFactNames, normalizeSupportingEvidence, addRejectedMemory } from './continuity-tools.js?v=1.10.4';
+import { applyManualKnowledgeDraft, collectedCharacterNames, sortMemoriesByCollection, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, omissionReviewRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js?v=1.10.4';
+import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, supportsBackgroundUtility, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js?v=1.10.4';
+import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js?v=1.10.4';
+import { normalizeKnowledgeEvidence, KNOWLEDGE_LABELS, COMMITMENT_LABELS, commitmentState } from './core.js?v=1.10.4';
 
 const NAME = 'hundredlog';
 const LEGACY_NAME = 'memorybean';
@@ -1413,7 +1413,7 @@ function renderContinuityTools(value, working) {
 }
 
 let memoryScopeChoiceKey = '';
-let memoryScopeTogglePending = false;
+let memoryScopeSeparationPending = false;
 let memoryScopeChanging = false;
 
 function memoryScopeWorking() {
@@ -1422,9 +1422,7 @@ function memoryScopeWorking() {
 
 function clearMemoryScopeChoice() {
     memoryScopeChoiceKey = '';
-    memoryScopeTogglePending = false;
-    const toggle = $id('separate-memory');
-    if (toggle) toggle.indeterminate = false;
+    memoryScopeSeparationPending = false;
     const panel = $id('memory-scope-choice');
     if (panel) { panel.replaceChildren(); panel.hidden = true; }
 }
@@ -1433,15 +1431,15 @@ function renderMemoryScope(value, working) {
     const ctx = context(), root = characterData(false), id = sourceChatId(ctx);
     const scope = roomScope(root, id);
     const disabled = working || memoryScopeChanging || !value;
-    const toggle = $id('separate-memory');
-    if (!toggle) return;
+    const button = $id('separate-memory');
+    if (!button) return;
     if (memoryScopeChoiceKey && (memoryScopeChoiceKey !== chatKey(ctx) || disabled)) clearMemoryScopeChoice();
-    toggle.indeterminate = Boolean(memoryScopeChoiceKey && memoryScopeTogglePending);
-    toggle.checked = Boolean(scope?.independent);
-    toggle.disabled = disabled;
+    const pending = Boolean(memoryScopeChoiceKey && memoryScopeSeparationPending);
+    button.hidden = Boolean(scope?.independent);
+    button.disabled = disabled || pending || Boolean(scope?.independent);
     $id('memory-scope-status').textContent = !value ? '캐릭터의 채팅을 먼저 열어 주세요.'
-        : toggle.indeterminate ? '저장 방식 선택 대기 · 선택 버튼을 눌러 적용해 주세요.'
-        : scope?.independent ? '이 방의 독립 기억을 사용 중이에요. 다른 방에 반영되지 않아요.'
+        : pending ? '분리 방식 선택 대기 · 아래에서 시작할 기억을 선택해 주세요.'
+        : scope?.independent ? '이 채팅은 기억을 따로 사용 중이에요. 이후 기억은 이 방에서만 수집하며, 공용으로 돌아가는 기능은 없어요.'
             : '이 캐릭터의 공용 기억을 사용 중이에요. 다른 공용 채팅과 함께 갱신돼요.';
     const select = $id('memory-source');
     const selected = select.value;
@@ -1458,15 +1456,17 @@ function renderMemoryScope(value, working) {
     $id('memory-reset').disabled = disabled;
 }
 
-function memoryScopeChoice(message, choices, togglePending = false) {
+function memoryScopeChoice(message, choices, separationPending = false) {
     if (memoryScopeWorking()) return;
     const ctx = context(), key = chatKey(ctx), root = characterData(false), value = data(false);
     if (!key || !root || !value) return;
     const panel = $id('memory-scope-choice');
     panel.replaceChildren(); panel.hidden = false; memoryScopeChoiceKey = key;
-    memoryScopeTogglePending = togglePending;
-    $id('separate-memory').indeterminate = togglePending;
-    if (togglePending) $id('memory-scope-status').textContent = '저장 방식 선택 대기 · 선택 버튼을 눌러 적용해 주세요.';
+    memoryScopeSeparationPending = separationPending;
+    if (separationPending) {
+        $id('separate-memory').disabled = true;
+        $id('memory-scope-status').textContent = '분리 방식 선택 대기 · 아래에서 시작할 기억을 선택해 주세요.';
+    }
     const description = document.createElement('p'); description.className = 'hundredlog-help'; description.textContent = message;
     const actions = document.createElement('div'); actions.className = 'hundredlog-actions';
     for (const choice of choices) actions.append(makeButton(choice.label, async () => {
@@ -1498,23 +1498,13 @@ function memoryScopeChoice(message, choices, togglePending = false) {
 }
 
 function bindMemoryScope() {
-    $id('separate-memory')?.addEventListener('change', event => {
-        const enable = event.target.checked;
-        render();
-        if (enable) {
-            const scope = roomScope(characterData(false), sourceChatId());
-            const choices = [];
-            if (scope?.store) choices.push({ label: '보관된 독립 기억 이어쓰기',
-                apply: (root, id) => resumeRoomMemory(root, id), done: '이 방의 독립 기억으로 돌아왔어요.' });
-            choices.push({ label: '빈 기억으로 시작', apply: (root, id, length) => resetRoomMemory(root, id, length),
-                done: '이 방을 분리했어요. 새 대화부터 기억을 모아요.' },
-            { label: '공용 기억 복사', apply: (root, id, length) => separateRoomMemory(root, id, length, root),
-                done: '공용 기억을 이 방에 복사했어요. 이제 이 방에서만 갱신돼요.' });
-            memoryScopeChoice(scope?.store
-                ? '보관된 독립 기억을 이어 쓰거나 새로 시작할 수 있어요. 빈 기억·공용 기억 복사를 선택하면 기존 독립 기억을 교체해요.'
-                : '이 방을 따로 관리할게요. 빈 기억으로 시작할까요, 공용 기억을 복사할까요? 다른 방은 바뀌지 않아요.', choices, true);
-        } else memoryScopeChoice('공용 기억으로 돌아갈까요? 이 방의 독립 기억은 보관하며 공용 기억에 합치지 않아요. 전환 이후 새 대화부터 공용 기억에 반영해요.', [
-            { label: '공용 기억 사용', apply: shareRoomMemory, done: '공용 기억으로 돌아왔어요. 독립 기억은 따로 보관했어요.' },
+    $id('separate-memory')?.addEventListener('click', () => {
+        if (roomScope(characterData(false), sourceChatId())?.independent) return;
+        memoryScopeChoice('이 채팅의 기억을 분리할게요. 기존 공용 기억을 이어받거나 빈 기억으로 시작할 수 있어요. 이후 새 대화부터 이 방에서만 수집하며 다른 방은 바뀌지 않아요. 분리 후 공용으로 돌아가는 기능은 없어요.', [
+            { label: '기존 기억 이어받기', apply: (root, id, length) => separateRoomMemory(root, id, length, root),
+                done: '기존 공용 기억을 이어받아 분리했어요. 이제 이 방에서만 수집해요.' },
+            { label: '빈 기억으로 시작', apply: resetRoomMemory,
+                done: '빈 기억으로 분리했어요. 이후 새 대화부터 이 방에서만 수집해요.' },
         ], true);
     });
     $id('memory-import')?.addEventListener('click', () => {
@@ -2649,7 +2639,7 @@ async function main() {
     installMemoryHooks(ctx);
     if ($id('key')) { registerDeveloperTitle($id('title')); addWandButton(); return; }
     installStorageHooks(ctx);
-    const response = await diagnosticFetch(new URL('./settings.html?v=1.10.3', import.meta.url), { credentials: 'same-origin' });
+    const response = await diagnosticFetch(new URL('./settings.html?v=1.10.4', import.meta.url), { credentials: 'same-origin' });
     if (!response.ok) throw new Error(`설정 화면 파일을 읽지 못했어요 (${response.status}).`);
     const html = await response.text();
     // Keep the panel mounted for event bindings, but expose it only through the wand.
