@@ -1,13 +1,13 @@
-import { createFileStorage } from './file-storage.js?v=1.10.5';
-import { compactConfig, shortSignature, pruneDeletedRoomProgress, renameRoom } from './retention.js?v=1.10.5';
-import { roomScope, selectedMemoryStore, separateRoomMemory, resetRoomMemory, memoryCopySources } from './memory-scope.js?v=1.10.5';
-import { createNativeReview } from './native-review.js?v=1.10.5';
-import { retryCapacityOperations, evictOldestMemories, normalizeMemoryLimit } from './memory-engine.js?v=1.10.5';
-import { availableSupportingEvidence, normalizeAliases, canonicalName, linkAlias, resolveFactNames, normalizeSupportingEvidence, addRejectedMemory } from './continuity-tools.js?v=1.10.5';
-import { applyManualKnowledgeDraft, collectedCharacterNames, sortMemoriesByCollection, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, omissionReviewRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js?v=1.10.5';
-import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, supportsBackgroundUtility, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js?v=1.10.5';
-import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js?v=1.10.5';
-import { normalizeKnowledgeEvidence, KNOWLEDGE_LABELS, COMMITMENT_LABELS, commitmentState } from './core.js?v=1.10.5';
+import { createFileStorage } from './file-storage.js?v=1.10.6';
+import { compactConfig, shortSignature, pruneDeletedRoomProgress, renameRoom } from './retention.js?v=1.10.6';
+import { roomScope, selectedMemoryStore, separateRoomMemory, resetRoomMemory, memoryCopySources } from './memory-scope.js?v=1.10.6';
+import { createNativeReview } from './native-review.js?v=1.10.6';
+import { retryCapacityOperations, evictOldestMemories, normalizeMemoryLimit } from './memory-engine.js?v=1.10.6';
+import { availableSupportingEvidence, normalizeAliases, canonicalName, linkAlias, resolveFactNames, normalizeSupportingEvidence, addRejectedMemory } from './continuity-tools.js?v=1.10.6';
+import { applyManualKnowledgeDraft, collectedCharacterNames, sortMemoriesByCollection, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, omissionReviewRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js?v=1.10.6';
+import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, supportsBackgroundUtility, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js?v=1.10.6';
+import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js?v=1.10.6';
+import { normalizeKnowledgeEvidence, KNOWLEDGE_LABELS, COMMITMENT_LABELS, commitmentState } from './core.js?v=1.10.6';
 
 const NAME = 'hundredlog';
 const LEGACY_NAME = 'memorybean';
@@ -67,8 +67,11 @@ function storageNotice(error = fileStorage.error) {
         missing_file: '기억 파일을 찾지 못했어요. 빈 기억으로 덮어쓰지 않았어요.',
     };
     const message = error && !fileStorage.ready ? '100LOG 이관을 완료하지 못했어요. 기존 설정은 유지됩니다. 서버 연결·저장 공간을 확인한 뒤 새로고침해 주세요.' : error ? (messages[error.storageCode] || '100LOG 파일 저장·확인에 실패했어요. 새로고침 전에 저장 재시도를 눌러 주세요. 기존 설정은 이관 확인 전까지 유지해요.')
-        : '기억과 설정은 이 실리태번 서버의 files에 저장해요. 같은 서버·계정에서 이어 쓸 수 있어요.';
-    if ($id('storage-status')) $id('storage-status').textContent = message;
+        : '';
+    if ($id('storage-status')) {
+        $id('storage-status').textContent = message;
+        $id('storage-status').hidden = !error;
+    }
     if ($id('storage-retry')) $id('storage-retry').hidden = !error || error.storageCode === 'conflict';
     if (error && storageToastCode !== (error.storageCode || 'failed')) {
         storageToastCode = error.storageCode || 'failed';
@@ -1439,8 +1442,8 @@ function renderMemoryScope(value, working) {
     button.disabled = disabled || pending || Boolean(scope?.independent);
     $id('memory-scope-status').textContent = !value ? '캐릭터의 채팅을 먼저 열어 주세요.'
         : pending ? '분리 방식 선택 대기 · 아래에서 시작할 기억을 선택해 주세요.'
-        : scope?.independent ? '이 채팅은 기억을 따로 사용 중이에요. 이후 기억은 이 방에서만 수집하며, 공용으로 돌아가는 기능은 없어요.'
-            : '이 캐릭터의 공용 기억을 사용 중이에요. 다른 공용 채팅과 함께 갱신돼요.';
+        : scope?.independent ? '이 방만의 기억을 사용 중이에요.'
+            : '같은 캐릭터의 공용 기억을 사용 중이에요.';
     const select = $id('memory-source');
     const selected = select.value;
     select.replaceChildren();
@@ -1559,9 +1562,6 @@ function renderContent() {
     const state = chatState(value, context(), false);
     $id('undo-last').disabled = working || !value || !state?.autoMemory?.journal?.some((entry) => entry.changes?.length && !entry.undoneAt);
     refreshProfiles();
-    if ($id('background-help')) $id('background-help').textContent = supportsBackgroundUtility(context(), settings().extractionProfileId || '')
-        ? '기억은 백그라운드로 정리해요. 저장된 기억은 답변에 주입하고, 새 기억은 다음 답변부터 사용해요. JEV 답변 검수는 선택 사항이에요.'
-        : '현재 API는 호환 수집 경로를 사용해요. 정리용 연결 프로필을 선택하면 백그라운드 수집을 지원하는 API를 사용할 수 있어요.';
     const allRecords = value ? [...value.facts, ...value.candidates] : [];
     const missing = allRecords.filter((record) => !hasUsableKoreanText(record)).length;
     $id('translation-count').textContent = `미번역 ${missing}`;
@@ -1614,7 +1614,8 @@ function renderContent() {
             : conflicts ? `확인이 필요한 충돌 ${conflicts}쌍을 남겼어요.`
             : warnings ? `이전 청소에서 확인이 필요했던 제안 ${warnings}개가 있어요.`
             : review?.mode === 'collector' ? `이전 청소: 검사 통과 ${review.checked}개. 이전 기록에는 AI 원래 제안 수와 제외 이유가 없어요.`
-            : `규칙이 ${settings().cleanupThreshold}개 이상이면 정리 AI가 청소해요. 원문 인용·잠금·병합 조건은 코드로 검사해요.`;
+            : '';
+        cleanupSummary.hidden = !cleanupSummary.textContent;
 
     }
     const manualChoice = $id('replaces').value;
@@ -2639,7 +2640,7 @@ async function main() {
     installMemoryHooks(ctx);
     if ($id('key')) { registerDeveloperTitle($id('title')); addWandButton(); return; }
     installStorageHooks(ctx);
-    const response = await diagnosticFetch(new URL('./settings.html?v=1.10.5', import.meta.url), { credentials: 'same-origin' });
+    const response = await diagnosticFetch(new URL('./settings.html?v=1.10.6', import.meta.url), { credentials: 'same-origin' });
     if (!response.ok) throw new Error(`설정 화면 파일을 읽지 못했어요 (${response.status}).`);
     const html = await response.text();
     // Keep the panel mounted for event bindings, but expose it only through the wand.

@@ -13,7 +13,7 @@
       </div>
       <details class="hundredlog-translation-info"><summary>번역 안내</summary><p id="hundredlog-translation-help" class="hundredlog-help">기억은 원문 RP 서술의 언어로 수집해요. 한국어 번역은 화면 표시용이며, AI 주입·검수에는 저장 원문을 사용해요.</p></details>
     </section>
-    <p id="hundredlog-storage-status" class="hundredlog-help" role="status"></p><button type="button" id="hundredlog-storage-retry" class="menu_button" hidden>저장 재시도</button>
+    <p id="hundredlog-storage-status" class="hundredlog-help" role="status" hidden></p><button type="button" id="hundredlog-storage-retry" class="menu_button" hidden>저장 재시도</button>
     <nav class="hundredlog-tabs" aria-label="100LOG 메뉴">
       <button type="button" id="hundredlog-tab-memory" class="hundredlog-tab" aria-pressed="true" aria-controls="hundredlog-view-memory">검수 규칙</button>
       <button type="button" id="hundredlog-tab-settings" class="hundredlog-tab" aria-pressed="false" aria-controls="hundredlog-view-settings">설정</button>
@@ -37,22 +37,19 @@
         <label for="hundredlog-extraction-profile" class="hundredlog-label hundredlog-profile-label">정리용 연결 프로필</label>
         <div class="hundredlog-profile-row"><select id="hundredlog-extraction-profile" class="hundredlog-profile-select"></select><button type="button" id="hundredlog-profiles-refresh" class="menu_button" aria-label="프로필 목록 새로고침" title="프로필 목록 새로고침">↻</button></div>
         <div id="hundredlog-translation-profile-setting"><label for="hundredlog-translation-profile" class="hundredlog-label">AI 한국어 번역용 프로필</label><select id="hundredlog-translation-profile" class="hundredlog-profile-select"></select></div>
-        <p id="hundredlog-background-help" class="hundredlog-help">기억은 백그라운드로 정리해요. 수집 중에도 저장된 기억으로 답변을 검수하고, 새 기억은 다음 답변부터 사용해요.</p>
         <div class="hundredlog-setting-grid">
           <label for="hundredlog-collection-intensity"><span>규칙 수집 강도</span><select id="hundredlog-collection-intensity" class="hundredlog-profile-select"><option value="detailed">세세하게</option><option value="balanced">균형</option><option value="meaningful">의미 중심</option></select></label>
           <label for="hundredlog-analysis-interval"><span>자동 규칙 갱신 주기</span><span class="hundredlog-number-field"><input id="hundredlog-analysis-interval" type="number" min="1" step="1" inputmode="numeric"><span>AI 답변마다</span></span></label>
           <label for="hundredlog-cleanup-threshold"><span>자동 청소 시작 개수</span><span class="hundredlog-number-field"><input id="hundredlog-cleanup-threshold" type="number" min="5" max="40" step="1" inputmode="numeric"><span>개 이상</span></span></label>
         </div>
-        <p class="hundredlog-help">약속·비밀·정정은 모든 강도에서 수집해요. 세세하게는 작은 부탁·제안·취향·경험·변화까지 넓게 모으며, 미확정 계획은 미확정으로 기록해요. 규칙이 많아지면 검수량도 늘어요. 갱신 주기는 AI 답변 수 기준이에요. 수집 강도 변경은 다음 수집·누락 재확인에 적용돼요. ‘지금 청소’는 재수집이 아니에요. 기존 기억을 바뀐 강도로 다시 모으려면 ‘최근 100개 재수집’을 사용해 주세요.</p>
         <p id="hundredlog-interval-warning" class="hundredlog-help hundredlog-warning" hidden>갱신 주기가 50 이상이면 정리되기 전에 오래된 메시지가 최근 100개 범위에서 빠질 수 있어요.</p>
         <label class="hundredlog-toggle hundredlog-setting-toggle"><input id="hundredlog-auto-cleanup" type="checkbox"><span>수집 후 규칙 자동 청소</span></label>
         <p class="hundredlog-help">5~40개부터 정리 AI가 청소해요. 원문 인용·잠금·병합 조건을 코드로 검사한 뒤 정리하며 직접 추가·잠금한 규칙은 유지해요.</p>
         <div class="hundredlog-actions"><button type="button" id="hundredlog-cleanup-now" class="menu_button">지금 청소</button><button type="button" id="hundredlog-cleanup-stop" class="menu_button" hidden>중단</button></div>
-        <p class="hundredlog-help">‘지금 청소’는 자동 청소 설정·개수와 관계없이 정리용 AI로 다시 검사해요. 필요한 기억은 억지로 줄이지 않아요. 이전에 한도로 빠진 기억은 청소 후 ‘누락 재확인’으로 다시 수집할 수 있어요.</p>
         <p id="hundredlog-cleanup-summary" class="hundredlog-help" aria-live="polite"></p>
         <label class="hundredlog-toggle hundredlog-setting-toggle"><input id="hundredlog-auto-evict" type="checkbox"><span>오래된 기억 자동 밀어내기</span></label>
         <div class="hundredlog-setting-grid"><label for="hundredlog-memory-limit"><span>유지할 기억 개수</span><span class="hundredlog-number-field"><input id="hundredlog-memory-limit" type="number" min="1" max="40" step="1" inputmode="numeric"><span>개</span></span></label></div>
-        <p class="hundredlog-help">켜거나 개수를 줄이면 바로 적용하고, 이후 수집할 때도 유지해요. 대화가 100개 미만이어도 오래된 수집 순서로 현재 목록에서 삭제해요. 최근 자동 갱신 한 번에 필요한 취소 기록만 남겨요. 직접 저장·잠금한 기억은 유지하며, 잠그지 않은 자동 수집 기억은 약속·비밀도 밀려날 수 있어요. 보호된 기억만으로 개수가 차면 새 기억은 저장하지 못해요. AI 추가 호출은 없어요.</p>
+        <p class="hundredlog-help">초과한 오래된 자동 기억을 즉시 삭제해요.<br>직접 추가·잠금 기억은 유지해요.</p>
         <p id="hundredlog-eviction-summary" class="hundredlog-help" aria-live="polite"></p>
       </section>
       <section class="hundredlog-settings-block">
@@ -61,44 +58,41 @@
         <div id="hundredlog-collection-focus" class="hundredlog-focus-options" role="group" aria-label="집중해서 수집할 항목"></div>
         <label for="hundredlog-collection-custom" class="hundredlog-label">추가 수집 기준 · 선택 사항</label>
         <textarea id="hundredlog-collection-custom" rows="3" maxlength="1000" placeholder="예: 사소한 약속과 새로 알게 된 취향도 자세히 기억해 주세요."></textarea>
-        <p class="hundredlog-help">입력·선택하면 자동 저장돼요. 공용 기억에서는 같은 캐릭터의 채팅끼리 공유하고, 따로 관리하는 방에서는 이 방에만 적용돼요. 다음 수집부터 적용돼요. 기존 기억은 자동으로 다시 수집하지 않아요. 아무것도 선택하거나 적지 않으면 기존 방식으로 작동해요.</p>
+        <p class="hundredlog-help">자동 저장되며 다음 수집부터 적용돼요.</p>
       </section>
       <section class="hundredlog-settings-block">
         <div class="hundredlog-section-title"><strong>수집에서 제외된 항목</strong><button type="button" id="hundredlog-collection-exclusions-clear" class="menu_button">내역 지우기</button></div>
         <p id="hundredlog-collection-exclusions-summary" class="hundredlog-help" aria-live="polite"></p>
-        <p class="hundredlog-help">이 채팅의 최근 수집 1회에서 코드 검사로 빠진 제안만 최대 64개 표시해요. AI가 처음부터 제안하지 않은 내용이나 자동 청소 내역은 포함되지 않아요. 내용·인용은 이 설정에만 보관하며 오류 기록에는 넣지 않아요.</p>
+        <p class="hundredlog-help">AI가 제안했지만 저장되지 않은 기억이에요. 이유를 확인하고 직접 저장할 수 있어요.</p>
         <div id="hundredlog-collection-exclusions"></div>
       </section>
       <section class="hundredlog-settings-block">
         <div class="hundredlog-section-title"><strong>인물 이름·별칭 연결</strong></div>
-        <p class="hundredlog-help">같은 사람의 영어 이름·한국어 이름·별명을 직접 연결해요. AI 후보도 승인해야 적용돼요. 연결은 현재 기억 저장 범위에 적용되며, 지식이 충돌하면 ‘확인 안 됨’으로 표시해요. 연결 해제는 저장된 이름을 다시 구분하며, 연결 중 직접 저장한 지식은 되돌리지 않아요.</p>
+        <p class="hundredlog-help">같은 사람의 이름·별명을 하나로 연결해요. AI 제안도 승인 후 적용돼요.</p>
         <div id="hundredlog-identity-tools"></div>
       </section>
       <section class="hundredlog-settings-block">
         <div class="hundredlog-section-title"><strong>잘못 수집된 기억 · 재수집 제외</strong></div>
-        <p class="hundredlog-help">규칙 삭제에서 ‘잘못 수집됨’을 선택한 항목이에요. 같은 원문의 같은 내용을 다시 모으지 않도록 정리 AI에 알리고, 일치하는 제안을 걸러요. 표현만 바뀐 제안은 AI의 동일 내용 판정이 필요해요. 새 메시지의 사건은 수집할 수 있어요. 제외 해제 후 ‘누락 재확인’으로 다시 확인할 수 있어요.</p>
+        <p class="hundredlog-help">잘못 수집돼 다시 모으지 않을 기억이에요.<br>제외 해제 후 ‘누락 재확인’으로 다시 모아요.</p>
         <div id="hundredlog-rejected-memories"></div>
       </section>
       <section class="hundredlog-settings-block"><div class="hundredlog-fold-title"><strong>JEV 답변 검수 · 선택 사항</strong></div>
         <label class="hundredlog-toggle hundredlog-setting-toggle"><input id="hundredlog-review-enabled" type="checkbox"><span>JEV로 받은 답변 검수</span></label>
-        <p class="hundredlog-help">꺼두면 JEV 키 없이 기억 수집·청소·주입을 사용할 수 있고, 답변은 실리태번에서 바로 보여줘요. 기억 수집과 AI 청소에는 정리용 AI 연결이 필요해요.</p>
-        <p class="hundredlog-help">켜두면 사실 주입 → 실리태번 정상 생성 → 받은 답변 검수 순서로 동작해요. 통과하면 원문 그대로, 충돌하면 한 번 수정 요청한 뒤 다시 검사해요. 스트리밍 본문도 검수가 끝나면 보여줘요. 검수·수정 요청 실패 시 받은 답변을 보존하고 검수 미완료로 남겨요. 429다이를 함께 켜면 해당 단계만 재시도해요.</p>
+        <p class="hundredlog-help">기억과 충돌하는 답변을 검사하고 한 번 수정을 요청해요.</p>
+        <p class="hundredlog-help">꺼도 기억 수집·주입은 사용할 수 있어요.</p>
         <label for="hundredlog-key" class="hundredlog-label">Jev API 키</label><input id="hundredlog-key" type="password" autocomplete="off" spellcheck="false" placeholder="TypeSafe API 키">
         <div class="hundredlog-row hundredlog-connection-actions"><button type="button" id="hundredlog-test" class="menu_button">연결 확인</button><button type="button" id="hundredlog-clearkey" class="menu_button">키 삭제</button><span id="hundredlog-server" class="hundredlog-state" aria-live="polite">API 키를 입력해 주세요</span></div>
         <p id="hundredlog-connection-error" class="hundredlog-help hundredlog-connection-error" role="alert" hidden></p>
-        <p class="hundredlog-help">기억 수집과 인물별 지식 정리는 정리 AI가 맡아요. JEV는 저장된 기억·인물별 지식·약속 진행 상태를 기준으로 새 답변을 검사해요. 원문을 다시 읽어 기억을 뒤집지 않으며, 기억에 없는 새 사건과 자연스러운 진행은 오류로 보지 않아요.</p>
       </section>
       <section class="hundredlog-settings-block">
         <div class="hundredlog-section-title"><strong>이 채팅의 기억</strong></div>
         <button type="button" id="hundredlog-separate-memory" class="menu_button">이 채팅의 기억 분리하기</button>
         <div id="hundredlog-memory-scope-choice" class="hundredlog-scope-choice" role="group" tabindex="-1" aria-label="기억 관리 확인" hidden></div>
         <p id="hundredlog-memory-scope-status" class="hundredlog-help" aria-live="polite"></p>
-        <p class="hundredlog-help">기본은 같은 캐릭터의 공용 채팅끼리 기억을 함께 사용해요. 다른 이야기로 분기하려면 ‘이 채팅의 기억 분리하기’를 눌러 기존 공용 기억을 이어받거나 빈 기억으로 시작하세요. 이후 새 대화부터 이 방에서만 수집하며 다른 방의 기억은 바뀌지 않아요. 분리 후 공용으로 돌아가는 기능은 없어요. 이미 있는 대화도 모으려면 ‘최근 100개 재수집’을 사용하세요. 방을 열거나 새로고침하는 것만으로는 자동 수집하지 않아요.</p>
         <label for="hundredlog-memory-source" class="hundredlog-label">가져올 기억</label>
         <select id="hundredlog-memory-source" class="hundredlog-profile-select"></select>
-        <p class="hundredlog-help">100LOG에 기록된 같은 캐릭터의 채팅을 선택해요. 공용 채팅은 그 방만의 기록이 아닌 공용 기억 전체를 가져와요. 가져오면 이 방을 따로 관리하며, 이 방의 기억 목록을 복사본으로 교체해요. 원본 채팅은 바뀌지 않아요.</p>
+        <p class="hundredlog-help">선택한 기억으로 이 방의 기억을 교체해요.</p>
         <div class="hundredlog-actions"><button type="button" id="hundredlog-memory-import" class="menu_button">다른 채팅의 기억 가져오기</button><button type="button" id="hundredlog-memory-reset" class="menu_button">이 채팅 기억 초기화</button></div>
-        <p class="hundredlog-help">초기화는 이 방을 독립 상태로 만들고 직접 저장·잠금을 포함한 기억과 검수·수집 기록을 비워요. RP 대화와 다른 방의 기억은 유지해요. 빈 기억으로 시작하거나 초기화하면 이후 새 대화부터 수집해요. 이전 대화도 모으려면 ‘최근 100개 재수집’을 눌러 주세요.</p>
       </section>
       <section class="hundredlog-settings-block"><div class="hundredlog-fold-title"><strong>기억 관리</strong></div>
         <p class="hundredlog-help">자동으로 만든 기존 규칙을 비우고 최근 100개를 처음부터 다시 수집해요. 직접 추가하거나 자동 변경 잠금한 규칙은 유지해요.</p>
