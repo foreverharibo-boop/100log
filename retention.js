@@ -1,5 +1,12 @@
 // Retain useful current memories, not a second permanent RP archive.
 const current = fact => !fact.archived && !fact.supersededBy;
+// Pause and scene-only controls were retired. Preserve current memories as
+// ordinary enabled memories; never revive completed or replaced records.
+function normalizeCurrentMemory(fact) {
+    if (!fact || !current(fact)) return;
+    if (fact.active === false) fact.active = true;
+    if (fact.scope === 'scene') fact.scope = 'always';
+}
 export function shortSignature(text) {
     let a = 2166136261, b = 5381;
     for (let i = 0; i < text.length; i++) { const n = text.charCodeAt(i); a = Math.imul(a ^ n, 16777619); b = Math.imul(b, 33) ^ n; }
@@ -7,6 +14,10 @@ export function shortSignature(text) {
 }
 export function boundJournal(auto) {
     if (!auto || !Array.isArray(auto.journal)) return;
+    for (const entry of auto.journal) for (const change of entry.changes ?? []) {
+        normalizeCurrentMemory(change.before);
+        normalizeCurrentMemory(change.after);
+    }
     // Older entries keep only small source signatures for edited/swiped-message detection.
     const last = [...auto.journal].reverse().find(entry => entry.changes?.length && !entry.undoneAt);
     auto.journal = auto.journal.slice(-100).map(entry => ({
@@ -23,6 +34,7 @@ export function compactMemoryStore(value) {
     value.candidates = []; // Obsolete approval queue; automatic collection has replaced it.
     const ids = new Set(value.facts.map(fact => fact.id));
     for (const fact of value.facts) {
+        normalizeCurrentMemory(fact);
         if (fact.previousId && !ids.has(fact.previousId)) delete fact.previousId;
         if (fact.supersededBy && !ids.has(fact.supersededBy)) delete fact.supersededBy;
     }

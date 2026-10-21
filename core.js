@@ -1,5 +1,5 @@
-import { forgetFactCopies } from './retention.js?v=1.10.6';
-import { canonicalName, normalizeSupportingEvidence } from './continuity-tools.js?v=1.10.6';
+import { forgetFactCopies } from './retention.js?v=1.10.7';
+import { canonicalName, normalizeSupportingEvidence } from './continuity-tools.js?v=1.10.7';
 export const RECENT_MESSAGE_LIMIT = 100;
 export const MAX_FACTS = 40;
 export const MAX_HISTORY = 200;
@@ -359,7 +359,7 @@ export function parseFactCandidates(raw, sourceMessages, existingFacts = []) {
         const value = typeof fact.text === 'string' ? fact.text.trim().slice(0, 300) : '';
         if (!source || value.length < 4) return [];
         const previous = existingFacts.find((item) => item.id === fact.replacesId && item.active && !item.archived && !item.supersededBy && (!Number.isInteger(item.sourceId) || item.sourceId < source.id));
-        return [{ id: newId(), text: value, sourceId: source.id, sourceText: source.text.slice(0, 350), scope: fact.scope === 'scene' ? 'scene' : 'always', knowledge: normalizeKnowledge(fact.knowledge), entity: String(fact.entity ?? '').trim().slice(0, 60), attribute: String(fact.attribute ?? '').trim().slice(0, 60), replacesId: previous?.id ?? null, active: false }];
+        return [{ id: newId(), text: value, sourceId: source.id, sourceText: source.text.slice(0, 350), scope: 'always', knowledge: normalizeKnowledge(fact.knowledge), entity: String(fact.entity ?? '').trim().slice(0, 60), attribute: String(fact.attribute ?? '').trim().slice(0, 60), replacesId: previous?.id ?? null, active: false }];
     });
 }
 

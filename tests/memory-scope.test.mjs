@@ -200,7 +200,7 @@ test('separation offers only two starting modes and cancel leaves shared memorie
     assert.notEqual(h.root.facts[0].text, 'new branch');
     assert.equal(privateStore.chats.a.autoMemory.cursor, h.ctx.chat.length);
     assert.equal(button.hidden, true); assert.equal(panel.hidden, true);
-    assert.match(h.get('memory-scope-status').textContent, /기억을 따로 사용 중/);
+    assert.match(h.get('memory-scope-status').textContent, /이 방만의 기억을 사용 중/);
 });
 
 test('existing separated rooms retain their memory and do not offer a switch to shared mode', () => {

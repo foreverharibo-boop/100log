@@ -1,13 +1,13 @@
-import { createFileStorage } from './file-storage.js?v=1.10.6';
-import { compactConfig, shortSignature, pruneDeletedRoomProgress, renameRoom } from './retention.js?v=1.10.6';
-import { roomScope, selectedMemoryStore, separateRoomMemory, resetRoomMemory, memoryCopySources } from './memory-scope.js?v=1.10.6';
-import { createNativeReview } from './native-review.js?v=1.10.6';
-import { retryCapacityOperations, evictOldestMemories, normalizeMemoryLimit } from './memory-engine.js?v=1.10.6';
-import { availableSupportingEvidence, normalizeAliases, canonicalName, linkAlias, resolveFactNames, normalizeSupportingEvidence, addRejectedMemory } from './continuity-tools.js?v=1.10.6';
-import { applyManualKnowledgeDraft, collectedCharacterNames, sortMemoriesByCollection, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, omissionReviewRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js?v=1.10.6';
-import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, supportsBackgroundUtility, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js?v=1.10.6';
-import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js?v=1.10.6';
-import { normalizeKnowledgeEvidence, KNOWLEDGE_LABELS, COMMITMENT_LABELS, commitmentState } from './core.js?v=1.10.6';
+import { createFileStorage } from './file-storage.js?v=1.10.7';
+import { compactConfig, shortSignature, pruneDeletedRoomProgress, renameRoom } from './retention.js?v=1.10.7';
+import { roomScope, selectedMemoryStore, separateRoomMemory, resetRoomMemory, memoryCopySources } from './memory-scope.js?v=1.10.7';
+import { createNativeReview } from './native-review.js?v=1.10.7';
+import { retryCapacityOperations, evictOldestMemories, normalizeMemoryLimit } from './memory-engine.js?v=1.10.7';
+import { availableSupportingEvidence, normalizeAliases, canonicalName, linkAlias, resolveFactNames, normalizeSupportingEvidence, addRejectedMemory } from './continuity-tools.js?v=1.10.7';
+import { applyManualKnowledgeDraft, collectedCharacterNames, sortMemoriesByCollection, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, omissionReviewRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js?v=1.10.7';
+import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, supportsBackgroundUtility, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js?v=1.10.7';
+import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js?v=1.10.7';
+import { normalizeKnowledgeEvidence, KNOWLEDGE_LABELS, COMMITMENT_LABELS, commitmentState } from './core.js?v=1.10.7';
 
 const NAME = 'hundredlog';
 const LEGACY_NAME = 'memorybean';
@@ -1550,7 +1550,6 @@ function renderContent() {
     $id('auto-cleanup').disabled = working;
     if ($id('auto-evict')) { $id('auto-evict').checked = Boolean(settings().autoEvict); $id('auto-evict').disabled = working || normalGenerating; }
     if ($id('memory-limit')) { $id('memory-limit').value = String(settings().memoryLimit); $id('memory-limit').disabled = working || normalGenerating; }
-    if ($id('eviction-summary')) $id('eviction-summary').textContent = (value?.lastEvictionSummary || '').replace('보관으로 옮겼어요', '정리했어요').replace(' · 현재 ', ' · 밀어내기 직후 ').replace(' / 유지 기준 ', ' / 당시 유지 기준 ');
     if ($id('review-enabled')) { $id('review-enabled').checked = Boolean(settings().reviewEnabled); $id('review-enabled').disabled = working || normalGenerating; }
     if ($id('cleanup-now')) $id('cleanup-now').disabled = working || normalGenerating || !currentFacts.some(fact => fact.active);
     if ($id('cleanup-stop')) $id('cleanup-stop').hidden = !extracting;
@@ -1601,23 +1600,9 @@ function renderContent() {
     $id('add').disabled = working || !value;
     $id('newfact').disabled = working || !value;
     $id('replaces').disabled = working || !value;
-    $id('endscene').disabled = working || !value;
     $id('facts').replaceChildren();
     $id('count').textContent = value ? `${currentFacts.filter((item) => item.active).length}개 규칙 사용 중` : '채팅을 선택해 주세요';
     $id('progress').textContent = value ? memoryProgressText(value, context()) : '';
-    const cleanupSummary = $id('cleanup-summary');
-    if (cleanupSummary) {
-        const conflicts = value?.cleanupConflicts?.length ?? 0;
-        const warnings = value?.cleanupWarnings?.length ?? 0;
-        const review = value?.lastCleanupReview;
-        cleanupSummary.textContent = review?.proposed !== undefined ? cleanupSummaryText(review)
-            : conflicts ? `확인이 필요한 충돌 ${conflicts}쌍을 남겼어요.`
-            : warnings ? `이전 청소에서 확인이 필요했던 제안 ${warnings}개가 있어요.`
-            : review?.mode === 'collector' ? `이전 청소: 검사 통과 ${review.checked}개. 이전 기록에는 AI 원래 제안 수와 제외 이유가 없어요.`
-            : '';
-        cleanupSummary.hidden = !cleanupSummary.textContent;
-
-    }
     const manualChoice = $id('replaces').value;
     $id('replaces').replaceChildren(...(value ? [...replacementSelect(value, manualChoice).children] : []));
     if (value) $id('replaces').value = currentFacts.some((item) => item.id === manualChoice && item.active) ? manualChoice : '';
@@ -1637,7 +1622,7 @@ function renderContent() {
         const carryoverAge = fact.summaryCarryover && fact.sourceChatId === sourceChatId() && Number.isInteger(fact.carryoverStartId)
             ? Math.max(0, Math.min(RECENT_MESSAGE_LIMIT, context().chat.length - fact.carryoverStartId)) : null;
         const carryoverText = fact.summaryCarryover ? ` · 요약 이월${carryoverAge === null ? '' : ` ${carryoverAge}/${RECENT_MESSAGE_LIMIT}`}` : '';
-        const meta = document.createElement('div'); meta.className = 'hundredlog-meta'; meta.textContent = `${fact.scope === 'scene' ? '장면 한정 규칙' : '지속 규칙'} · ${fact.pinned ? '자동 변경 잠금' : fact.origin === 'auto' ? '자동 관리' : '직접 저장'}${carryoverText}${fact.active ? '' : ' · 잠시 꺼짐'}${conflictIds.has(fact.id) ? ' · 충돌 의심' : warningIds.has(fact.id) ? ' · 청소 확인 필요' : ''}${Number.isInteger(fact.sourceId) ? ` · 대화 #${fact.sourceId}` : ''}`;
+        const meta = document.createElement('div'); meta.className = 'hundredlog-meta'; meta.textContent = `${fact.pinned ? '기억 잠금' : fact.origin === 'auto' ? '자동 관리' : '직접 저장'}${carryoverText}${conflictIds.has(fact.id) ? ' · 충돌 의심' : warningIds.has(fact.id) ? ' · 청소 확인 필요' : ''}${Number.isInteger(fact.sourceId) ? ` · 대화 #${fact.sourceId}` : ''}`;
         const actions = document.createElement('div'); actions.className = 'hundredlog-actions';
         actions.append(makeButton('수정', () => {
             if (data(false) !== value) return;
@@ -1647,13 +1632,11 @@ function renderContent() {
             controls.append(makeButton('수정 저장', async () => {
                 if (data(false) !== value || !input.value.trim()) return;
                 fact.text = input.value.trim(); fact.pinned = true; delete fact.translatedKo;
-                await save(); render(); status('수정한 기억을 자동 변경 잠금했어요. AI가 자동으로 바꾸지 않아요.');
+                await save(); render(); status('수정한 기억을 잠갔어요. AI가 자동으로 바꾸지 않아요.');
             }), makeButton('취소', () => render()));
             editor.append(input, controls); item.replaceChildren(editor);
         }));
-        actions.append(makeButton(fact.pinned ? '자동 잠금 해제' : '자동 변경 잠금', async () => { if (data(false) !== value) return; fact.pinned = !fact.pinned; await save(); render(); }));
-        actions.append(makeButton(fact.active ? '잠시 끄기' : '다시 켜기', async () => { fact.active = !fact.active; await save(); render(); }));
-        actions.append(makeButton(fact.scope === 'scene' ? '지속 기억으로' : '임시 기억으로', async () => { fact.scope = fact.scope === 'scene' ? 'always' : 'scene'; await save(); render(); }));
+        actions.append(makeButton(fact.pinned ? '잠금 해제' : '기억 잠금', async () => { if (data(false) !== value) return; fact.pinned = !fact.pinned; await save(); render(); }));
         actions.append(makeButton('삭제', () => {
             if (data(false) !== value) return;
             const choice = document.createElement('div'); choice.className = 'hundredlog-delete-choice';
@@ -2640,7 +2623,7 @@ async function main() {
     installMemoryHooks(ctx);
     if ($id('key')) { registerDeveloperTitle($id('title')); addWandButton(); return; }
     installStorageHooks(ctx);
-    const response = await diagnosticFetch(new URL('./settings.html?v=1.10.6', import.meta.url), { credentials: 'same-origin' });
+    const response = await diagnosticFetch(new URL('./settings.html?v=1.10.7', import.meta.url), { credentials: 'same-origin' });
     if (!response.ok) throw new Error(`설정 화면 파일을 읽지 못했어요 (${response.status}).`);
     const html = await response.text();
     // Keep the panel mounted for event bindings, but expose it only through the wand.
@@ -2835,14 +2818,6 @@ async function main() {
             await save(); render();
         } catch (error) { diagnosticError('기타', error, { site: 2314 }); status(error.message); }
     });
-    $id('endscene')?.addEventListener('click', async () => {
-        const value = data();
-        if (!value) return;
-        const temporary = value.facts.filter((fact) => fact.active && isCurrent(fact) && fact.scope === 'scene');
-        for (const fact of temporary) fact.active = false;
-        await save(); render();
-        status(temporary.length ? `장면 한정 규칙 ${temporary.length}개를 검사에서 제외했어요. 각 규칙의 ‘다시 켜기’로 복구할 수 있어요.` : '현재 켜진 장면 한정 규칙이 없어요.');
-    });
     $id('extract')?.addEventListener('click', () => { void collectHistory(); });
     $id('sync-now')?.addEventListener('click', () => { void syncMemories({ force: true }); });
     $id('review-omissions')?.addEventListener('click', () => {
@@ -2853,7 +2828,7 @@ async function main() {
         const value = data(false);
         if (!value) return;
         const count = undoLatestMemoryBatch(value, chatState(value, context(), false));
-        if (!count) { status('되돌릴 자동 변경이 없거나, 이후 직접 수정·자동 변경 잠금한 기억이라 건드리지 않았어요.'); render(); return; }
+        if (!count) { status('되돌릴 자동 변경이 없거나, 이후 직접 수정하거나 잠근 기억이라 건드리지 않았어요.'); render(); return; }
         await save();
         render();
         status(`최근 자동 정리에서 바뀐 기억 ${count}개를 되돌렸어요.`);

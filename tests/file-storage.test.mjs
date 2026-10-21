@@ -284,3 +284,24 @@ test('existing files discard protected past facts in shared/private scopes while
     assert.equal(saved.chats.room.autoMemory.cursor, 5);
     assert.equal(remote.uploads, 1);
 });
+
+
+test('retired pause and scene modes migrate across scopes and undo without reviving past memories', () => {
+    const before = fact('kept', { active: false, scope: 'scene', text: 'before' });
+    const after = { ...before, text: 'after' };
+    const ended = fact('ended', { active: false, scope: 'scene', archived: 'completed' });
+    const store = { facts: [clone(after), clone(ended), fact('locked', { pinned: true, scope: 'scene' })],
+        chats: { room: { autoMemory: { journal: [{ sources: [], changes: [{ id: 'kept', before: clone(before), after: clone(after) }] }] } } },
+        chatMemoryScopes: { private: { independent: true, store: { facts: [fact('private', { active: false, scope: 'scene' })] } } } };
+    compactMemoryStore(store);
+    assert.deepEqual(store.facts.map(f => f.id), ['kept', 'locked']);
+    assert.ok(store.facts.every(f => f.active && f.scope === 'always'));
+    assert.equal(store.facts[1].pinned, true);
+    assert.equal(store.chatMemoryScopes.private.store.facts[0].active, true);
+    const once = structuredClone(store); compactMemoryStore(store); assert.deepEqual(store, once);
+    assert.equal(undoLatestMemoryBatch(store, store.chats.room), 1);
+    assert.equal(store.facts[0].text, 'before');
+    assert.equal(store.facts[0].active, true);
+    assert.equal(store.facts[0].scope, 'always');
+    assert.ok(!store.facts.some(f => f.id === 'ended'));
+});

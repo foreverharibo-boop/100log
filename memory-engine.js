@@ -1,6 +1,6 @@
-import { boundJournal } from './retention.js?v=1.10.6';
-import { canonicalName, resolveFactNames, normalizeAliases, normalizeSupportingEvidence, appendSupportingEvidence, rejectedMemoryMatch, aliasSuggestions } from './continuity-tools.js?v=1.10.6';
-import { MAX_FACTS, RECENT_MESSAGE_LIMIT, newId, approveFact, setKnowledge, normalizeKnowledge, normalizeKnowledgeEvidence, advanceCommitment, commitmentState, pickFacts, recentWindowStart, isVisibleChatMessage } from './core.js?v=1.10.6';
+import { boundJournal } from './retention.js?v=1.10.7';
+import { canonicalName, resolveFactNames, normalizeAliases, normalizeSupportingEvidence, appendSupportingEvidence, rejectedMemoryMatch, aliasSuggestions } from './continuity-tools.js?v=1.10.7';
+import { MAX_FACTS, RECENT_MESSAGE_LIMIT, newId, approveFact, setKnowledge, normalizeKnowledge, normalizeKnowledgeEvidence, advanceCommitment, commitmentState, pickFacts, recentWindowStart, isVisibleChatMessage } from './core.js?v=1.10.7';
 
 export const MEMORY_KINDS = {
     fact: '최근 핵심 사실',
@@ -156,7 +156,7 @@ export function saveExcludedMemory(value, entry, text, chat = [], sourceChatId =
     if (entry.savedId) throw new Error('이미 직접 저장한 항목이에요.');
     if (value.facts.some((fact) => isCurrent(fact) && compact(fact.text).toLowerCase() === compact(summary).toLowerCase())) throw new Error('같은 내용의 현재 기억이 이미 있어요. 기존 규칙을 확인해 주세요.');
     const kind = Object.hasOwn(MEMORY_KINDS, entry.kind) ? entry.kind : 'fact';
-    const record = { id: newId(), text: summary, kind, scope: ['state', 'temporary'].includes(kind) ? 'scene' : 'always',
+    const record = { id: newId(), text: summary, kind, scope: 'always',
         origin: 'auto', pinned: false, knowledge: {}, knowledgeEvidence: {}, createdAt: Date.now(),
         retention: memoryRetention(kind, summary), reason: '제외된 제안을 사용자가 확인하고 직접 저장했어요.' };
     record.characterNames = collectedCharacterNames(null, [], entry);
@@ -723,7 +723,7 @@ export function applyMemoryOperations(value, operations, sourceChatId = '', opti
             if (prior && prior.text === op.text && JSON.stringify(prior.knowledge ?? {}) === JSON.stringify(op.knowledge)
                 && JSON.stringify(prior.knowledgeEvidence ?? {}) === JSON.stringify(op.knowledgeEvidence ?? {})
                 && (!op.progress || op.progress === commitmentState(prior))) { skip(op, 'unchanged', prior); continue; }
-            const next = { id: newId(), text: op.text, kind: op.kind, scope: ['state', 'temporary'].includes(op.kind) ? 'scene' : 'always', active: true, origin: 'auto', retention: op.retention || memoryRetention(op.kind, op.text, op.reason),
+            const next = { id: newId(), text: op.text, kind: op.kind, scope: 'always', active: true, origin: 'auto', retention: op.retention || memoryRetention(op.kind, op.text, op.reason),
                 sourceChatId, sourceId: op.sourceId, sourceText: op.sourceText, sourceSignature: op.sourceSignature, importance: op.importance,
                 knowledge: normalizeKnowledge(op.knowledge), knowledgeEvidence: normalizeKnowledgeEvidence(op.knowledgeEvidence, op.knowledge), reason: op.reason, createdAt: Date.now() };
             if (op.kind === 'commitment') next.commitment = advanceCommitment(prior, op, sourceChatId);
