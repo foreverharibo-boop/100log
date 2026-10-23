@@ -101,6 +101,168 @@ function harness(handler) {
 }
 function cancellableHarness(handler=()=>reply()){return harness(handler);}
 
+for (const conflict of [false, true]) test(`reloaded 100LOG resumes frozen facts and retained reply, conflict=${conflict}`, async () => {
+    const old = harness(() => reply());
+    let checkpoint;
+    old.sandbox.sillyRelayReplies = { expectReview(owner, value) {
+        assert.equal(owner, 'hundredlog'); checkpoint = structuredClone(value);
+    } };
+    await old.prepare();
+    assert.ok(checkpoint.facts.length); assert.doesNotMatch(JSON.stringify(checkpoint), /fake-key/);
+    old.sandbox.stopReviewJob();
+    const fresh = harness((_u, _o, n) => reply(200, answer(conflict && n === 1 ? 'contradiction' : 'no_conflict')));
+    let finished = 0;
+    fresh.sandbox.sillyRelayReplies = { apiVersion: 1,
+        beginReview(index, message, signal, options) {
+            assert.equal(index, 1); assert.equal(options.owner, 'hundredlog'); assert.equal(options.resuming, true);
+            assert.equal(options.checkpoint.facts[0].text, checkpoint.facts[0].text);
+            return { capture: (_prompt, action) => action(), completeMessage: () => finished++, cancel() {} };
+        },
+    };
+    const message = { is_user: false, name: 'Speaker', mes: 'Retained server answer', extra: {}, swipe_id: 0,
+        swipes: ['Retained server answer'], swipe_info: [{ extra: {} }] };
+    fresh.ctx.chat.push(message);
+    await fresh.sandbox.sillyRelayReviewers.hundredlog.resume({ checkpoint, index: 1, message });
+    assert.equal(message.mes, conflict ? 'CORRECTED' : 'Retained server answer');
+    assert.equal(fresh.generationCount(), conflict ? 1 : 0, 'only a real conflict generates a rewrite');
+    assert.equal(finished, 1); assert.equal(fresh.masks.size, 0);
+    assert.equal(fresh.sandbox.busy, false);
+});
+
+test('disabled 100LOG keeps a pending recovered review instead of silently approving it', async () => {
+    const h = harness(() => reply());
+    h.sandbox.settings = () => ({ autoMemory: true, reviewEnabled: false });
+    const message = { is_user: false, mes: 'Retained' }; h.ctx.chat.push(message);
+    await assert.rejects(() => h.sandbox.sillyRelayReviewers.hundredlog.resume({
+        checkpoint: { key: 'chat-a', mode: 'normal', facts: [{ text: 'Frozen fact' }] }, index: 1, message,
+    }), /Jev/);
+    assert.equal(h.generationCount(), 0); assert.equal(h.requests.length, 0);
+});
+
+test('resuming a completed rewrite does not reset the one-rewrite review budget', async () => {
+    const h = harness(() => reply(200,answer('contradiction')));
+    const message = { is_user: false, name: 'Speaker', mes: 'Already rewritten', extra: {}, swipe_id: 0,
+        swipes: ['Already rewritten'], swipe_info: [{ extra: {} }] };
+    h.ctx.chat.push(message);
+    await h.sandbox.sillyRelayReviewers.hundredlog.resume({ checkpoint: { key: 'chat-a', mode: 'normal', attempt: 1,
+        facts: [{ id: 'fact', text: 'Frozen fact', active: true, knowledge: {} }], activeContext: 'facts' }, index: 1, message });
+    assert.equal(h.generationCount(),0); assert.equal(message.mes,'Already rewritten');
+    assert.equal(h.sandbox.data().chatState.lastReview.status,'conflicts_remaining');
+});
+
+for (const mode of ['normal', 'regenerate', 'swipe']) for (const stream of [false, true])
+test(`real Relay HTTP resumes ttotto then 100LOG after a fresh page: ${mode}, stream=${stream}`,
+    { skip: !process.env.SILLY_RELAY_TEST_ROOT || !process.env.TTOTTO_TEST_INDEX }, async t => {
+    const { createServer } = await import('node:http');
+    const root = process.env.SILLY_RELAY_TEST_ROOT;
+    const { createRelay } = await import(root + '/server/index.cjs');
+    const { createRecovery } = await import(root + '/recovery.mjs');
+    const { createTransport } = await import(root + '/transport.mjs');
+    const { createReplyFilter } = await import(root + '/reply-filter.mjs');
+    const { createReplySessions } = await import(root + '/reply-session.mjs');
+    const previous = Object.fromEntries(['fetch','SillyTavern','localStorage','toastr','sillyRelayReplies','sillyRelayReviewers'].map(key => [key,globalThis[key]]));
+    const nativeFetch = globalThis.fetch;
+    const h = harness((_url, _options, n) => reply(200, answer(n === 1 ? 'contradiction' : 'no_conflict')));
+    const ctx = h.ctx;
+    Object.assign(ctx, { characterId: 0, characters: [{ avatar: 'test.png', name: 'Speaker' }], groups: [], name1: 'User',
+        extensionSettings: { ttotto: { enabled: true, responseGuardEnabled: true, globalBans: ['jaw'], globalStructureBans: [],
+            echoPreventionEnabled: false, responseGuardMaxRewrites: 1 } },
+        chatMetadata: { ttotto: { enabled: true, banOffenseVersion: 3, smart: { patterns: [], messageKeys: [] } } },
+        oaiSettings: { prompts: [], prompt_order: [] }, saveMetadataDebounced() {} });
+    Object.assign(ctx.eventTypes, { APP_READY: 'ready', GENERATION_STARTED: 'start', CHAT_CHANGED: 'changed', CHAT_COMPLETION_SETTINGS_READY: 'settings' });
+    let disk = structuredClone(ctx.chat), generations = 0, module, page;
+    const recoveryNotes = [];
+    ctx.saveChat = async () => { disk = structuredClone(ctx.chat); };
+    const routes = [], relay = createRelay({ pollMs: 10 });
+    relay.install(Object.fromEntries(['get','post'].map(method => [method, (route, fn) => routes.push({ method: method.toUpperCase(), route, fn })])));
+    const server = createServer(async (req, res) => {
+        res.status = code => { res.statusCode = code; return res; };
+        res.json = value => { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify(value)); };
+        req.user = { profile: { handle: 'fixture' } };
+        const chunks = []; for await (const c of req) chunks.push(c); req.body = JSON.parse(Buffer.concat(chunks).toString() || '{}');
+        const url = new URL(req.url, 'http://localhost'); req.query = Object.fromEntries(url.searchParams);
+        if (url.pathname === '/api/backends/chat-completions/generate') {
+            generations++;
+            const text = req.body.type === 'quiet' ? '100LOG final' : generations === 1 ? 'His jaw tightened.' : 'He opened the door.';
+            if (req.body.stream) {
+                res.setHeader('content-type','text/event-stream');
+                return res.end('data: ' + JSON.stringify({ choices: [{ delta: { content: text }, finish_reason: 'stop' }] }) + '\n\ndata: [DONE]\n\n');
+            }
+            return res.json({ choices: [{ message: { content: text } }] });
+        }
+        for (const route of routes) {
+            const match = url.pathname.replace('/api/plugins/silly-relay', '').match(new RegExp('^' + route.route.replace(':id', '([a-f0-9]+)') + '$'));
+            if (route.method === req.method && match) { req.params = { id: match[1] }; return route.fn(req, res); }
+        }
+        res.status(404).json({ error: 'missing' });
+    });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    const origin = 'http://127.0.0.1:' + server.address().port;
+    const entries = new Map(), storage = { getItem: key => entries.get(key), setItem: (key,value) => entries.set(key,value) };
+    const request = async (url, init) => url === '/api/chats/get'
+        ? Response.json([{ chat_metadata: {} }, ...structuredClone(disk)]) : nativeFetch(url, init);
+    function makePage() {
+        const filter = createReplyFilter(); let recovery, sessions;
+        const transport = createTransport({ origin, fetchImpl: request, enabled: () => true, shouldRelay: filter.take,
+            prepareRecovery: data => recovery.prepare(data), onEvent: (type,data) => recovery.event(type,data) });
+        recovery = createRecovery({ getContext: () => ctx, storage, tabId: 'same-pwa', fetchImpl: request,
+            getHeaders: ctx.getRequestHeaders, api: transport.api,
+            notify: text => recoveryNotes.push(text), diagnostic: text => recoveryNotes.push(text),
+            resumeReview: async data => {
+                if (data.checkpoint.owner === 'hundredlog') return { postprocess: (index,message) =>
+                    h.sandbox.sillyRelayReviewers.hundredlog.resume({ index,message,checkpoint: data.checkpoint.checkpoint }) };
+                await globalThis.sillyRelayReviewers.ttotto.resume({ body: JSON.parse(data.context.body), checkpoint: data.checkpoint.checkpoint,
+                    response: new Response(data.raw, { headers: { 'x-silly-relay-job': data.record.jobId } }), session: sessions.resume(data.record,data.context) });
+                return { resumed: true };
+            } });
+        sessions = createReplySessions({ enabled: () => true, recovery, transport, consume: filter.consume, captureQuiet: filter.captureQuiet });
+        return { recovery, transport, filter, sessions };
+    }
+    const screen = [];
+    ctx.addOneMessage = message => screen.push(message.mes);
+    ctx.eventSource.on('received', index => { ctx.chat[index].extra.display_text = '번역 ' + ctx.chat[index].mes; });
+    try {
+        globalThis.SillyTavern = { getContext: () => ctx };
+        globalThis.localStorage = { getItem: () => null, setItem() {}, removeItem() {} };
+        globalThis.toastr = { info() {}, warning() {}, error() {}, success() {} };
+        globalThis.fetch = request;
+        module = await import(process.env.TTOTTO_TEST_INDEX + '?relay-resume-full-' + mode + '-' + stream); module.onEnable();
+        await ctx.eventSource.emit('start',mode);
+        page = makePage(); globalThis.sillyRelayReplies = h.sandbox.sillyRelayReplies = page.sessions;
+        page.recovery.generationStarted(mode); page.recovery.dataReady({},false); await h.prepare(mode);
+        if (mode === 'swipe') {
+            ctx.chat.at(-1).name = 'Speaker'; disk = structuredClone(ctx.chat);
+            ctx.chat.at(-1).swipe_id = ctx.chat.at(-1).swipes.length; ctx.chat.at(-1).mes = '...';
+        }
+        const body = { type: mode, stream, model: 'fixture', messages: [{ role: 'user', content: 'hello' }] };
+        const plan = module.createResponseGuardPlan(body);
+        const session = page.sessions.begin({ owner: 'ttotto', checkpoint: { plan, attempt: 0 } });
+        await (await session.fetch(origin + '/api/backends/chat-completions/generate', { method: 'POST', body: JSON.stringify(body) })).text();
+        page.recovery.stop(); h.sandbox.stopReviewJob(); ctx.chat = structuredClone(disk);
+        page = makePage(); globalThis.sillyRelayReplies = h.sandbox.sillyRelayReplies = page.sessions;
+        globalThis.fetch = page.transport.fetch;
+        ctx.generateQuietPrompt = async ({ quietPrompt }) => {
+            page.filter.generationStarted('quiet', { quiet_prompt: quietPrompt }); page.recovery.generationStarted('quiet');
+            try {
+                const prompt = [{ role: 'user', content: quietPrompt }], data = { type: 'quiet', messages: prompt, model: 'fixture' };
+                page.filter.dataReady({ prompt }); page.filter.settingsReady(data);
+                const response = await page.transport.fetch(origin + '/api/backends/chat-completions/generate', { method: 'POST', body: JSON.stringify(data) });
+                return (await response.json()).choices[0].message.content;
+            } finally { page.filter.generationEnded(); page.recovery.generationEnded(); }
+        };
+        await page.recovery.recover();
+        assert.equal(generations, 3, 'one original, one ban rewrite, one continuity rewrite: ' + recoveryNotes.join('; '));
+        assert.equal(disk.at(-1).mes, '100LOG final'); assert.equal(disk.at(-1).extra.display_text, '번역 100LOG final');
+        if (mode === 'swipe') assert.deepEqual(disk.at(-1).swipes, ['OLD', '100LOG final']);
+        assert.ok(screen.length); assert.ok(screen.every(text => text === '100LOG final'), 'never display either draft');
+        assert.equal(page.recovery.list().length, 0);
+    } finally {
+        page?.recovery.stop(); module?.onDisable(); relay.close(); server.closeAllConnections();
+        await new Promise(resolve => server.close(resolve));
+        for (const [key,value] of Object.entries(previous)) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; }
+    }
+});
+
 for (const mode of ['normal', 'swipe', 'regenerate']) for (const streaming of [false, true]) {
     test(`${mode}, streaming=${streaming}: inject facts, inspect native reply, preserve passed text/metadata`, async () => {
         const h=harness(()=>reply()); await h.prepare(mode);

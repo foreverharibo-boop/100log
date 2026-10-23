@@ -1,13 +1,13 @@
-import { createFileStorage } from './file-storage.js?v=1.10.9';
-import { compactConfig, shortSignature, pruneDeletedRoomProgress, renameRoom } from './retention.js?v=1.10.9';
-import { roomScope, selectedMemoryStore, separateRoomMemory, resetRoomMemory, memoryCopySources } from './memory-scope.js?v=1.10.9';
-import { createNativeReview } from './native-review.js?v=1.10.9';
-import { retryCapacityOperations, evictOldestMemories, normalizeMemoryLimit } from './memory-engine.js?v=1.10.9';
-import { availableSupportingEvidence, normalizeAliases, canonicalName, linkAlias, resolveFactNames, normalizeSupportingEvidence, addRejectedMemory } from './continuity-tools.js?v=1.10.9';
-import { applyManualKnowledgeDraft, collectedCharacterNames, sortMemoriesByCollection, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, omissionReviewRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js?v=1.10.9';
-import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, supportsBackgroundUtility, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js?v=1.10.9';
-import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js?v=1.10.9';
-import { normalizeKnowledgeEvidence, KNOWLEDGE_LABELS, COMMITMENT_LABELS, commitmentState } from './core.js?v=1.10.9';
+import { createFileStorage } from './file-storage.js?v=1.10.10';
+import { compactConfig, shortSignature, pruneDeletedRoomProgress, renameRoom } from './retention.js?v=1.10.10';
+import { roomScope, selectedMemoryStore, separateRoomMemory, resetRoomMemory, memoryCopySources } from './memory-scope.js?v=1.10.10';
+import { createNativeReview } from './native-review.js?v=1.10.10';
+import { retryCapacityOperations, evictOldestMemories, normalizeMemoryLimit } from './memory-engine.js?v=1.10.10';
+import { availableSupportingEvidence, normalizeAliases, canonicalName, linkAlias, resolveFactNames, normalizeSupportingEvidence, addRejectedMemory } from './continuity-tools.js?v=1.10.10';
+import { applyManualKnowledgeDraft, collectedCharacterNames, sortMemoriesByCollection, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, omissionReviewRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js?v=1.10.10';
+import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, supportsBackgroundUtility, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js?v=1.10.10';
+import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js?v=1.10.10';
+import { normalizeKnowledgeEvidence, KNOWLEDGE_LABELS, COMMITMENT_LABELS, commitmentState } from './core.js?v=1.10.10';
 
 const NAME = 'hundredlog';
 const LEGACY_NAME = 'memorybean';
@@ -2074,6 +2074,8 @@ async function performMemorySync({ rebuildRecent = false, force = false, reviewO
 export function installMemoryHooks(ctx = context()) {
     if (memoryHooksInstalled) return;
     memoryHooksInstalled = true;
+    globalThis.sillyRelayReviewers ||= Object.create(null);
+    globalThis.sillyRelayReviewers.hundredlog = { kind: 'message', resume: resumeHundredlogReview };
     nativeReview = createNativeReview({ context, chatKey,
         review: (job, message) => runReceivedReview(job, message),
         released: (job) => {
@@ -2277,6 +2279,42 @@ async function applyReviewedReply(text, job, message) {
     ctx.updateMessageBlock?.(job.index, message);
 }
 
+function relayReviewCheckpoint(job) {
+    return { key: job.key, mode: job.mode, facts: job.facts, activeContext: job.activeContext,
+        attempt: job.rewriteAttempt || 0,
+        ...(job.selectionStats ? { selectionStats: job.selectionStats } : {}) };
+}
+
+async function resumeHundredlogReview({ checkpoint, index, message }) {
+    await initializeFileStorage();
+    const ctx = context();
+    if (checkpoint?.key !== chatKey(ctx) || !Array.isArray(checkpoint.facts) || !checkpoint.facts.length
+        || ctx.chat[index] !== message || ctx.chat.length !== index + 1) throw new Error('원래 채팅의 100LOG 검수 정보를 확인하지 못했어요.');
+    if (!settings().autoMemory || !settings().reviewEnabled || !apiKey()) throw new Error('100LOG 검수 설정과 Jev 연결을 확인해 주세요. 서버의 답장은 유지합니다.');
+    if (busy || activeReviewJob || extracting && !activeCollectionJob?.backgroundSafe || translating && !translationBackgroundSafe) {
+        throw new Error('100LOG의 현재 작업이 끝난 뒤 답장 검수를 이어받을 수 있어요.');
+    }
+    const job = { ...structuredClone(checkpoint), rewriteAttempt: checkpoint.attempt || 0,
+        controller: new AbortController(), publishing: false, relayResume: true };
+    // Arm the normal mask/validation against the original prefix, then receive
+    // this retained answer. No replacement draft generation is involved.
+    let arming = true;
+    const observer = createNativeReview({
+        context: () => arming && job.mode !== 'swipe' ? { ...context(), chat: context().chat.slice(0, index) } : context(),
+        chatKey, review: runReceivedReview,
+        released() { if (activeReviewJob === job) activeReviewJob = null; busy = false; render(); },
+    });
+    activeReviewJob = job; busy = true;
+    try {
+        observer.arm(job); arming = false;
+        await observer.receive(index, job.mode);
+    } finally {
+        observer.cancel();
+        if (activeReviewJob === job) activeReviewJob = null;
+        busy = false;
+    }
+}
+
 async function runReceivedReview(job, message) {
     const { key, mode, selectionStats, activeContext, facts } = job;
     const draft = String(message.mes ?? '');
@@ -2286,7 +2324,9 @@ async function runReceivedReview(job, message) {
     let relay = null;
     try {
         if (globalThis.sillyRelayReplies?.apiVersion === 1) {
-            relay = globalThis.sillyRelayReplies.beginReview?.(job.index, message, job.controller.signal) ?? null;
+            relay = globalThis.sillyRelayReplies.beginReview?.(job.index, message, job.controller.signal, {
+                owner: 'hundredlog', checkpoint: relayReviewCheckpoint(job), resuming: !!job.relayResume,
+            }) ?? null;
         }
     } catch (error) { diagnosticError('릴레이 연동', error); }
     job.retryContext = { owner: job, validate: job.validate };
@@ -2333,13 +2373,15 @@ async function runReceivedReview(job, message) {
                 instruction: item.kind === 'knowledge_leak' ? '이 인물이 아직 모르는 정보를 행동이나 대사에 사용하지 않도록 재작성 요청'
                     : '이 규칙과 충돌하는 내용을 고치고 나머지 말투·언어·전개는 유지하도록 재작성 요청' })) });
         let final = draft;
-        if (flagged.length) {
+        if (flagged.length && !job.rewriteAttempt) {
             if (!job.validate()) throw reviewCancelledError();
             stage = '메인 AI 재작성';
             updateReport({ stage, rewriteRequested: true });
             status(`설정 충돌 ${flagged.length}곳을 발견했어요. 메인 AI에게 수정 요청 중이에요…`);
             try {
                 const quietPrompt = correctionPrompt(draft, flagged, activeContext);
+                job.rewriteAttempt = 1;
+                relay?.checkpoint?.(relayReviewCheckpoint(job));
                 const rewrite = () => {
                     const generate = () => ctx.generateQuietPrompt({ quietPrompt });
                     return relay ? relay.capture(quietPrompt, generate) : generate();
@@ -2357,6 +2399,8 @@ async function runReceivedReview(job, message) {
                 updateReport({ uncertain: again.uncertain || 0, remaining: again.length,
                     remainingRules: again.map((item) => item.fact.text) });
             } catch (error) { recoverReply(error); }
+        } else if (flagged.length) {
+            updateReport({ remaining: flagged.length, remainingRules: flagged.map(item => item.fact.text) });
         }
         if (!final) throw new Error('최종 답변이 비어 있어 게시하지 않았어요.');
         checkReviewJob(job);
@@ -2457,6 +2501,7 @@ globalThis.hundredlogGenerationInterceptor = async function (_promptChat, _size,
         if (chatKey(context()) !== job.key) throw reviewCancelledError();
         if (useReview) {
             nativeReview.arm(job);
+            globalThis.sillyRelayReplies?.expectReview?.('hundredlog', relayReviewCheckpoint(job));
             job.notification = globalThis.sillyPopNotifications?.apiVersion === 1
                 ? globalThis.sillyPopNotifications.beginReview('hundredlog', { type: mode, index: job.index, signal: job.controller.signal }) : null;
             nativeReview.prioritize?.();
@@ -2623,7 +2668,7 @@ async function main() {
     installMemoryHooks(ctx);
     if ($id('key')) { registerDeveloperTitle($id('title')); addWandButton(); return; }
     installStorageHooks(ctx);
-    const response = await diagnosticFetch(new URL('./settings.html?v=1.10.9', import.meta.url), { credentials: 'same-origin' });
+    const response = await diagnosticFetch(new URL('./settings.html?v=1.10.10', import.meta.url), { credentials: 'same-origin' });
     if (!response.ok) throw new Error(`설정 화면 파일을 읽지 못했어요 (${response.status}).`);
     const html = await response.text();
     // Keep the panel mounted for event bindings, but expose it only through the wand.
