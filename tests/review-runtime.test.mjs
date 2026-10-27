@@ -2,6 +2,7 @@ import { shortSignature, forgetFactCopies } from '../retention.js';
 import { createNativeReview } from '../native-review.js';
 import {messageSignature} from '../memory-engine.js';
 import * as continuity from '../continuity-tools.js';
+import { normalizeCollectionRanges } from '../collection-ranges.js';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
@@ -323,11 +324,12 @@ test('settings migration preserves existing JEV users; no-key or new installatio
     for (const [initial, key, expected] of [[{autoMemory:true},'key',true], [{autoMemory:true},'',false], [{},'key',false], [{autoMemory:true,reviewEnabled:false},'key',false]]) {
         const ctx = { extensionSettings: { hundredlog: initial } };
         const box = { fileStorage:{value:initial}, NAME:'hundredlog', LEGACY_NAME:'memorybean', MAX_FACTS:40, context:()=>ctx,
-            apiKey:()=>key, normalizeMemoryLimit:v=>Math.max(1,Math.min(40,Number(v)||30)) };
+            apiKey:()=>key, normalizeCollectionRanges, normalizeMemoryLimit:v=>Math.max(1,Math.min(40,Number(v)||30)) };
         vm.createContext(box); vm.runInContext(settingsCode,box);
         const config = box.settings();
         assert.equal(config.reviewEnabled, expected); assert.equal(config.autoEvict, false);
         assert.equal(config.memoryLimit, 30);
+        assert.deepEqual(config.collectionExcludedRanges, []);
         config.reviewEnabled = false; assert.equal(box.settings().reviewEnabled, false);
     }
 });

@@ -250,6 +250,13 @@
 
 
 /* Room memory controls use the active SillyTavern theme. */
+#hundredlog .hundredlog-range-inputs, #hundredlog .hundredlog-range-row { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto; gap:6px; align-items:end; margin:6px 0; }
+#hundredlog .hundredlog-range-inputs label { min-width:0; margin:0; }
+#hundredlog .hundredlog-range-inputs label > span { display:block; font-size:12px; margin-bottom:4px; }
+#hundredlog .hundredlog-range-inputs input { min-width:0; width:100%; margin:0; height:32px !important; min-height:32px !important; padding:4px 6px !important; }
+#hundredlog .hundredlog-range-inputs .menu_button, #hundredlog .hundredlog-range-row .menu_button { margin:0; padding:4px 8px; min-height:32px; white-space:nowrap; }
+#hundredlog .hundredlog-range-row { align-items:center; }
+#hundredlog .hundredlog-range-row code { min-width:0; white-space:pre-wrap; overflow-wrap:anywhere; color:inherit; background:transparent; }
 #hundredlog .hundredlog-scope-choice { border-top: 1px solid var(--SmartThemeBorderColor); margin-top: 10px; padding-top: 8px; }
 #hundredlog .hundredlog-scope-choice[hidden] { display: none; }
 #hundredlog .hundredlog-scope-choice .hundredlog-actions { flex-wrap: wrap; }

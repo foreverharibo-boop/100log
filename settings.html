@@ -58,6 +58,19 @@
         <p class="hundredlog-help">자동 저장되며 다음 수집부터 적용돼요.</p>
       </section>
       <section class="hundredlog-settings-block">
+        <div class="hundredlog-section-title"><strong>수집 제외 구간</strong></div>
+        <p class="hundredlog-help">시작·끝 표시와 그 사이 내용을 빼고 수집해요. 모든 채팅에 적용돼요.</p>
+        <div class="hundredlog-range-inputs">
+          <label><span>시작 표시</span><input id="hundredlog-range-start" type="text" maxlength="500" placeholder="&lt;info&gt;" spellcheck="false" autocomplete="off"></label>
+          <label><span>끝 표시</span><input id="hundredlog-range-end" type="text" maxlength="500" placeholder="&lt;/info&gt;" spellcheck="false" autocomplete="off"></label>
+          <button type="button" id="hundredlog-range-add" class="menu_button">추가</button>
+        </div>
+        <div id="hundredlog-collection-ranges" role="group" aria-label="등록한 수집 제외 구간"></div>
+        <p id="hundredlog-range-feedback" class="hundredlog-help" role="status" aria-live="polite"></p>
+        <p class="hundredlog-help">대소문자·띄어쓰기까지 같아야 해요. 끝 표시가 없으면 이후 내용을 제외해요.</p>
+        <p class="hundredlog-help">다음 수집부터 적용돼요. 원본 대화와 기존 기억은 그대로예요.</p>
+      </section>
+      <section class="hundredlog-settings-block">
         <div class="hundredlog-section-title"><strong>수집에서 제외된 항목</strong><button type="button" id="hundredlog-collection-exclusions-clear" class="menu_button">내역 지우기</button></div>
         <p id="hundredlog-collection-exclusions-summary" class="hundredlog-help" aria-live="polite"></p>
         <p class="hundredlog-help">제외 이유를 확인하고 직접 저장할 수 있어요.</p>

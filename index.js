@@ -1,13 +1,15 @@
-import { createFileStorage } from './file-storage.js?v=1.10.10';
-import { compactConfig, shortSignature, pruneDeletedRoomProgress, renameRoom } from './retention.js?v=1.10.10';
-import { roomScope, selectedMemoryStore, separateRoomMemory, resetRoomMemory, memoryCopySources } from './memory-scope.js?v=1.10.10';
-import { createNativeReview } from './native-review.js?v=1.10.10';
-import { retryCapacityOperations, evictOldestMemories, normalizeMemoryLimit } from './memory-engine.js?v=1.10.10';
-import { availableSupportingEvidence, normalizeAliases, canonicalName, linkAlias, resolveFactNames, normalizeSupportingEvidence, addRejectedMemory } from './continuity-tools.js?v=1.10.10';
-import { applyManualKnowledgeDraft, collectedCharacterNames, sortMemoriesByCollection, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, omissionReviewRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js?v=1.10.10';
-import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, supportsBackgroundUtility, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js?v=1.10.10';
-import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js?v=1.10.10';
-import { normalizeKnowledgeEvidence, KNOWLEDGE_LABELS, COMMITMENT_LABELS, commitmentState } from './core.js?v=1.10.10';
+import { createFileStorage } from './file-storage.js?v=1.10.11';
+import { compactConfig, shortSignature, pruneDeletedRoomProgress, renameRoom } from './retention.js?v=1.10.11';
+import { roomScope, selectedMemoryStore, separateRoomMemory, resetRoomMemory, memoryCopySources } from './memory-scope.js?v=1.10.11';
+import { createNativeReview } from './native-review.js?v=1.10.11';
+import { retryCapacityOperations, evictOldestMemories, normalizeMemoryLimit } from './memory-engine.js?v=1.10.11';
+import { availableSupportingEvidence, normalizeAliases, canonicalName, linkAlias, resolveFactNames, normalizeSupportingEvidence, addRejectedMemory } from './continuity-tools.js?v=1.10.11';
+import { applyManualKnowledgeDraft, collectedCharacterNames, sortMemoriesByCollection, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, omissionReviewRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js?v=1.10.11';
+import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, supportsBackgroundUtility, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js?v=1.10.11';
+import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js?v=1.10.11';
+import { normalizeKnowledgeEvidence, KNOWLEDGE_LABELS, COMMITMENT_LABELS, commitmentState } from './core.js?v=1.10.11';
+
+import { normalizeCollectionRanges, stripCollectionRanges } from './collection-ranges.js?v=1.10.11';
 
 const NAME = 'hundredlog';
 const LEGACY_NAME = 'memorybean';
@@ -28,6 +30,7 @@ let activeReviewJob = null;
 let extracting = false;
 let activeCollectionJob = null;
 let collectionStatusText = '';
+let rangeSettingsSaving = false;
 const excludedMemoryDrafts = new WeakMap();
 const knowledgeEditorDrafts = new WeakMap();
 let translating = false;
@@ -679,6 +682,7 @@ function settings() {
     config.memoryLimit = normalizeMemoryLimit(config.memoryLimit);
     config.autoCleanup ??= true;
     config.collectionIntensity = ['detailed', 'balanced', 'meaningful'].includes(config.collectionIntensity) ? config.collectionIntensity : 'balanced';
+    config.collectionExcludedRanges = normalizeCollectionRanges(config.collectionExcludedRanges);
     config.cleanupThreshold = cleanupThreshold(config.cleanupThreshold, 20);
     config.extractionProfileId ??= '';
     config.translationProfileId ??= '@extraction';
@@ -1267,6 +1271,57 @@ function renderCollectionOptions(value, working) {
     $id('collection-preferences-reset').disabled = working || !value;
 }
 
+function renderCollectionRanges(working) {
+    const list = $id('collection-ranges');
+    if (!list) return;
+    working ||= rangeSettingsSaving;
+    for (const id of ['range-start', 'range-end', 'range-add']) $id(id).disabled = working;
+    list.replaceChildren();
+    const rules = settings().collectionExcludedRanges;
+    if (!rules.length) {
+        const empty = document.createElement('p'); empty.className = 'hundredlog-help';
+        empty.textContent = '등록된 제외 구간이 없어요.'; list.append(empty);
+    }
+    for (const [index, rule] of rules.entries()) {
+        const row = document.createElement('div'); row.className = 'hundredlog-range-row';
+        for (const [label, text] of [['시작', rule.start], ['끝', rule.end]]) {
+            const value = document.createElement('code'); value.textContent = text; value.title = label + ': ' + text;
+            value.setAttribute('aria-label', label + ': ' + text); row.append(value);
+        }
+        const remove = makeButton('삭제', async () => {
+            if (busy || extracting || translating || normalGenerating || rangeSettingsSaving) return;
+            const config = settings(), before = config.collectionExcludedRanges;
+            config.collectionExcludedRanges = before.filter((_, i) => i !== index);
+            rangeSettingsSaving = true; renderCollectionRanges(true);
+            try { await fileStorage.save(); $id('range-feedback').textContent = '제외 구간을 삭제했어요.'; }
+            catch (error) { config.collectionExcludedRanges = before; $id('range-feedback').textContent = error.message; }
+            finally { rangeSettingsSaving = false; render(); }
+        });
+        remove.disabled = working; row.append(remove); list.append(row);
+    }
+}
+
+function bindCollectionRanges() {
+    $id('range-add')?.addEventListener('click', async () => {
+        if (busy || extracting || translating || normalGenerating || rangeSettingsSaving) return;
+        const start = $id('range-start').value, end = $id('range-end').value;
+        const feedback = $id('range-feedback');
+        if (!start.trim() || !end.trim()) { feedback.textContent = '시작·끝 표시를 모두 입력해 주세요.'; return; }
+        const config = settings(), before = config.collectionExcludedRanges;
+        if (before.length >= 32) { feedback.textContent = '제외 구간은 최대 32개까지 등록할 수 있어요.'; return; }
+        const next = normalizeCollectionRanges([...before, { start, end }]);
+        if (next.length === before.length) { feedback.textContent = '이미 등록했거나 너무 긴 표시예요. 최대 500자까지 입력해 주세요.'; return; }
+        config.collectionExcludedRanges = next;
+        rangeSettingsSaving = true; renderCollectionRanges(true);
+        try {
+            await fileStorage.save();
+            $id('range-start').value = ''; $id('range-end').value = '';
+            feedback.textContent = '저장했어요. 다음 수집부터 적용돼요.';
+        } catch (error) { config.collectionExcludedRanges = before; feedback.textContent = error.message; }
+        finally { rangeSettingsSaving = false; render(); }
+    });
+}
+
 function renderCollectionExclusions(value, working) {
     const list = $id('collection-exclusions');
     if (!list) return;
@@ -1539,6 +1594,7 @@ function renderContent() {
     const working = busy || extracting || translating;
     renderMemoryScope(value, working || normalGenerating || Boolean(memoryRun));
     renderCollectionOptions(value, working);
+    renderCollectionRanges(working || normalGenerating);
     renderCollectionExclusions(value, working);
     renderContinuityTools(value, working || normalGenerating);
     $id('auto-memory').checked = settings().autoMemory;
@@ -1674,7 +1730,7 @@ function renderContent() {
     if ($id('status')) $id('status').textContent = statusText;
 }
 
-function sourceRows(ctx, start, offset = 0, total = ctx.chat.length, intensity = 'balanced') {
+function sourceRows(ctx, start, offset = 0, total = ctx.chat.length, intensity = 'balanced', excludedRanges = []) {
     const rows = [];
     let i = start;
     let remaining = intensity === 'detailed' ? 12000 : 18000;
@@ -1682,9 +1738,9 @@ function sourceRows(ctx, start, offset = 0, total = ctx.chat.length, intensity =
     for (; i < Math.min(total, start + messageLimit) && remaining > 0;) {
         const msg = ctx.chat[i];
         if (!msg || msg.is_system || msg.is_hidden || msg.hidden || typeof msg.mes !== 'string' || !msg.mes.trim()) { i++; offset = 0; continue; }
-        const text = msg.mes.trim();
+        const text = excludedRanges.length ? stripCollectionRanges(msg.mes.trim(), excludedRanges, true) : msg.mes.trim();
         const piece = text.slice(offset, offset + remaining);
-        rows.push({ id: i, name: msg.name ?? (msg.is_user ? ctx.name1 : ctx.name2), text: piece, partStart: offset });
+        if (piece.trim()) rows.push({ id: i, name: msg.name ?? (msg.is_user ? ctx.name1 : ctx.name2), text: piece, partStart: offset });
         offset += piece.length;
         remaining -= piece.length;
         if (offset < text.length) break;
@@ -1694,14 +1750,15 @@ function sourceRows(ctx, start, offset = 0, total = ctx.chat.length, intensity =
     return { rows, nextCursor: i, nextOffset: offset };
 }
 
-function recentCleanupRows(ctx) {
+function recentCleanupRows(ctx, excludedRanges = []) {
     const start = recentWindowStart(ctx.chat);
     const result = [];
     let remaining = 30000;
     for (let id = ctx.chat.length - 1; id >= start && remaining > 0; id--) {
         const message = ctx.chat[id];
         if (!isVisibleChatMessage(message)) continue;
-        const full = String(message.mes).trim();
+        const full = excludedRanges.length ? stripCollectionRanges(String(message.mes).trim(), excludedRanges) : String(message.mes).trim();
+        if (!full.trim()) continue;
         const text = full.slice(Math.max(0, full.length - Math.min(1600, remaining)));
         result.push({ id, role: message.is_user ? 'user' : 'character', name: message.name ?? (message.is_user ? ctx.name1 : ctx.name2), text });
         remaining -= text.length;
@@ -1747,7 +1804,7 @@ async function applyEvictionSetting() {
 async function runAutomaticCleanup(value, ctx, profileId, sameChat, job = null, { force = false } = {}) {
     const active = value.facts.filter((fact) => fact.active && isCurrent(fact));
     if (!active.length || (!force && (!settings().autoCleanup || active.length < settings().cleanupThreshold))) return { merged: 0, archived: 0, conflicts: 0, changes: [], skipped: true };
-    const rows = recentCleanupRows(ctx);
+    const rows = recentCleanupRows(ctx, settings().collectionExcludedRanges);
     const signature = cleanupSignature(active, ctx, rows);
     if (!force && value.lastCleanupSignature === signature) return { merged: 0, archived: 0, conflicts: value.cleanupConflicts?.length ?? 0, changes: [], skipped: true };
     const sources = rows.map(row => ({ id: row.id, signature: messageSignature(ctx.chat[row.id]) }));
@@ -1956,7 +2013,7 @@ async function performMemorySync({ rebuildRecent = false, force = false, reviewO
         while ((reviewOnly ? reviewCursor : auto.cursor) < end && !stopExtractionRequested) {
             if (!sameChat()) return;
             const start = reviewOnly ? reviewCursor : auto.cursor, offset = reviewOnly ? reviewOffset : auto.offset;
-            const batch = sourceRows(ctx, start, offset, end, settings().collectionIntensity);
+            const batch = sourceRows(ctx, start, offset, end, settings().collectionIntensity, settings().collectionExcludedRanges);
             const rows = batch.rows.filter((row) => !/^\s*(?:\(OOC\s*:[^()]*\)|\[OOC\s*:[^\[\]]*\])\s*$/i.test(row.text))
                 .map((row) => ({ ...row, role: ctx.chat[row.id].is_user ? 'user' : 'character', signature: messageSignature(ctx.chat[row.id]) }));
             rows.filter((row) => row.role === 'character').forEach((row) => analyzedAssistantIds.add(row.id));
@@ -1965,7 +2022,10 @@ async function performMemorySync({ rebuildRecent = false, force = false, reviewO
             for (let id = start; id < Math.min(end, batch.nextCursor + (batch.nextOffset ? 1 : 0)); id++) tracked.push({ id, signature: messageSignature(ctx.chat[id]) });
             const contextRows = ctx.chat.map((message, id) => ({ message, id })).slice(recentWindowStart(ctx.chat), start)
                 .filter(({ message }) => isVisibleChatMessage(message)).slice(-8)
-                .map(({ message, id }) => ({ id, signature: messageSignature(message), name: message.name, text: String(message.mes ?? '').slice(-1800) }));
+                .map(({ message, id }) => ({ id, signature: messageSignature(message), name: message.name,
+                    text: (settings().collectionExcludedRanges?.length
+                        ? stripCollectionRanges(message.mes, settings().collectionExcludedRanges) : String(message.mes ?? '')).slice(-1800) }))
+                .filter(row => row.text.trim());
             for (const row of contextRows) if (!tracked.some((item) => item.id === row.id)) tracked.push({ id: row.id, signature: row.signature });
             const progress = recentWindowProgress(ctx.chat.slice(0, end), start);
             setCollectionStatus(`최근 ${RECENT_MESSAGE_LIMIT}개 대화 ${reviewOnly ? '누락 재확인' : '수집'} 중 · ${progress.completed}/${progress.total} · 규칙 ${changed}개 반영`);
@@ -2668,7 +2728,7 @@ async function main() {
     installMemoryHooks(ctx);
     if ($id('key')) { registerDeveloperTitle($id('title')); addWandButton(); return; }
     installStorageHooks(ctx);
-    const response = await diagnosticFetch(new URL('./settings.html?v=1.10.10', import.meta.url), { credentials: 'same-origin' });
+    const response = await diagnosticFetch(new URL('./settings.html?v=1.10.11', import.meta.url), { credentials: 'same-origin' });
     if (!response.ok) throw new Error(`설정 화면 파일을 읽지 못했어요 (${response.status}).`);
     const html = await response.text();
     // Keep the panel mounted for event bindings, but expose it only through the wand.
@@ -2683,6 +2743,7 @@ async function main() {
     });
     storageNotice();
     bindMemoryScope();
+    bindCollectionRanges();
     registerDeveloperTitle($id('title'));
     for (const view of ['memory', 'settings']) {
         $id(`tab-${view}`).addEventListener('click', () => showView(view));
