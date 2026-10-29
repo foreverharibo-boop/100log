@@ -71,6 +71,25 @@ export function resetCharacterMemory(root, chatId, length, roomLengths = []) {
     return selectedMemoryStore(root, chatId);
 }
 
+export function resetSharedMemory(root, chatId, length, roomLengths = []) {
+    if (!root || !chatId) throw new Error('캐릭터의 채팅을 먼저 열어 주세요.');
+    const checkpoints = new Map(roomLengths);
+    if (!roomScope(root, chatId)?.independent) checkpoints.set(String(chatId), length);
+    for (const [id, count] of checkpoints) if (typeof id !== 'string' || !id || !Number.isSafeInteger(count) || count < 0)
+        throw new Error('채팅의 마지막 위치를 확인하지 못해 삭제하지 않았어요.');
+    const replacement = { version: 2, uuid: root.uuid, facts: [], candidates: [], chats: {},
+        memoryResetAt: Date.now(), memoryResetVersion: 2 };
+    if (root.collectionPreferences) replacement.collectionPreferences = clone(root.collectionPreferences);
+    // Retain independent stores and their journals/cursors by reference, unchanged.
+    if (root.chatMemoryScopes !== undefined) replacement.chatMemoryScopes = root.chatMemoryScopes;
+    for (const [id, count] of checkpoints) {
+        if (!roomScope(root, id)?.independent) put(replacement.chats, id, freshState(count));
+    }
+    for (const key of Object.keys(root)) delete root[key];
+    for (const [key, value] of Object.entries(replacement)) put(root, key, value);
+    return root;
+}
+
 export function memoryCopySources(root, currentChatId) {
     if (!root) return [];
     const sources = [{ key: 'shared', label: '이 캐릭터의 공용 기억', store: root, shared: true }];

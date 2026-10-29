@@ -1,10 +1,11 @@
 // Read-only server snapshot used only by the explicit character-wide reset.
 // No RP text is sent to an AI or retained in the resulting checkpoint list.
-export async function captureCharacterRoomLengths(ctx, request = (...args) => fetch(...args)) {
+export async function captureCharacterRoomLengths(ctx, request = (...args) => fetch(...args), { excludedRoomIds = [] } = {}) {
     const avatar = ctx.characters?.[ctx.characterId]?.avatar;
     const currentId = String(ctx.chatId ?? '');
     if (!avatar || !currentId || ctx.groupId || !Array.isArray(ctx.chat)) throw new Error('캐릭터의 채팅을 먼저 열어 주세요.');
     const length = ctx.chat.length;
+    const excluded = new Set(excludedRoomIds);
     const last = JSON.stringify(ctx.chat.at(-1));
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 30000);
@@ -18,7 +19,7 @@ export async function captureCharacterRoomLengths(ctx, request = (...args) => fe
         const rooms = await post('/api/characters/chats', { avatar_url: avatar, simple: true });
         if (!Array.isArray(rooms) || !rooms.every(room => typeof room?.file_id === 'string' && room.file_id
             && room.file_name === room.file_id + '.jsonl')) throw new Error('채팅 목록을 확인하지 못해 기억을 삭제하지 않았어요.');
-        const ids = [...new Set(rooms.map(room => room.file_id))].filter(id => id !== currentId);
+        const ids = [...new Set(rooms.map(room => room.file_id))].filter(id => id !== currentId && !excluded.has(id));
         const checkpoints = new Array(ids.length);
         let next = 0;
         // Bound parallel reads for Termux servers. All must succeed before any deletion.
@@ -40,7 +41,13 @@ export async function captureCharacterRoomLengths(ctx, request = (...args) => fe
         }));
         if (ctx.chat.length !== length || JSON.stringify(ctx.chat.at(-1)) !== last)
             throw new Error('위치 확인 중 현재 대화가 바뀌었어요. 삭제하지 않았으니 다시 시도해 주세요.');
-        checkpoints.push([currentId, length]);
+        if (!excluded.has(currentId)) checkpoints.push([currentId, length]);
         return checkpoints;
     } finally { clearTimeout(timer); controller.abort(); }
+}
+
+export function captureSharedRoomLengths(ctx, root, request) {
+    const excludedRoomIds = Object.entries(root?.chatMemoryScopes ?? {})
+        .filter(([, scope]) => scope?.independent).map(([id]) => id);
+    return captureCharacterRoomLengths(ctx, request, { excludedRoomIds });
 }

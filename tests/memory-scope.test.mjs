@@ -229,6 +229,7 @@ function uiHarness() {
         busy: false, extracting: false, translating: false, normalGenerating: false, memoryRun: null,
         memoryEpoch: 0, sourceMutationTimer: null, collectionStatusText: '',
         captureCharacterRoomLengths: async ctx => [[String(ctx.chatId), ctx.chat.length]],
+        captureSharedRoomLengths: async (ctx,root) => scope.roomScope(root,ctx.chatId)?.independent ? [] : [[String(ctx.chatId),ctx.chat.length]],
         chatKey: c => `${c.characterId}:${c.chatId}`, stopCollection() {}, stopReviewJob() {}, clearTimeout,
         clearLegacyPrompt: async () => {}, refreshCollectionStatus() {}, save: async () => {}, status: s => h.status = s,
         makeButton: (label, fn) => { const b = new Element(); b.textContent = label; b.listeners.click = fn; return b; },
@@ -476,5 +477,93 @@ test('verified file save and reload keep deletion durable across every scope wit
     assert.equal(cleared.chats.a.autoMemory.cursor,8);assert.ok(cleared.memoryResetAt);
     assert.equal(JSON.stringify(reload.value.characterStores.other),otherBefore);
     assert.equal(reload.value.extractionProfileId,'profile');assert.equal(reload.value.collectionExcludedRanges.length,1);
+});
+
+for (const currentPrivate of [false,true]) test(`shared reset preserves independent stores exactly, current independent=${currentPrivate}`,()=>{
+    const root=fixture();root.facts[0].pinned=true;root.facts.push({...fact('manual'),origin:'manual'});
+    root.embeddingIndex={entries:{shared:{vector:[1]}}};root.lastReview={text:'old'};
+    const independent=scope.separateRoomMemory(root,'private',25,root);
+    independent.collectionPreferences.custom='private setting';
+    independent.chats.private.lastReview={text:'keep private report'};
+    const scopes=root.chatMemoryScopes, before=JSON.stringify(independent), preferences=JSON.stringify(root.collectionPreferences);
+    scope.resetSharedMemory(root,currentPrivate?'private':'a',currentPrivate?30:12,[['a',12],['b',20],['private',999]]);
+    assert.deepEqual(root.facts,[]);assert.deepEqual(root.candidates,[]);assert.equal(root.nameAliases,undefined);
+    assert.equal(root.rejectedMemories,undefined);assert.equal(root.embeddingIndex,undefined);assert.equal(root.lastReview,undefined);
+    assert.equal(root.chatMemoryScopes,scopes);assert.equal(scope.selectedMemoryStore(root,'private'),independent);
+    assert.equal(JSON.stringify(independent),before);assert.equal(root.chats.private,undefined);
+    assert.equal(root.chats.a.autoMemory.cursor,12);assert.equal(root.chats.b.autoMemory.cursor,20);
+    assert.deepEqual(root.chats.a.autoMemory.journal,[]);assert.equal(root.memoryResetVersion,2);
+    assert.equal(JSON.stringify(root.collectionPreferences),preferences);
+});
+
+test('invalid shared checkpoints cannot partially delete memories or independent stores',()=>{
+    const root=fixture();scope.separateRoomMemory(root,'private',5,root);const before=JSON.stringify(root);
+    assert.throws(()=>scope.resetSharedMemory(root,'a',3,[['other',-1]]));assert.equal(JSON.stringify(root),before);
+    assert.throws(()=>scope.resetSharedMemory(root,'',3));assert.equal(JSON.stringify(root),before);
+});
+
+test('shared reset with special room names preserves independent prototype-safe routing',()=>{
+    const root=fixture();const privateStore=scope.separateRoomMemory(root,'__proto__',5,root);
+    const before=JSON.stringify(privateStore);scope.resetSharedMemory(root,'a',12,[['constructor',4],['__proto__',999]]);
+    assert.equal(root.chats.constructor.autoMemory.cursor,4);assert.equal(JSON.stringify(scope.selectedMemoryStore(root,'__proto__')),before);
+    assert.equal({}.autoMemory,undefined);
+});
+
+test('shared delete confirmation and cancellation leave every memory unchanged',async()=>{
+    const h=uiHarness();scope.separateRoomMemory(h.root,'private',5,h.root);h.ctx.name2='Character';
+    const before=JSON.stringify(h.root);await h.get('shared-memory-reset').fire('click');
+    const message=h.get('memory-scope-choice').children[0].textContent;
+    assert.match(message,/Character/);assert.match(message,/공용 기억을 쓰는 모든 채팅방/);assert.match(message,/독립 채팅의 기억·수집 기록/);
+    assert.equal(JSON.stringify(h.root),before);await h.confirm('취소');assert.equal(JSON.stringify(h.root),before);
+});
+
+for(const currentPrivate of [false,true])test(`shared delete UI, current independent=${currentPrivate}: clears all shared rooms and leaves independent records`,async()=>{
+    const h=uiHarness();h.root.facts[0].pinned=true;
+    const independent=scope.separateRoomMemory(h.root,'private',1,h.root);
+    independent.collectionPreferences={focus:['secrets'],custom:'keep'};
+    if(currentPrivate)h.ctx.chatId='private';
+    h.box.render();const privateBefore=JSON.stringify(independent),chatBefore=JSON.stringify(h.ctx.chat);
+    let saves=0;h.box.save=async()=>{saves++};
+    h.box.captureSharedRoomLengths=async()=>[['a',1],['other-shared',16]];
+    await h.get('shared-memory-reset').fire('click');await h.confirm('공용 기억만 삭제');
+    assert.equal(saves,1);assert.equal(h.root.facts.length,0);assert.equal(h.root.chats['other-shared'].autoMemory.cursor,16);
+    assert.equal(scope.selectedMemoryStore(h.root,'private'),independent);assert.equal(JSON.stringify(independent),privateBefore);
+    assert.equal(JSON.stringify(h.ctx.chat),chatBefore);assert.match(h.status,/공용 기억만 삭제했어요/);
+    assert.equal(h.box.data(),currentPrivate?independent:h.root);
+});
+
+for(const phase of ['checkpoint','save'])test(`shared delete ${phase} failure never reports success or loses independent memories`,async()=>{
+    const h=uiHarness();scope.separateRoomMemory(h.root,'private',1,h.root);const before=JSON.stringify(h.root);
+    if(phase==='checkpoint')h.box.captureSharedRoomLengths=async()=>{throw Error('위치 확인 실패')};
+    else h.box.save=async()=>{throw Error('save failed')};
+    await h.get('shared-memory-reset').fire('click');await h.confirm('공용 기억만 삭제');
+    assert.equal(JSON.stringify(h.root),before);assert.doesNotMatch(h.status,/삭제했어요/);
+});
+
+test('shared delete is blocked by generation and cancelled by character switching during lookup',async()=>{
+    for(const phase of ['normalGenerating','extracting','translating','busy','memoryRun','switch']) {
+        const h=uiHarness(),before=JSON.stringify(h.root.facts);
+        if(phase==='switch')h.box.captureSharedRoomLengths=async()=>{h.ctx.characterId=1;return [['a',1]]};
+        await h.get('shared-memory-reset').fire('click');if(phase!=='switch')h.box[phase]=true;
+        await h.confirm('공용 기억만 삭제');assert.equal(JSON.stringify(h.root.facts),before);assert.equal(h.root.memoryResetAt,undefined);
+    }
+});
+
+test('verified file persistence keeps all independent records intact after a shared-only reset',async()=>{
+    let disk=null;
+    const request=async(url,options)=>{
+        if(url==='/api/files/upload'){disk=JSON.parse(Buffer.from(JSON.parse(options.body).data,'base64').toString('utf8'));return {ok:true,status:200};}
+        return {ok:!!disk,status:disk?200:404,json:async()=>JSON.parse(JSON.stringify(disk))};
+    };
+    const client=()=>createFileStorage({request,compact:compactConfig}),storage=client(),root=fixture();
+    scope.separateRoomMemory(root,'private',10,root);
+    await storage.init({characterStores:{current:root,other:fixture()},extractionProfileId:'profile'});
+    const live=storage.value.characterStores.current;
+    const privateBefore=JSON.stringify(live.chatMemoryScopes),otherBefore=JSON.stringify(storage.value.characterStores.other);
+    scope.resetSharedMemory(live,'a',15,[['a',15],['b',20]]);await storage.save();
+    const reload=client();await reload.init();const reloaded=reload.value.characterStores.current;
+    assert.equal(reloaded.facts.length,0);assert.equal(reloaded.chats.b.autoMemory.cursor,20);
+    assert.equal(JSON.stringify(reloaded.chatMemoryScopes),privateBefore);assert.equal(JSON.stringify(reload.value.characterStores.other),otherBefore);
+    assert.equal(reload.value.extractionProfileId,'profile');
 });
 

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { captureCharacterRoomLengths } from '../reset-checkpoints.js';
+import { captureCharacterRoomLengths, captureSharedRoomLengths } from '../reset-checkpoints.js';
 import { resetCharacterMemory, selectedMemoryStore, separateRoomMemory } from '../memory-scope.js';
 
 function harness() {
@@ -83,4 +83,17 @@ test('special filenames are data and cannot change prototypes',async()=>{
 test('invalid checkpoint counts fail without modifying any existing memory',()=>{
     const root={uuid:'id',facts:[{text:'keep'}],chats:{}};const before=JSON.stringify(root);
     assert.throws(()=>resetCharacterMemory(root,'current',10,[['old',-1]]));assert.equal(JSON.stringify(root),before);
+});
+
+for(const currentPrivate of [false,true])test(`shared checkpoint lookup excludes independent rooms entirely, current independent=${currentPrivate}`,async()=>{
+    const h=harness(),root={chatMemoryScopes:{'private-old':{independent:true,store:{facts:[{text:'keep'}]}}}};
+    if(currentPrivate)root.chatMemoryScopes.current={independent:true,store:{}};
+    const before=JSON.stringify(root);
+    const request=async(url,options)=>{
+        if(url==='/api/chats/get')assert.notEqual(JSON.parse(options.body).file_name,'private-old');
+        return h.request(url,options);
+    };
+    const checkpoints=await captureSharedRoomLengths(h.ctx,root,request),counts=Object.fromEntries(checkpoints);
+    assert.equal(counts['private-old'],undefined);assert.equal(counts.current,currentPrivate?undefined:10);
+    assert.equal(counts['shared-old'],12);assert.equal(counts.empty,0);assert.equal(JSON.stringify(root),before);
 });
