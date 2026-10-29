@@ -44,6 +44,30 @@ export function resetRoomMemory(root, chatId, length) {
     return store;
 }
 
+export function resetCharacterMemory(root, chatId, length) {
+    if (!root || !chatId) throw new Error('캐릭터의 채팅을 먼저 열어 주세요.');
+    const resetAt = Date.now();
+    const empty = source => {
+        const store = { version: 2, uuid: root.uuid, facts: [], candidates: [], chats: {}, memoryResetAt: resetAt };
+        if (source?.collectionPreferences) store.collectionPreferences = clone(source.collectionPreferences);
+        return store;
+    };
+    const replacement = empty(root);
+    // Preserve each room's independent/shared routing and collection preferences,
+    // but no facts, evidence, embeddings, aliases, reports or undo snapshots.
+    for (const [id, scope] of Object.entries(root.chatMemoryScopes ?? {})) {
+        if (!scope?.independent) continue;
+        replacement.chatMemoryScopes ??= {};
+        put(replacement.chatMemoryScopes, id, { independent: true, store: empty(scope.store) });
+    }
+    const current = selectedMemoryStore(replacement, chatId);
+    put(current.chats, String(chatId), freshState(length));
+    // Keep the character store identity held by the UI and active scope checks.
+    for (const key of Object.keys(root)) delete root[key];
+    for (const [key, value] of Object.entries(replacement)) put(root, key, value);
+    return selectedMemoryStore(root, chatId);
+}
+
 export function memoryCopySources(root, currentChatId) {
     if (!root) return [];
     const sources = [{ key: 'shared', label: '이 캐릭터의 공용 기억', store: root, shared: true }];
@@ -51,9 +75,9 @@ export function memoryCopySources(root, currentChatId) {
     for (const id of ids) {
         if (id === String(currentChatId)) continue;
         const scope = roomScope(root, id);
-        const shared = !scope?.independent;
-        const store = selectedMemoryStore(root, id);
-        if (store) sources.push({ key: `room:${id}`, label: `${id} · ${shared ? '공용 기억' : '독립 기억'}`, store, shared });
+        // All shared rooms point to root, already listed once above.
+        if (!scope?.independent || !scope.store) continue;
+        sources.push({ key: `room:${id}`, label: `${id} · 독립 기억`, store: scope.store, shared: false });
     }
     return sources;
 }
