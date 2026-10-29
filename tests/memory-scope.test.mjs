@@ -170,7 +170,7 @@ test('legacy migration does not refill a reset independent room on reopen', () =
 test('character reset survives reload; opening old shared/private rooms does not auto-recollect or reimport metadata', () => {
     const h=storageHarness(); const root=h.box.data();root.facts.push(fact('old'));
     scope.separateRoomMemory(root,'private',1,root);
-    scope.resetCharacterMemory(root,'a',h.ctx.chat.length);
+    scope.resetCharacterMemory(root,'a',h.ctx.chat.length,[['old-shared',30],['private',30]]);
     const reloaded=JSON.parse(JSON.stringify(h.config));
     h.config.characterStores=reloaded.characterStores;
     h.ctx.chatId='old-shared';h.ctx.chat=Array.from({length:30},()=>({is_user:false,mes:'old reply'}));
@@ -190,6 +190,28 @@ test('character reset survives reload; opening old shared/private rooms does not
     assert.ok(memory.initializeAuto(isolated.chats.private,h.ctx.chat).cursor<32);
 });
 
+test('another room collects messages after its deletion-time checkpoint instead of skipping them on first reopen',()=>{
+    const h=storageHarness(),root=h.box.data();scope.separateRoomMemory(root,'private',1,root);
+    scope.resetCharacterMemory(root,'a',1,[['old-shared',6],['private',4]]);
+    h.box.positiveInteger=(v,n)=>Number(v)||n;
+    vm.runInContext(index.slice(index.indexOf('function completedAssistantCount('),index.indexOf('function scheduleMemory(')),h.box);
+    for(const [id,cursor] of [['old-shared',6],['private',4]]) {
+        h.ctx.chatId=id;h.ctx.chat=Array.from({length:cursor+2},(_,i)=>({is_user:i%2===0,mes:'message '+i}));
+        const store=h.box.data();assert.equal(store.chats[id].autoMemory.cursor,cursor);
+        assert.equal(h.box.memoryDue(store,h.ctx),true);
+    }
+});
+
+test('already performed legacy full resets keep their existing fallback; ordinary room reset remains scoped',()=>{
+    const h=storageHarness(),root=h.box.data();root.memoryResetAt=123;
+    h.ctx.chatId='old';h.ctx.chat=Array.from({length:7},()=>({mes:'old',is_user:false}));
+    assert.equal(h.box.data().chats.old.autoMemory.cursor,7);
+    root.facts.push(fact('keep'));
+    const isolated=scope.resetRoomMemory(root,'old',7);
+    assert.equal(root.facts.length,1);assert.equal(isolated.chats.old.autoMemory.cursor,7);
+    assert.equal(isolated.memoryResetVersion,undefined);
+});
+
 class Element {
     constructor() { this.children = []; this.listeners = {}; this._value = ''; this.hidden = false; this.disabled = false; }
     append(...children) { this.children.push(...children); }
@@ -206,6 +228,7 @@ function uiHarness() {
     Object.assign(h.box, { $id: get, document: { createElement: () => new Element() },
         busy: false, extracting: false, translating: false, normalGenerating: false, memoryRun: null,
         memoryEpoch: 0, sourceMutationTimer: null, collectionStatusText: '',
+        captureCharacterRoomLengths: async ctx => [[String(ctx.chatId), ctx.chat.length]],
         chatKey: c => `${c.characterId}:${c.chatId}`, stopCollection() {}, stopReviewJob() {}, clearTimeout,
         clearLegacyPrompt: async () => {}, refreshCollectionStatus() {}, save: async () => {}, status: s => h.status = s,
         makeButton: (label, fn) => { const b = new Element(); b.textContent = label; b.listeners.click = fn; return b; },
@@ -368,6 +391,35 @@ test('failed persistence restores current-character memories and independent sto
     await h.get('character-memory-reset').fire('click');await h.confirm('이 캐릭터 전체 기억 삭제');
     assert.equal(JSON.stringify(h.root),before);assert.match(h.status,/저장하지 못/);
     assert.equal(h.get('character-memory-reset').disabled,false);
+});
+
+test('whole-character deletion applies only after checkpoint lookup succeeds',async()=>{
+    const h=uiHarness();const before=JSON.stringify(h.root);
+    h.box.captureCharacterRoomLengths=async()=>{throw Error('채팅 위치 확인 실패: 삭제하지 않았어요.')};
+    await h.get('character-memory-reset').fire('click');await h.confirm('이 캐릭터 전체 기억 삭제');
+    assert.equal(JSON.stringify(h.root),before);assert.match(h.status,/위치 확인 실패/);
+});
+
+test('cancel during checkpoint lookup prevents deletion; regular room reset never requests whole-character checkpoints',async()=>{
+    const h=uiHarness();const before=JSON.stringify(h.root);
+    let release,started;const ready=new Promise(resolve=>{started=resolve});
+    h.box.captureCharacterRoomLengths=()=>new Promise(resolve=>{release=resolve;started()});
+    await h.get('character-memory-reset').fire('click');const pending=h.confirm('이 캐릭터 전체 기억 삭제');await ready;
+    await h.confirm('취소');release([['a',1]]);await pending;
+    assert.equal(JSON.stringify(h.root),before);
+    h.box.captureCharacterRoomLengths=()=>{throw Error('must not read all rooms')};
+    await h.get('memory-reset').fire('click');await h.confirm('이 방만 초기화');
+    assert.equal(h.box.data().facts.length,0);assert.equal(h.root.facts.length,1);
+});
+
+test('room or character switches during checkpoint lookup cancel the whole reset',async()=>{
+    for(const change of [h=>{h.ctx.chatId='different'},h=>{h.ctx.characterId=1}]) {
+        const h=uiHarness(),before=JSON.stringify(h.root.facts),oldState=JSON.stringify(h.root.chats.a);
+        h.box.captureCharacterRoomLengths=async()=>{change(h);return [['a',1]]};
+        await h.get('character-memory-reset').fire('click');await h.confirm('이 캐릭터 전체 기억 삭제');
+        assert.equal(JSON.stringify(h.root.facts),before);assert.equal(JSON.stringify(h.root.chats.a),oldState);
+        assert.equal(h.root.memoryResetAt,undefined);
+    }
 });
 
 test('character delete confirmation cannot affect a different room or character', async () => {

@@ -44,11 +44,15 @@ export function resetRoomMemory(root, chatId, length) {
     return store;
 }
 
-export function resetCharacterMemory(root, chatId, length) {
+export function resetCharacterMemory(root, chatId, length, roomLengths = []) {
     if (!root || !chatId) throw new Error('캐릭터의 채팅을 먼저 열어 주세요.');
+    const checkpoints = new Map(roomLengths);
+    checkpoints.set(String(chatId), length);
+    for (const [id, count] of checkpoints) if (typeof id !== 'string' || !id || !Number.isSafeInteger(count) || count < 0)
+        throw new Error('채팅의 마지막 위치를 확인하지 못해 삭제하지 않았어요.');
     const resetAt = Date.now();
     const empty = source => {
-        const store = { version: 2, uuid: root.uuid, facts: [], candidates: [], chats: {}, memoryResetAt: resetAt };
+        const store = { version: 2, uuid: root.uuid, facts: [], candidates: [], chats: {}, memoryResetAt: resetAt, memoryResetVersion: 2 };
         if (source?.collectionPreferences) store.collectionPreferences = clone(source.collectionPreferences);
         return store;
     };
@@ -60,8 +64,7 @@ export function resetCharacterMemory(root, chatId, length) {
         replacement.chatMemoryScopes ??= {};
         put(replacement.chatMemoryScopes, id, { independent: true, store: empty(scope.store) });
     }
-    const current = selectedMemoryStore(replacement, chatId);
-    put(current.chats, String(chatId), freshState(length));
+    for (const [id, count] of checkpoints) put(selectedMemoryStore(replacement, id).chats, id, freshState(count));
     // Keep the character store identity held by the UI and active scope checks.
     for (const key of Object.keys(root)) delete root[key];
     for (const [key, value] of Object.entries(replacement)) put(root, key, value);
