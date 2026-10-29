@@ -261,6 +261,4 @@
 #hundredlog .hundredlog-scope-choice[hidden] { display: none; }
 #hundredlog .hundredlog-scope-choice .hundredlog-actions { flex-wrap: wrap; }
 #hundredlog #hundredlog-memory-source { min-width: 0; max-width: 100%; }
-#hundredlog .hundredlog-delete-actions { flex-wrap: nowrap; align-items: stretch; }
-#hundredlog .hundredlog-delete-actions button.menu_button { flex: 1 1 auto !important; white-space: normal; word-break: keep-all; }
 
