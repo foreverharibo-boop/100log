@@ -1,16 +1,17 @@
-import { createFileStorage } from './file-storage.js?v=1.10.17';
-import { compactConfig, shortSignature, pruneDeletedRoomProgress, renameRoom } from './retention.js?v=1.10.17';
-import { roomScope, selectedMemoryStore, separateRoomMemory, resetRoomMemory, resetCharacterMemory, resetSharedMemory, memoryCopySources } from './memory-scope.js?v=1.10.17';
-import { createNativeReview } from './native-review.js?v=1.10.17';
-import { retryCapacityOperations, evictOldestMemories, normalizeMemoryLimit } from './memory-engine.js?v=1.10.17';
-import { availableSupportingEvidence, normalizeAliases, canonicalName, linkAlias, resolveFactNames, normalizeSupportingEvidence, addRejectedMemory } from './continuity-tools.js?v=1.10.17';
-import { applyManualKnowledgeDraft, collectedCharacterNames, sortMemoriesByCollection, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, omissionReviewRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js?v=1.10.17';
-import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, supportsBackgroundUtility, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js?v=1.10.17';
-import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js?v=1.10.17';
-import { normalizeKnowledgeEvidence, KNOWLEDGE_LABELS, COMMITMENT_LABELS, commitmentState } from './core.js?v=1.10.17';
+import { createFileStorage } from './file-storage.js?v=1.10.18';
+import { compactConfig, shortSignature, pruneDeletedRoomProgress, renameRoom } from './retention.js?v=1.10.18';
+import { roomScope, selectedMemoryStore, separateRoomMemory, resetRoomMemory, resetCharacterMemory, resetSharedMemory, memoryCopySources } from './memory-scope.js?v=1.10.18';
+import { createNativeReview } from './native-review.js?v=1.10.18';
+import { retryCapacityOperations, evictOldestMemories, normalizeMemoryLimit } from './memory-engine.js?v=1.10.18';
+import { availableSupportingEvidence, normalizeAliases, canonicalName, linkAlias, resolveFactNames, normalizeSupportingEvidence, addRejectedMemory } from './continuity-tools.js?v=1.10.18';
+import { applyManualKnowledgeDraft, collectedCharacterNames, sortMemoriesByCollection, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, omissionReviewRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js?v=1.10.18';
+import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, supportsBackgroundUtility, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js?v=1.10.18';
+import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js?v=1.10.18';
+import { normalizeKnowledgeEvidence, KNOWLEDGE_LABELS, COMMITMENT_LABELS, commitmentState } from './core.js?v=1.10.18';
 
-import { normalizeCollectionRanges, stripCollectionRanges } from './collection-ranges.js?v=1.10.17';
-import { captureCharacterRoomLengths, captureSharedRoomLengths } from './reset-checkpoints.js?v=1.10.17';
+import { normalizeCollectionRanges, stripCollectionRanges } from './collection-ranges.js?v=1.10.18';
+import { captureCharacterRoomLengths, captureSharedRoomLengths } from './reset-checkpoints.js?v=1.10.18';
+import { createCollectionEventGate } from './collection-events.js?v=1.10.18';
 
 const NAME = 'hundredlog';
 const LEGACY_NAME = 'memorybean';
@@ -49,6 +50,7 @@ let memoryRun = null;
 let memoryTimer = null;
 let sourceMutationTimer = null;
 let memoryPending = false;
+let memoryPendingKey = null;
 let memoryForcePending = false;
 let memoryEpoch = 0;
 let normalGenerating = false;
@@ -58,6 +60,8 @@ let developerTitleClicks = 0;
 let developerTitleTimer = null;
 
 const context = () => SillyTavern.getContext();
+const collectionEvents = createCollectionEventGate({ key: chatKey, signature: messageSignature,
+    visible: isVisibleChatMessage, windowStart: recentWindowStart });
 const $id = (id) => document.getElementById(`hundredlog-${id}`);
 
 
@@ -267,6 +271,7 @@ function collectUtility(ctx, prompt, profileId, job) {
 function stopCollection() {
     stopExtractionRequested = true;
     memoryPending = false; memoryForcePending = false;
+    memoryPendingKey = null;
     if (memoryTimer !== null) { clearTimeout(memoryTimer); memoryTimer = null; }
     activeCollectionJob?.controller.abort(reviewCancelledError());
 }
@@ -1920,12 +1925,15 @@ function scheduleMemory({ force = false } = {}) {
     force ||= memoryForcePending;
     if (!force && !memoryDue()) { memoryPending = false; render(); return; }
     memoryPending = true;
+    memoryPendingKey = chatKey(context());
     memoryForcePending ||= force;
     // The running collection owns its cursor. Its completion schedules catch-up.
     if (extracting || memoryRun) return;
     if (memoryTimer !== null) clearTimeout(memoryTimer);
+    const scheduledKey = chatKey(context());
     memoryTimer = setTimeout(() => {
         memoryTimer = null;
+        if (chatKey(context()) !== scheduledKey) return;
         if (!memoryPending) return;
         if (extracting || translating || ((normalGenerating || busy) && !supportsBackgroundUtility(context(), settings().extractionProfileId || ''))) {
             scheduleMemory({ force: memoryForcePending });
@@ -1943,6 +1951,7 @@ export function syncMemories(options = {}) {
     if (extracting || translating || !chatKey(context())) return Promise.resolve();
     if ((busy || normalGenerating) && !supportsBackgroundUtility(context(), settings().extractionProfileId || '')) {
         memoryPending = true;
+        memoryPendingKey = chatKey(context());
         return Promise.resolve();
     }
     const task = performMemorySync({ ...options, force: Boolean(options.force || memoryForcePending) });
@@ -1952,7 +1961,7 @@ export function syncMemories(options = {}) {
         memoryRun = null;
         // performMemorySync renders before its promise settles. Re-enable controls now.
         render();
-        if (memoryPending) scheduleMemory();
+        if (memoryPending && chatKey(context()) === memoryPendingKey) scheduleMemory();
     };
     void task.then(finish, finish);
     return task;
@@ -1971,6 +1980,7 @@ function applyDetectedSummaryCompaction(value, state, ctx) {
 
 async function processSourceMutation({ queueCollection = true } = {}) {
     const ctx = context();
+    const key = chatKey(ctx);
     const value = data(false);
     const state = chatState(value, ctx, false);
     if (!value || !state) return { changed: false, compacted: false };
@@ -1983,6 +1993,7 @@ async function processSourceMutation({ queueCollection = true } = {}) {
     const changed = reconcileMemory(value, state, ctx.chat, sourceChatId(ctx));
     if (changed) {
         await save();
+        if (chatKey(context()) !== key || data(false) !== value) return { changed: false, compacted: false };
         render();
         if (queueCollection) scheduleMemory({ force: true });
     }
@@ -1993,17 +2004,22 @@ function queueSourceMutation() {
     memoryEpoch++;
     activeCollectionJob?.controller.abort(reviewCancelledError());
     if (sourceMutationTimer !== null) clearTimeout(sourceMutationTimer);
+    const scheduledKey = chatKey(context());
     // Summary extensions often hide dozens of messages in a rapid burst. Wait for
     // that burst to finish so it is handled once instead of as dozens of edits.
     sourceMutationTimer = setTimeout(() => {
         sourceMutationTimer = null;
+        if (chatKey(context()) !== scheduledKey) return;
         void processSourceMutation().catch((error) => { diagnosticError('규칙 저장', error, { site: 1522 }); status(error.message); });
     }, 900);
 }
 
 async function performMemorySync({ rebuildRecent = false, force = false, reviewOnly = false, cleanupOnly = false } = {}) {
+    const requestedKey = chatKey(context());
     await initializeFileStorage();
+    if (chatKey(context()) !== requestedKey) return;
     await fileStorage.refresh();
+    if (chatKey(context()) !== requestedKey) return;
     if (fileStorage.error) throw fileStorage.error;
     const ctx = context();
     const key = chatKey(ctx);
@@ -2079,6 +2095,7 @@ async function performMemorySync({ rebuildRecent = false, force = false, reviewO
                 if (!sameChat()) return;
                 if (tracked.some(({ id, signature }) => messageSignature(context().chat[id]) !== signature)) {
                     memoryPending = true;
+                    memoryPendingKey = key;
                     setCollectionStatus('대화가 수정되어 바뀐 내용으로 다시 정리할게요.');
                     return;
                 }
@@ -2169,6 +2186,7 @@ async function performMemorySync({ rebuildRecent = false, force = false, reviewO
         if (chatKey(context()) === key && data(false) === value && epoch !== memoryEpoch
             && settings().autoMemory && !stopExtractionRequested) {
             memoryPending = true; memoryForcePending = true;
+            memoryPendingKey = key;
         }
         refreshCollectionStatus(); render();
     }
@@ -2177,6 +2195,7 @@ async function performMemorySync({ rebuildRecent = false, force = false, reviewO
 export function installMemoryHooks(ctx = context()) {
     if (memoryHooksInstalled) return;
     memoryHooksInstalled = true;
+    collectionEvents.loaded(ctx);
     globalThis.sillyRelayReviewers ||= Object.create(null);
     globalThis.sillyRelayReviewers.hundredlog = { kind: 'message', resume: resumeHundredlogReview };
     nativeReview = createNativeReview({ context, chatKey,
@@ -2221,7 +2240,9 @@ export function installMemoryHooks(ctx = context()) {
         try {
             if (sourceMutationTimer !== null) { clearTimeout(sourceMutationTimer); sourceMutationTimer = null; }
             const mutation = await processSourceMutation({ queueCollection: false });
-            if (mutation.changed && !mutation.compacted) { memoryPending = true; memoryForcePending = true; }
+            if (mutation.changed && !mutation.compacted) {
+                memoryPending = true; memoryForcePending = true; memoryPendingKey = chatKey(context());
+            }
             // Pending work is resumed by the generation-end/render hooks.
             await clearLegacyPrompt();
         } catch (error) {
@@ -2232,7 +2253,9 @@ export function installMemoryHooks(ctx = context()) {
     // Rendering also happens when opening/reopening a chat or loading a branch.
     // Only a newly received reply may trigger automatic collection here.
     on('GENERATION_STARTED', (type, _options, dryRun) => diagnostic('generation', { mode: type, dryRun: Boolean(dryRun), busy }));
-    on('MESSAGE_RECEIVED', () => scheduleMemory());
+    on('MESSAGE_RECEIVED', (index, type) => {
+        if (collectionEvents.received(context(), index, type)) scheduleMemory();
+    });
     on('GENERATION_ENDED', async (type) => {
         if (['quiet', 'impersonate'].includes(type)) return;
         nativeReview?.ended();
@@ -2771,7 +2794,7 @@ async function main() {
     installMemoryHooks(ctx);
     if ($id('key')) { registerDeveloperTitle($id('title')); addWandButton(); return; }
     installStorageHooks(ctx);
-    const response = await diagnosticFetch(new URL('./settings.html?v=1.10.17', import.meta.url), { credentials: 'same-origin' });
+    const response = await diagnosticFetch(new URL('./settings.html?v=1.10.18', import.meta.url), { credentials: 'same-origin' });
     if (!response.ok) throw new Error(`설정 화면 파일을 읽지 못했어요 (${response.status}).`);
     const html = await response.text();
     // Keep the panel mounted for event bindings, but expose it only through the wand.
@@ -3073,15 +3096,18 @@ async function main() {
         clearMemoryScopeChoice();
         memoryEpoch++; normalGenerating = false; memoryPending = false;
         memoryForcePending = false;
+        if (sourceMutationTimer !== null) { clearTimeout(sourceMutationTimer); sourceMutationTimer = null; }
         collectionStatusText = ''; refreshCollectionStatus();
         const value = data();
         const state = chatState(value, context(), false);
         if (state) initializeAuto(state, context().chat);
+        collectionEvents.loaded(context());
         scheduleStorageSave();
         if (!extracting) status('준비됐어요.'); render();
         void clearLegacyPrompt();
     });
     const initial = data();
+    collectionEvents.loaded(ctx);
     const initialState = chatState(initial, ctx, false);
     if (initialState) initializeAuto(initialState, ctx.chat);
     await clearLegacyPrompt();

@@ -70,6 +70,23 @@ for (const mode of ['new', 'rebuild', 'review']) {
     });
 }
 
+test('switching to a branch during collection storage preparation does not collect the new room', async () => {
+    for (const stage of ['initialize', 'refresh']) {
+        const h = harness(0);
+        let release;
+        const held = new Promise(resolve => { release = resolve; });
+        if (stage === 'initialize') h.sandbox.initializeFileStorage = () => held;
+        else h.sandbox.fileStorage.refresh = () => held;
+        const run = h.sandbox.syncMemories({ force: true });
+        await Promise.resolve();
+        h.ctx.chatId = 'branch';
+        release();
+        await run;
+        assert.equal(h.requests.length, 0);
+        assert.equal(h.state.autoMemory.cursor, 0);
+    }
+});
+
 test('automatic cleanup reruns on new or edited source, but skips identical input', async () => {
     const h = harness();
     await h.run(); await h.run();

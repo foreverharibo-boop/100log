@@ -1,5 +1,6 @@
 import { shortSignature, forgetFactCopies } from '../retention.js';
 import { createNativeReview } from '../native-review.js';
+import { createCollectionEventGate } from '../collection-events.js';
 import {messageSignature} from '../memory-engine.js';
 import * as continuity from '../continuity-tools.js';
 import { normalizeCollectionRanges } from '../collection-ranges.js';
@@ -78,6 +79,8 @@ function harness(handler) {
     vm.createContext(sandbox);
     vm.runInContext(core+'\n'+cancelCode+'\n'+requestCode+'\n'+judgeCode+'\n'+hiddenCode+'\n'+hookCode+'\n'+interceptorCode,sandbox);
     sandbox.chatKey=c=>c.chatId;sandbox.memoryInjection=()=> 'facts';sandbox.correctionPrompt=draft=>`fix ${draft}`;
+    sandbox.collectionEvents=createCollectionEventGate({key:sandbox.chatKey,signature:messageSignature,
+        visible:sandbox.isVisibleChatMessage,windowStart:sandbox.recentWindowStart});
     sandbox.installMemoryHooks(ctx);
     const prepare=async(mode='normal')=>{
         if(mode==='swipe'&&ctx.chat.at(-1)?.is_user)ctx.chat.push({is_user:false,mes:'OLD',swipes:['OLD'],swipe_id:0,swipe_info:[{extra:{}}]});
@@ -655,7 +658,7 @@ test('aborted background utility cannot send after payload preparation',async()=
 
 const schedulingCode=source.slice(source.indexOf('function scheduleMemory('),source.indexOf('function applyDetectedSummaryCompaction(')).replace('export ', '');
 function backgroundScheduler(){
- const timers=[];const box={memoryPending:false,memoryForcePending:false,memoryRun:null,memoryTimer:null,extracting:false,translating:false,busy:true,normalGenerating:true,
+ const timers=[];const box={memoryPending:false,memoryPendingKey:null,memoryForcePending:false,memoryRun:null,memoryTimer:null,extracting:false,translating:false,busy:true,normalGenerating:true,
   settings:()=>({autoMemory:true,extractionProfileId:'collector'}),context:()=>({}),chatKey:()=> 'chat',memoryDue:()=>true,render(){},supportsBackgroundUtility:()=>true,
   setTimeout:(fn)=>{timers.push(fn);return timers.length;},clearTimeout(){}};
  vm.createContext(box);vm.runInContext(schedulingCode,box);return {box,timers};
@@ -703,13 +706,48 @@ test('opening or rerendering a copied chat never schedules collection; a new rep
  assert.equal(scheduled,1);
 });
 
+test('received events replayed for a loaded branch do not collect its copied history',async()=>{
+ const h=harness(()=>reply());let scheduled=0;
+ h.sandbox.scheduleMemory=()=>{scheduled++;};
+ h.ctx.chatId='branch';
+ h.ctx.chat=Array.from({length:34},(_,i)=>({is_user:i%2===0,mes:`copied ${i}`}));
+ // Even if an adapter replays receive events before CHAT_CHANGED, this is an
+ // unseen room's loaded history, not a reply generated in that room.
+ for(let i=0;i<h.ctx.chat.length;i++)if(!h.ctx.chat[i].is_user)
+  await h.ctx.eventSource.emit(h.ctx.eventTypes.MESSAGE_RECEIVED,i,'normal');
+ assert.equal(scheduled,0);
+ await h.deliver('ACTUAL NEW REPLY');assert.equal(scheduled,1);
+ await h.ctx.eventSource.emit(h.ctx.eventTypes.MESSAGE_RECEIVED,34,'normal');
+ assert.equal(scheduled,1,'replayed reply events are ignored');
+});
+
+test('a collection timer queued in the previous room cannot start in a branch',()=>{
+ const {box,timers}=backgroundScheduler();let room='parent',calls=0;
+ box.chatKey=()=>room;box.performMemorySync=async()=>{calls++;};
+ box.scheduleMemory();room='branch';timers.shift()();
+ assert.equal(calls,0);
+});
+
+test('old collection completion only resumes pending work belonging to the current room',async()=>{
+ for(const newReply of [false,true]) {
+  const {box,timers}=backgroundScheduler();let room='parent',release;
+  box.chatKey=()=>room;box.performMemorySync=()=>new Promise(resolve=>{release=resolve;});
+  box.scheduleMemory();timers.shift()();const run=box.memoryRun;
+  box.scheduleMemory(); // Pending work belongs to the parent.
+  room='branch';
+  if(newReply)box.scheduleMemory(); // A real branch reply arrived during the old run.
+  release();await run;await Promise.resolve();
+  assert.equal(timers.length,newReply?1:0);
+ }
+});
+
 test('startup and chat change preserve uncollected history without starting a request',async()=>{
  const h=harness(()=>reply());let scheduled=0,stopped=0;
  const state={autoMemory:{cursor:0,offset:0,journal:[]}};
  h.ctx.chat=Array.from({length:36},(_,i)=>({is_user:i%2===0,mes:`existing ${i}`}));
  h.ctx.eventTypes.CHAT_CHANGED='changed';
  Object.assign(h.sandbox,{ctx:h.ctx,chatState:()=>state,initializeAuto:s=>s.autoMemory,
-  memoryEpoch:0,memoryForcePending:true,memoryPending:true,collectionStatusText:'',
+  memoryEpoch:0,memoryForcePending:true,memoryPending:true,collectionStatusText:'',sourceMutationTimer:null,
   clearMemoryScopeChoice(){},refreshCollectionStatus(){},addWandButton(){},
   stopCollection(){stopped++;h.sandbox.memoryPending=false;h.sandbox.memoryForcePending=false;},
   scheduleMemory(){scheduled++;}});
