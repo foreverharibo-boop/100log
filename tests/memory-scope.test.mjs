@@ -7,6 +7,7 @@ import * as memory from '../memory-engine.js';
 import * as core from '../core.js';
 import { createFileStorage } from '../file-storage.js';
 import { compactConfig } from '../retention.js';
+import { inheritBranchProgress } from '../branch-progress.js';
 
 const fact = (id, sourceChatId = 'a') => ({ id, text: `memory ${id}`, active: true, origin: 'auto', sourceChatId, sourceId: 0, knowledge: { Persona: 'known' } });
 const fixture = () => ({ uuid: 'character-unique', version: 2, facts: [fact('shared')], candidates: [], chats: { a: { autoMemory: { cursor: 3, journal: [{ changes: [{ id: 'shared', before: null }] }] } }, b: {} },
@@ -139,12 +140,39 @@ const index = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 function storageHarness() {
     const config = { characterStores: {} };
     const ctx = { characterId: 0, chatId: 'a', chat: [{ is_user: false, mes: 'existing reply' }], chatMetadata: {}, saveSettingsDebounced() {}, saveMetadata() {} };
-    const box = { scheduleStorageSave(){}, fileStorage:{save:async()=>{}},storageNotice(){}, ...scope, ...memory, ...core, context: () => ctx, settings: () => config,
+    const box = { inheritBranchProgress, scheduleStorageSave(){}, fileStorage:{save:async()=>{}},storageNotice(){}, ...scope, ...memory, ...core, context: () => ctx, settings: () => config,
         ensureCharacterUuid: () => `character-${ctx.characterId}`, NAME: 'hundredlog', LEGACY_NAME: 'memorybean', diagnosticError() {} };
     vm.createContext(box);
     vm.runInContext(index.slice(index.indexOf('function sourceChatId('), index.indexOf('async function save(')), box);
     return { box, ctx, config };
 }
+
+test('real chat-state initialization inherits branch progress without collecting or changing shared facts', () => {
+    const h = storageHarness();
+    h.ctx.chat = Array.from({ length: 34 }, (_, id) => ({ mes: `Source ${id}`, is_user: id % 2 === 0 }));
+    const root = h.box.data(); root.facts.push(fact('keep', 'a'));
+    memory.recordMemoryBatch(root.chats.a, { rows: h.ctx.chat.slice(0, 30).map((m, id) => ({ id, signature: memory.messageSignature(m) })),
+        start: 0, offset: 0, nextCursor: 30, nextOffset: 0, changes: [] });
+    const parentBefore = JSON.stringify(root.chats.a), factsBefore = JSON.stringify(root.facts);
+    h.ctx.chatId = 'branch'; h.ctx.chatMetadata = { main_chat: 'a' };
+    const branch = h.box.data();
+    assert.equal(branch, root); assert.equal(branch.chats.branch.autoMemory.cursor, 30);
+    assert.equal(JSON.stringify(root.chats.a), parentBefore); assert.equal(JSON.stringify(root.facts), factsBefore);
+    const reloaded = JSON.parse(JSON.stringify(h.config)); h.config.characterStores = reloaded.characterStores;
+    assert.equal(h.box.data().chats.branch.autoMemory.cursor, 30);
+    h.ctx.chatId = 'ordinary'; h.ctx.chatMetadata = {};
+    assert.equal(h.box.data().chats.ordinary.autoMemory.cursor, 0);
+});
+
+test('an already opened but untouched branch can inherit when parent metadata becomes available', () => {
+    const h = storageHarness(), root = h.box.data();
+    memory.recordMemoryBatch(root.chats.a, { rows: [{ id: 0, signature: memory.messageSignature(h.ctx.chat[0]) }],
+        start: 0, offset: 0, nextCursor: 1, nextOffset: 0, changes: [] });
+    h.ctx.chatId = 'branch'; h.box.data();
+    assert.equal(root.chats.branch.autoMemory.cursor, 0);
+    h.ctx.chatMetadata.main_chat = 'a'; h.box.data();
+    assert.equal(root.chats.branch.autoMemory.cursor, 1);
+});
 
 test('real data routing survives reload, separates characters and does not prune shared memory from a private room', () => {
     const h = storageHarness(), a = h.box.data(); a.facts.push(fact('shared','b'));

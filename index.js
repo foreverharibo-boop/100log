@@ -1,17 +1,18 @@
-import { createFileStorage } from './file-storage.js?v=1.10.18';
-import { compactConfig, shortSignature, pruneDeletedRoomProgress, renameRoom } from './retention.js?v=1.10.18';
-import { roomScope, selectedMemoryStore, separateRoomMemory, resetRoomMemory, resetCharacterMemory, resetSharedMemory, memoryCopySources } from './memory-scope.js?v=1.10.18';
-import { createNativeReview } from './native-review.js?v=1.10.18';
-import { retryCapacityOperations, evictOldestMemories, normalizeMemoryLimit } from './memory-engine.js?v=1.10.18';
-import { availableSupportingEvidence, normalizeAliases, canonicalName, linkAlias, resolveFactNames, normalizeSupportingEvidence, addRejectedMemory } from './continuity-tools.js?v=1.10.18';
-import { applyManualKnowledgeDraft, collectedCharacterNames, sortMemoriesByCollection, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, omissionReviewRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js?v=1.10.18';
-import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, supportsBackgroundUtility, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js?v=1.10.18';
-import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js?v=1.10.18';
-import { normalizeKnowledgeEvidence, KNOWLEDGE_LABELS, COMMITMENT_LABELS, commitmentState } from './core.js?v=1.10.18';
+import { createFileStorage } from './file-storage.js?v=1.10.19';
+import { compactConfig, shortSignature, pruneDeletedRoomProgress, renameRoom } from './retention.js?v=1.10.19';
+import { roomScope, selectedMemoryStore, separateRoomMemory, resetRoomMemory, resetCharacterMemory, resetSharedMemory, memoryCopySources } from './memory-scope.js?v=1.10.19';
+import { createNativeReview } from './native-review.js?v=1.10.19';
+import { retryCapacityOperations, evictOldestMemories, normalizeMemoryLimit } from './memory-engine.js?v=1.10.19';
+import { availableSupportingEvidence, normalizeAliases, canonicalName, linkAlias, resolveFactNames, normalizeSupportingEvidence, addRejectedMemory } from './continuity-tools.js?v=1.10.19';
+import { applyManualKnowledgeDraft, collectedCharacterNames, sortMemoriesByCollection, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, omissionReviewRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js?v=1.10.19';
+import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, supportsBackgroundUtility, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js?v=1.10.19';
+import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js?v=1.10.19';
+import { normalizeKnowledgeEvidence, KNOWLEDGE_LABELS, COMMITMENT_LABELS, commitmentState } from './core.js?v=1.10.19';
 
-import { normalizeCollectionRanges, stripCollectionRanges } from './collection-ranges.js?v=1.10.18';
-import { captureCharacterRoomLengths, captureSharedRoomLengths } from './reset-checkpoints.js?v=1.10.18';
-import { createCollectionEventGate } from './collection-events.js?v=1.10.18';
+import { normalizeCollectionRanges, stripCollectionRanges } from './collection-ranges.js?v=1.10.19';
+import { captureCharacterRoomLengths, captureSharedRoomLengths } from './reset-checkpoints.js?v=1.10.19';
+import { createCollectionEventGate } from './collection-events.js?v=1.10.19';
+import { inheritBranchProgress } from './branch-progress.js?v=1.10.19';
 
 const NAME = 'hundredlog';
 const LEGACY_NAME = 'memorybean';
@@ -761,7 +762,8 @@ function chatState(value, ctx = context(), create = true) {
     if (!value || !ctx.chatId) return null;
     value.chats ??= {};
     const key = sourceChatId(ctx);
-    if (create && !Object.hasOwn(value.chats, key)) {
+    const created = create && !Object.hasOwn(value.chats, key);
+    if (created) {
         // Preserve the fallback for resets made before per-room checkpoints existed.
         // New resets already saved each existing room's exact collection cursor.
         const legacyReset = value.memoryResetAt && value.memoryResetVersion !== 2;
@@ -770,6 +772,7 @@ function chatState(value, ctx = context(), create = true) {
             ...(legacyReset ? { autoMemory: { cursor, offset: 0, journal: [] } } : {}) },
             enumerable: true, configurable: true, writable: true });
     }
+    if (create && ctx.chatMetadata?.main_chat && inheritBranchProgress(value, value.chats[key], ctx, { created })) scheduleStorageSave();
     return value.chats[key] ?? null;
 }
 
@@ -2794,7 +2797,7 @@ async function main() {
     installMemoryHooks(ctx);
     if ($id('key')) { registerDeveloperTitle($id('title')); addWandButton(); return; }
     installStorageHooks(ctx);
-    const response = await diagnosticFetch(new URL('./settings.html?v=1.10.18', import.meta.url), { credentials: 'same-origin' });
+    const response = await diagnosticFetch(new URL('./settings.html?v=1.10.19', import.meta.url), { credentials: 'same-origin' });
     if (!response.ok) throw new Error(`설정 화면 파일을 읽지 못했어요 (${response.status}).`);
     const html = await response.text();
     // Keep the panel mounted for event bindings, but expose it only through the wand.

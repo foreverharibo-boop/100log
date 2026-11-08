@@ -6,6 +6,7 @@ import vm from 'node:vm';
 import * as core from '../core.js';
 import * as memory from '../memory-engine.js';
 import * as continuity from '../continuity-tools.js';
+import { inheritBranchProgress } from '../branch-progress.js';
 
 const code = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 const cleanupCode = code.slice(code.indexOf('function sourceRows('), code.indexOf('function parseJson('));
@@ -85,6 +86,30 @@ test('switching to a branch during collection storage preparation does not colle
         assert.equal(h.requests.length, 0);
         assert.equal(h.state.autoMemory.cursor, 0);
     }
+});
+
+test('after inheriting 34 messages, a new branch exchange collects only the two new source messages', async () => {
+    const h = harness(0);
+    h.config.autoCleanup = false;
+    h.ctx.chatId = 'branch'; h.ctx.chatMetadata = { main_chat: 'parent' };
+    h.ctx.chat = Array.from({ length: 34 }, (_, id) => ({ mes: `Copied ${id}.`, is_user: id % 2 === 0 }));
+    const parent = { autoMemory: { cursor: 0, offset: 0, journal: [] } };
+    memory.recordMemoryBatch(parent, { rows: h.ctx.chat.map((m, id) => ({ id, signature: memory.messageSignature(m) })),
+        start: 0, offset: 0, nextCursor: 34, nextOffset: 0, changes: [] });
+    h.value.chats = { parent, branch: h.state };
+    assert.equal(inheritBranchProgress(h.value, h.state, h.ctx), true);
+    h.ctx.chat.push({ is_user: true, mes: 'New question.' }, { is_user: false, mes: 'New answer.' });
+    const sourceCounts = [];
+    h.sandbox.traceDiagnostic = async (stage, action, fields) => {
+        if (stage === '규칙 수집') sourceCounts.push(fields.count);
+        return action();
+    };
+    await h.sandbox.syncMemories({ force: true });
+    assert.equal(h.errors.length, 0, JSON.stringify(h.errors));
+    assert.deepEqual(sourceCounts, [2]);
+    assert.equal(h.requests.length, 1);
+    assert.equal(h.state.autoMemory.cursor, 36);
+    assert.equal(parent.autoMemory.cursor, 34);
 });
 
 test('automatic cleanup reruns on new or edited source, but skips identical input', async () => {
