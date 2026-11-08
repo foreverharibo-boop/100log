@@ -1,16 +1,16 @@
-import { createFileStorage } from './file-storage.js?v=1.10.16';
-import { compactConfig, shortSignature, pruneDeletedRoomProgress, renameRoom } from './retention.js?v=1.10.16';
-import { roomScope, selectedMemoryStore, separateRoomMemory, resetRoomMemory, resetCharacterMemory, resetSharedMemory, memoryCopySources } from './memory-scope.js?v=1.10.16';
-import { createNativeReview } from './native-review.js?v=1.10.16';
-import { retryCapacityOperations, evictOldestMemories, normalizeMemoryLimit } from './memory-engine.js?v=1.10.16';
-import { availableSupportingEvidence, normalizeAliases, canonicalName, linkAlias, resolveFactNames, normalizeSupportingEvidence, addRejectedMemory } from './continuity-tools.js?v=1.10.16';
-import { applyManualKnowledgeDraft, collectedCharacterNames, sortMemoriesByCollection, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, omissionReviewRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js?v=1.10.16';
-import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, supportsBackgroundUtility, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js?v=1.10.16';
-import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js?v=1.10.16';
-import { normalizeKnowledgeEvidence, KNOWLEDGE_LABELS, COMMITMENT_LABELS, commitmentState } from './core.js?v=1.10.16';
+import { createFileStorage } from './file-storage.js?v=1.10.17';
+import { compactConfig, shortSignature, pruneDeletedRoomProgress, renameRoom } from './retention.js?v=1.10.17';
+import { roomScope, selectedMemoryStore, separateRoomMemory, resetRoomMemory, resetCharacterMemory, resetSharedMemory, memoryCopySources } from './memory-scope.js?v=1.10.17';
+import { createNativeReview } from './native-review.js?v=1.10.17';
+import { retryCapacityOperations, evictOldestMemories, normalizeMemoryLimit } from './memory-engine.js?v=1.10.17';
+import { availableSupportingEvidence, normalizeAliases, canonicalName, linkAlias, resolveFactNames, normalizeSupportingEvidence, addRejectedMemory } from './continuity-tools.js?v=1.10.17';
+import { applyManualKnowledgeDraft, collectedCharacterNames, sortMemoriesByCollection, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, omissionReviewRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js?v=1.10.17';
+import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, supportsBackgroundUtility, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js?v=1.10.17';
+import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js?v=1.10.17';
+import { normalizeKnowledgeEvidence, KNOWLEDGE_LABELS, COMMITMENT_LABELS, commitmentState } from './core.js?v=1.10.17';
 
-import { normalizeCollectionRanges, stripCollectionRanges } from './collection-ranges.js?v=1.10.16';
-import { captureCharacterRoomLengths, captureSharedRoomLengths } from './reset-checkpoints.js?v=1.10.16';
+import { normalizeCollectionRanges, stripCollectionRanges } from './collection-ranges.js?v=1.10.17';
+import { captureCharacterRoomLengths, captureSharedRoomLengths } from './reset-checkpoints.js?v=1.10.17';
 
 const NAME = 'hundredlog';
 const LEGACY_NAME = 'memorybean';
@@ -1775,7 +1775,10 @@ function sourceRows(ctx, start, offset = 0, total = ctx.chat.length, intensity =
     let i = start;
     let remaining = intensity === 'detailed' ? 12000 : 18000;
     const messageLimit = intensity === 'detailed' ? 6 : intensity === 'meaningful' ? 24 : 12;
-    for (; i < Math.min(total, start + messageLimit) && remaining > 0;) {
+    // Count source rows, not raw chat indices. A summarized chat can have
+    // thousands of hidden messages before its first visible row; consuming the
+    // batch limit on those used to save an empty batch every 6/12/24 messages.
+    for (; i < Math.min(total, ctx.chat.length) && rows.length < messageLimit && remaining > 0;) {
         const msg = ctx.chat[i];
         if (!msg || msg.is_system || msg.is_hidden || msg.hidden || typeof msg.mes !== 'string' || !msg.mes.trim()) { i++; offset = 0; continue; }
         const text = excludedRanges.length ? stripCollectionRanges(msg.mes.trim(), excludedRanges, true) : msg.mes.trim();
@@ -2768,7 +2771,7 @@ async function main() {
     installMemoryHooks(ctx);
     if ($id('key')) { registerDeveloperTitle($id('title')); addWandButton(); return; }
     installStorageHooks(ctx);
-    const response = await diagnosticFetch(new URL('./settings.html?v=1.10.16', import.meta.url), { credentials: 'same-origin' });
+    const response = await diagnosticFetch(new URL('./settings.html?v=1.10.17', import.meta.url), { credentials: 'same-origin' });
     if (!response.ok) throw new Error(`설정 화면 파일을 읽지 못했어요 (${response.status}).`);
     const html = await response.text();
     // Keep the panel mounted for event bindings, but expose it only through the wand.

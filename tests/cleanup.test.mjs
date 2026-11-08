@@ -42,6 +42,34 @@ function harness(count = 40) {
     return { ctx, value, state, config, requests, statuses, errors, sandbox, run };
 }
 
+for (const mode of ['new', 'rebuild', 'review']) {
+    test(`${mode} collection reaches 34 visible messages after 2005 hidden messages before saving`, async () => {
+        const h = harness(0);
+        h.config.collectionIntensity = 'balanced';
+        h.config.autoCleanup = false;
+        h.ctx.chat = [
+            ...Array.from({ length: 2005 }, (_, i) => ({ mes: `HIDDEN_SECRET_${i}`, is_hidden: true })),
+            ...Array.from({ length: 34 }, (_, i) => ({ mes: `Visible event ${i}.`, is_user: false })),
+        ];
+        const original = JSON.stringify(h.ctx.chat);
+        let requests = 0, saves = 0, savesBeforeFirstRequest;
+        h.sandbox.save = async () => { saves++; };
+        h.sandbox.rawGenerateUtility = async (_ctx, prompt) => {
+            if (!requests) savesBeforeFirstRequest = saves;
+            requests++;
+            assert.doesNotMatch(prompt, /HIDDEN_SECRET/);
+            return '{"operations":[]}';
+        };
+        await h.sandbox.syncMemories({ force: true, rebuildRecent: mode === 'rebuild', reviewOnly: mode === 'review' });
+        assert.equal(h.errors.length, 0, JSON.stringify(h.errors));
+        assert.equal(savesBeforeFirstRequest, 0);
+        assert.equal(requests, 3);
+        assert.equal(saves, 4); // Three real batches and the final activity report.
+        assert.equal(h.state.autoMemory.cursor, mode === 'review' ? 0 : h.ctx.chat.length);
+        assert.equal(JSON.stringify(h.ctx.chat), original);
+    });
+}
+
 test('automatic cleanup reruns on new or edited source, but skips identical input', async () => {
     const h = harness();
     await h.run(); await h.run();

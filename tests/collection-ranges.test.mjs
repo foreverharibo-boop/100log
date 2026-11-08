@@ -14,6 +14,50 @@ function sources() {
     vm.createContext(box); vm.runInContext(sourceCode, box); return box;
 }
 
+test('hidden gaps do not consume the source limit, and original message IDs are preserved', () => {
+    const { sourceRows } = sources();
+    for (const [intensity, limit] of [['detailed', 6], ['balanced', 12], ['meaningful', 24]]) {
+        const chat = [];
+        const ids = [];
+        for (let i = 0; i < limit + 1; i++) {
+            chat.push({ mes: 'hidden', hidden: true }, { mes: 'system', is_system: true }, { mes: ' ' }, null);
+            ids.push(chat.length);
+            chat.push({ mes: `Visible ${i}` });
+        }
+        const batch = sourceRows({ chat }, 0, 0, chat.length, intensity);
+        assert.deepEqual(Array.from(batch.rows, row => row.id), ids.slice(0, limit));
+        assert.equal(batch.nextCursor, ids[limit - 1] + 1);
+        assert.equal(sourceRows({ chat }, batch.nextCursor, batch.nextOffset, chat.length, intensity).rows[0].id, ids[limit]);
+    }
+});
+
+test('all-hidden inputs finish in one scan without an AI row and respect the end boundary', () => {
+    const { sourceRows } = sources();
+    const chat = Array.from({ length: 2005 }, () => ({ mes: 'hidden', is_hidden: true }));
+    chat.push({ mes: 'Outside requested range' });
+    const batch = sourceRows({ chat }, 0, 0, 2005);
+    assert.equal(batch.rows.length, 0);
+    assert.equal(batch.nextCursor, 2005);
+    assert.equal(batch.nextOffset, 0);
+});
+
+test('long visible messages after a hidden prefix resume without truncation or duplicate text', () => {
+    const { sourceRows } = sources();
+    const text = 'Long visible text. '.repeat(2000);
+    const chat = [...Array.from({ length: 2005 }, () => ({ mes: 'hidden', is_hidden: true })), { mes: text.trim() }];
+    let cursor = 0, offset = 0, collected = '', batches = 0;
+    while (cursor < chat.length) {
+        const batch = sourceRows({ chat }, cursor, offset, chat.length, 'detailed');
+        assert.equal(batch.rows.length, 1);
+        assert.equal(batch.rows[0].id, 2005);
+        assert.equal(batch.rows[0].partStart, offset);
+        collected += batch.rows[0].text;
+        cursor = batch.nextCursor; offset = batch.nextOffset;
+        assert.ok(++batches < 10);
+    }
+    assert.equal(collected, text.trim());
+});
+
 test('no presets, invalid/duplicate pairs ignored, whitespace retained literally', () => {
     assert.deepEqual(normalizeCollectionRanges(), []);
     assert.deepEqual(normalizeCollectionRanges([{}, { start:' ',end:'x' }, ...rules, rules[0], { start:' begin ',end:' end ' }]),
