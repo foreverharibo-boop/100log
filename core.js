@@ -378,6 +378,26 @@ export function supportsBackgroundUtility(ctx, profileId = '') {
         && typeof ctx.ChatCompletionService?.sendRequest === 'function';
 }
 
+function utilityConnectionOverrides(ctx, service, profile) {
+    const mapping = typeof service.validateProfile === 'function'
+        ? service.validateProfile(profile) : ctx.CONNECT_API_MAP?.[profile.api];
+    if (mapping?.selected !== 'openai' || mapping.source !== 'vertexai') return {};
+
+    // The lean profile request omits generation presets. Vertex still needs
+    // its authentication mode and project; the service owns the profile key.
+    const preset = profile.preset
+        ? ctx.getPresetManager?.('openai')?.getCompletionPresetByName(profile.preset) : null;
+    if (profile.preset && !preset) throw new Error('Vertex 연결 프로필의 프리셋을 찾을 수 없어요. 해당 프로필의 프리셋을 확인해 주세요.');
+    const current = ctx.chatCompletionSettings ?? {};
+    const mode = preset?.vertexai_auth_mode ?? current.vertexai_auth_mode;
+    if (!mode) throw new Error('Vertex 연결 프로필의 인증 방식을 확인할 수 없어요. 인증 방식을 선택하고 프리셋과 연결 프로필을 저장해 주세요.');
+    return {
+        vertexai_auth_mode: mode,
+        vertexai_region: profile['api-url'] || preset?.vertexai_region || current.vertexai_region || 'us-central1',
+        vertexai_express_project_id: preset?.vertexai_express_project_id ?? current.vertexai_express_project_id ?? '',
+    };
+}
+
 export async function generateUtility(ctx, prompt, profileId = '', maxTokens = 6000, signal = undefined) {
     let response;
     if (profileId) {
@@ -385,8 +405,9 @@ export async function generateUtility(ctx, prompt, profileId = '', maxTokens = 6
         if (!profile) throw new Error('선택한 연결 프로필이 없거나 지원되지 않아요. 설정에서 다시 선택해 주세요.');
         const service = ctx.ConnectionManagerRequestService;
         if (typeof service?.sendRequest !== 'function') throw new Error('이 실리태번에서 별도 연결 프로필 호출을 지원하지 않아요. 실리태번을 업데이트해 주세요.');
+        const overrides = utilityConnectionOverrides(ctx, service, profile);
         response = await service.sendRequest(profileId, [{ role: 'user', content: prompt }], maxTokens,
-            { stream: false, extractData: true, includePreset: false, includeInstruct: true, ...(signal ? { signal } : {}) });
+            { stream: false, extractData: true, includePreset: false, includeInstruct: true, ...(signal ? { signal } : {}) }, overrides);
     } else if (supportsBackgroundUtility(ctx)) {
         // ST clones current settings here; no generateRaw/quiet lifecycle,
         // temporary response-length changes, or global stop-event ownership.
