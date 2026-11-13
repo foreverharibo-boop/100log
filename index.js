@@ -1,18 +1,18 @@
-import { createFileStorage } from './file-storage.js?v=1.10.20';
-import { compactConfig, shortSignature, pruneDeletedRoomProgress, renameRoom } from './retention.js?v=1.10.20';
-import { roomScope, selectedMemoryStore, separateRoomMemory, resetRoomMemory, resetCharacterMemory, resetSharedMemory, memoryCopySources } from './memory-scope.js?v=1.10.20';
-import { createNativeReview } from './native-review.js?v=1.10.20';
-import { retryCapacityOperations, evictOldestMemories, normalizeMemoryLimit } from './memory-engine.js?v=1.10.20';
-import { availableSupportingEvidence, normalizeAliases, canonicalName, linkAlias, resolveFactNames, normalizeSupportingEvidence, addRejectedMemory } from './continuity-tools.js?v=1.10.20';
-import { applyManualKnowledgeDraft, collectedCharacterNames, sortMemoriesByCollection, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, omissionReviewRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js?v=1.10.20';
-import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, supportsBackgroundUtility, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js?v=1.10.20';
-import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js?v=1.10.20';
-import { normalizeKnowledgeEvidence, KNOWLEDGE_LABELS, COMMITMENT_LABELS, commitmentState } from './core.js?v=1.10.20';
+import { createFileStorage } from './file-storage.js?v=1.10.21';
+import { compactConfig, shortSignature, pruneDeletedRoomProgress, renameRoom } from './retention.js?v=1.10.21';
+import { roomScope, selectedMemoryStore, separateRoomMemory, resetRoomMemory, resetCharacterMemory, resetSharedMemory, memoryCopySources } from './memory-scope.js?v=1.10.21';
+import { createNativeReview } from './native-review.js?v=1.10.21';
+import { retryCapacityOperations, evictOldestMemories, normalizeMemoryLimit } from './memory-engine.js?v=1.10.21';
+import { availableSupportingEvidence, normalizeAliases, canonicalName, linkAlias, resolveFactNames, normalizeSupportingEvidence, addRejectedMemory } from './continuity-tools.js?v=1.10.21';
+import { applyManualKnowledgeDraft, collectedCharacterNames, sortMemoriesByCollection, removeSavedExclusions, COLLECTION_FOCUS, EXCLUSION_REASONS, normalizeCollectionPreferences, appendCollectionExclusions, saveExcludedMemory, MEMORY_KINDS, isCurrent, initializeAuto, messageSignature, memoryRequest, omissionReviewRequest, parseMemoryOperations, applyMemoryOperations, recordMemoryBatch, reconcileMemory, undoLatestMemoryBatch, memoryInjection, pruneToRecentWindow, resetRecentWindow, cleanupRequest, parseCleanupActions, applyCleanupActions, compactBulkHiddenMessages } from './memory-engine.js?v=1.10.21';
+import { RECENT_MESSAGE_LIMIT, MAX_FACTS, availableProfiles, supportsBackgroundUtility, generateUtility as rawGenerateUtility, hasTranslation, translationInput, parseTranslations, chatKey, buildChecks, packEmbedding, unpackEmbedding, rankFactsByVectors, readContradictions, parseFactCandidates, approveFact, removeFact, suggestReplacement, setKnowledge, normalizeKnowledge, newId, recentWindowStart, recentWindowProgress, isVisibleChatMessage } from './core.js?v=1.10.21';
+import { diagnostic, diagnosticError, traceDiagnostic, traceGeneration, diagnosticFetch, diagnosticReport, clearDiagnostics, subscribeDiagnostics } from './diagnostics.js?v=1.10.21';
+import { normalizeKnowledgeEvidence, KNOWLEDGE_LABELS, COMMITMENT_LABELS, commitmentState } from './core.js?v=1.10.21';
 
-import { normalizeCollectionRanges, stripCollectionRanges } from './collection-ranges.js?v=1.10.20';
-import { captureCharacterRoomLengths, captureSharedRoomLengths } from './reset-checkpoints.js?v=1.10.20';
-import { createCollectionEventGate } from './collection-events.js?v=1.10.20';
-import { inheritBranchProgress } from './branch-progress.js?v=1.10.20';
+import { normalizeCollectionRanges, stripCollectionRanges } from './collection-ranges.js?v=1.10.21';
+import { captureCharacterRoomLengths, captureSharedRoomLengths } from './reset-checkpoints.js?v=1.10.21';
+import { createCollectionEventGate } from './collection-events.js?v=1.10.21';
+import { inheritBranchProgress } from './branch-progress.js?v=1.10.21';
 
 const NAME = 'hundredlog';
 const LEGACY_NAME = 'memorybean';
@@ -500,6 +500,60 @@ function jevRequestError(message, { status = 0, retryable = false, retryAfterMs 
     return Object.assign(new Error(message), { status, retryable, retryAfterMs });
 }
 
+function jevConfigured() {
+    return Boolean(settings().jevProfileId || apiKey());
+}
+
+async function requestJevProfile(state, questions, profileId, job) {
+    const ctx = context();
+    const service = ctx.ConnectionManagerRequestService;
+    const profile = availableProfiles(ctx).find(item => item.id === profileId);
+    if (!profile) throw jevRequestError('선택한 JEV 연결 프로필을 찾을 수 없어요. 설정에서 다시 선택해 주세요.');
+    if (typeof service?.sendRequest !== 'function') throw jevRequestError('이 실리태번은 별도 연결 프로필 호출을 지원하지 않아요. 실리태번을 업데이트해 주세요.');
+    const mapping = typeof service.validateProfile === 'function' ? service.validateProfile(profile) : ctx.CONNECT_API_MAP?.[profile.api];
+    if (mapping?.selected !== 'openai' || mapping.source !== 'custom') {
+        throw jevRequestError('JEV 검수는 커스텀(OpenAI 호환) 연결 프로필이 필요해요. NanoGPT 주소·키·JEV 모델을 커스텀 연결에 저장해 주세요.');
+    }
+    if (!profile['api-url'] || !profile.model) throw jevRequestError('JEV 연결 프로필에 API 주소와 모델을 저장해 주세요.');
+    let response;
+    try {
+        // Keep the profile's URL, model and server-side secret ID. Do not switch
+        // the main connection or import RP presets into this typed decision call.
+        response = await service.sendRequest(profileId,
+            [{ role: 'user', content: typeof state === 'string' ? state : JSON.stringify(state) }], undefined,
+            { stream: false, extractData: false, includePreset: false, includeInstruct: false, signal: job?.controller.signal },
+            { custom_include_body: JSON.stringify({ response_format: { type: 'questions', questions } }),
+                custom_exclude_body: JSON.stringify(ST_STRIP.filter(key => !['messages', 'stream', 'response_format'].includes(key))),
+                custom_prompt_post_processing: '', reverse_proxy: '', proxy_password: '' });
+    } catch (error) {
+        checkReviewJob(job);
+        // ST wraps provider errors in Error.cause. Classify without displaying
+        // upstream bodies, which may contain credentials or the submitted story.
+        const chain = []; let current = error;
+        for (let depth = 0; current && depth < 5; depth++, current = current.cause) chain.push(String(current.message ?? ''));
+        const detail = chain.join(' ');
+        const code = Number(detail.match(/\b(400|401|403|408|413|422|429|5\d\d)\b/)?.[1]) || 0;
+        const auth = [401, 403].includes(code) || /unauthori|invalid.?api.?key|forbidden|permission.denied|unauthenticated/i.test(detail);
+        const invalid = [400, 413, 422].includes(code) || /invalid.argument|context.length|too.large|max_tokens_exceeded/i.test(detail);
+        const rateLimit = code === 429 || /resource.exhausted|rate.limit|quota/i.test(detail);
+        throw jevRequestError(auth ? 'JEV 연결 프로필의 API 키와 권한을 확인해 주세요.'
+            : invalid ? 'JEV 연결 프로필의 요청 형식·모델·입력 크기를 확인해 주세요.'
+                : rateLimit ? 'JEV 연결 프로필 요청 한도 초과 (429).'
+                    : 'JEV 연결 프로필 호출에 실패했어요. 프로필의 주소·키·모델과 연결을 확인해 주세요.',
+        { status: rateLimit ? 429 : code, retryable: !auth && !invalid && (rateLimit || code === 408 || code >= 500 || /fetch|network|timeout|timed.out/i.test(detail)) });
+    }
+    checkReviewJob(job);
+    let result = response;
+    if (!result?.answers && !result?.error) {
+        const content = typeof response === 'string' ? response : response?.choices?.[0]?.message?.content ?? response?.content;
+        try { result = JSON.parse(content); }
+        catch { throw jevRequestError('JEV 연결 프로필 응답이 판정 JSON 형식이 아니에요. JEV 모델과 연결 설정을 확인해 주세요.'); }
+        // Compatibility clients can return the answers map as the JSON content.
+        if (result && !result.answers && Object.keys(questions).every(id => Object.hasOwn(result, id))) result = { answers: result };
+    }
+    return readJevResponse({ ok: true, json: async () => result }, '연결 프로필', questions, job);
+}
+
 function jevRetryAfter(response) {
     const value = response.headers?.get?.('Retry-After');
     if (!value) return 0;
@@ -561,8 +615,9 @@ async function readJevResponse(response, transport, questions, job = null) {
     return result;
 }
 
-async function requestJevOnce(state, questions, key, job = null) {
+async function requestJevOnce(state, questions, key, job = null, profileId = '') {
     checkReviewJob(job);
+    if (profileId) return requestJevProfile(state, questions, profileId, job);
     const signal = job?.controller.signal;
     const body = JSON.stringify({ model: 'jev-latest', state, questions });
     let response;
@@ -617,7 +672,8 @@ async function requestJevOnce(state, questions, key, job = null) {
 async function requestJev(state, questions, job = null) {
     checkReviewJob(job);
     const key = apiKey();
-    if (!key) throw new Error('확장 설정에 Jev API 키를 먼저 입력해 주세요.');
+    const profileId = settings().jevProfileId || '';
+    if (!profileId && !key) throw new Error('JEV 연결 프로필을 선택하거나 Jev API 키를 입력해 주세요.');
     const requestChat = chatKey(context());
     const sameChat = () => chatKey(context()) === requestChat;
     const retryDelays = [2000, 5000];
@@ -632,7 +688,7 @@ async function requestJev(state, questions, job = null) {
             return await runReplyRetry(job, job.retryStage, async () => {
                 checkReviewJob(job);
                 if (!sameChat()) throw reviewCancelledError();
-                const result = await managedJevAttempt(job, attempt => requestJevOnce(state, questions, key, attempt));
+                const result = await managedJevAttempt(job, attempt => requestJevOnce(state, questions, key, attempt, profileId));
                 checkReviewJob(job);
                 if (!sameChat()) throw reviewCancelledError();
                 return result;
@@ -644,7 +700,7 @@ async function requestJev(state, questions, job = null) {
             const attemptStarted = Date.now();
             diagnostic('attempt', { stage: 'JEV 요청', attempt: attempt + 1, questions: Object.keys(questions).length });
             try {
-                const result = await requestJevOnce(state, questions, key, job);
+                const result = await requestJevOnce(state, questions, key, job, profileId);
                 checkReviewJob(job);
                 if (!sameChat()) throw new Error('대화가 바뀌어 JEV 판정을 적용하지 않았어요.');
                 diagnostic('jevDone', { attempt: attempt + 1, ms: Date.now() - attemptStarted, questions: Object.keys(questions).length });
@@ -692,6 +748,7 @@ function settings() {
     config.collectionExcludedRanges = normalizeCollectionRanges(config.collectionExcludedRanges);
     config.cleanupThreshold = cleanupThreshold(config.cleanupThreshold, 20);
     config.extractionProfileId ??= '';
+    config.jevProfileId = typeof config.jevProfileId === 'string' ? config.jevProfileId : '';
     config.translationProfileId ??= '@extraction';
     config.translationProvider = config.translationProvider === 'google' ? 'google' : 'profile';
     config.analysisInterval = positiveInteger(config.analysisInterval, 1);
@@ -972,10 +1029,10 @@ function refreshProfiles() {
     if (!$id('extraction-profile')) return;
     let profiles = [];
     try { profiles = availableProfiles(context()); } catch (diagnosticCaughtError) { diagnosticError('기타', diagnosticCaughtError, { site: 771 }); /* Keep saved choices visible for correction. */ }
-    for (const [id, key] of [['extraction-profile', 'extractionProfileId'], ['translation-profile', 'translationProfileId']]) {
+    for (const [id, key] of [['extraction-profile', 'extractionProfileId'], ['translation-profile', 'translationProfileId'], ['jev-profile', 'jevProfileId']]) {
         const select = $id(id);
         const choices = id === 'translation-profile' ? [['@extraction', '사실 추출용 프로필과 동일']] : [];
-        choices.push(['', '현재 메인 API 사용'], ...profiles.map((profile) => [profile.id, profile.name || profile.id]));
+        choices.push(['', id === 'jev-profile' ? 'JEV API 키 직접 입력' : '현재 메인 API 사용'], ...profiles.map((profile) => [profile.id, profile.name || profile.id]));
         const selected = settings()[key];
         if (selected && !choices.some(([value]) => value === selected)) choices.push([selected, '찾을 수 없는 프로필 · 다시 선택해 주세요']);
         select.replaceChildren(...choices.map(([value, label]) => {
@@ -1680,6 +1737,9 @@ function renderContent() {
     $id('translate-stop').disabled = !translating;
     $id('translate-stop').hidden = !translating;
     for (const id of ['extraction-profile', 'translation-profile', 'profiles-refresh', 'analysis-interval', 'collection-intensity', 'cleanup-threshold']) $id(id).disabled = working;
+    $id('jev-profile').disabled = working || normalGenerating;
+    $id('jev-direct-settings').hidden = Boolean(settings().jevProfileId);
+    $id('clearkey').hidden = Boolean(settings().jevProfileId);
     $id('key').disabled = working;
     $id('test').disabled = working;
     $id('clearkey').disabled = working;
@@ -2419,7 +2479,7 @@ async function resumeHundredlogReview({ checkpoint, index, message }) {
     const ctx = context();
     if (checkpoint?.key !== chatKey(ctx) || !Array.isArray(checkpoint.facts) || !checkpoint.facts.length
         || ctx.chat[index] !== message || ctx.chat.length !== index + 1) throw new Error('원래 채팅의 100LOG 검수 정보를 확인하지 못했어요.');
-    if (!settings().autoMemory || !settings().reviewEnabled || !apiKey()) throw new Error('100LOG 검수 설정과 Jev 연결을 확인해 주세요. 서버의 답장은 유지합니다.');
+    if (!settings().autoMemory || !settings().reviewEnabled || !jevConfigured()) throw new Error('100LOG 검수 설정과 Jev 연결을 확인해 주세요. 서버의 답장은 유지합니다.');
     if (busy || activeReviewJob || extracting && !activeCollectionJob?.backgroundSafe || translating && !translationBackgroundSafe) {
         throw new Error('100LOG의 현재 작업이 끝난 뒤 답장 검수를 이어받을 수 있어요.');
     }
@@ -2489,7 +2549,7 @@ async function runReceivedReview(job, message) {
         const ctx = context();
         if (!job.validate()) throw reviewCancelledError();
         updateReport({ rules: facts.length });
-        if (!apiKey()) throw new Error('확장 설정에 Jev API 키를 먼저 입력해 주세요.');
+        if (!jevConfigured()) throw new Error('JEV 연결 프로필을 선택하거나 Jev API 키를 입력해 주세요.');
         if (!draft.trim()) throw new Error('받은 답변이 비어 있어 검수를 건너뛰었어요.');
         await clearLegacyPrompt();
         stage = 'JEV 답변 검수';
@@ -2597,7 +2657,7 @@ globalThis.hundredlogGenerationInterceptor = async function (_promptChat, _size,
     const owner = data(false);
     const confirmed = owner?.facts.filter(fact => fact.active && isCurrent(fact)) ?? [];
     if (!confirmed.length) return;
-    const useReview = Boolean(config.reviewEnabled && nativeReview && apiKey());
+    const useReview = Boolean(config.reviewEnabled && nativeReview && jevConfigured());
     if (useReview && ((extracting && !activeCollectionJob?.backgroundSafe) || (translating && !translationBackgroundSafe))) {
         const state = chatState(owner);
         if (state) state.lastReview = { at: Date.now(), mode, status: 'background_skipped', stage: '수집·번역 중', checked: 0, issues: [] };
@@ -2797,7 +2857,7 @@ async function main() {
     installMemoryHooks(ctx);
     if ($id('key')) { registerDeveloperTitle($id('title')); addWandButton(); return; }
     installStorageHooks(ctx);
-    const response = await diagnosticFetch(new URL('./settings.html?v=1.10.20', import.meta.url), { credentials: 'same-origin' });
+    const response = await diagnosticFetch(new URL('./settings.html?v=1.10.21', import.meta.url), { credentials: 'same-origin' });
     if (!response.ok) throw new Error(`설정 화면 파일을 읽지 못했어요 (${response.status}).`);
     const html = await response.text();
     // Keep the panel mounted for event bindings, but expose it only through the wand.
@@ -2819,9 +2879,15 @@ async function main() {
     }
     showView(selectedView);
     refreshProfiles();
-    for (const [id, key] of [['extraction-profile', 'extractionProfileId'], ['translation-profile', 'translationProfileId']]) {
+    for (const [id, key] of [['extraction-profile', 'extractionProfileId'], ['translation-profile', 'translationProfileId'], ['jev-profile', 'jevProfileId']]) {
         $id(id)?.addEventListener('change', (event) => {
+            if (key === 'jevProfileId') stopReviewJob();
             settings()[key] = event.target.value;
+            if (key === 'jevProfileId') {
+                $id('server').textContent = event.target.value ? '프로필 선택됨 · 연결 확인 필요' : (apiKey() ? '키 저장됨 · 연결 확인 필요' : 'API 키를 입력해 주세요');
+                connectionError();
+                render();
+            }
             scheduleStorageSave();
             status('연결 프로필 선택을 저장했어요.');
         });
@@ -2934,7 +3000,7 @@ async function main() {
     });
     loadEmbeddingKeyUi();
     if ($id('key')) $id('key').value = apiKey();
-    if ($id('server')) $id('server').textContent = apiKey() ? '키 저장됨 · 연결 확인 필요' : 'API 키를 입력해 주세요';
+    if ($id('server')) $id('server').textContent = settings().jevProfileId ? '프로필 선택됨 · 연결 확인 필요' : apiKey() ? '키 저장됨 · 연결 확인 필요' : 'API 키를 입력해 주세요';
     function connectionError(message = '') {
         const element = $id('connection-error');
         if (!element) return;
@@ -2955,9 +3021,11 @@ async function main() {
     });
     $id('test')?.addEventListener('click', async () => {
         try {
-            const value = $id('key').value.trim();
-            if (!value) throw new Error('API 키를 입력해 주세요.');
-            localStorage.setItem(KEY_STORAGE, value);
+            if (!settings().jevProfileId) {
+                const value = $id('key').value.trim();
+                if (!value) throw new Error('API 키를 입력해 주세요.');
+                localStorage.setItem(KEY_STORAGE, value);
+            }
             $id('server').textContent = 'Jev 연결 확인 중…';
             const result = await requestJev('The sky is blue.', { test: { type: 'noul', instructions: 'Does the sentence state a color of the sky?' } });
             if (result.answers.test?.type !== 'noul') throw new Error('Jev 테스트 응답 형식이 맞지 않아요.');
@@ -2976,10 +3044,9 @@ async function main() {
         $id('key').value = '';
         $id('server').textContent = 'API 키를 입력해 주세요';
         connectionError();
-        settings().reviewEnabled = false;
-        stopReviewJob();
+        if (!settings().jevProfileId) { settings().reviewEnabled = false; stopReviewJob(); }
         scheduleStorageSave();
-        status('JEV 키를 삭제하고 답변 검수만 껐어요. 기억 수집·주입은 기존 설정대로 유지해요.');
+        status(settings().jevProfileId ? '직접 입력한 JEV 키를 삭제했어요. 연결 프로필 검수는 유지해요.' : 'JEV 키를 삭제하고 답변 검수만 껐어요. 기억 수집·주입은 기존 설정대로 유지해요.');
         render();
     });
     $id('add')?.addEventListener('click', async () => {
@@ -3039,7 +3106,7 @@ async function main() {
         try { await applyEvictionSetting(); } catch (error) { diagnosticError('규칙 저장', error); status(error.message); }
     });
     $id('review-enabled')?.addEventListener('change', (event) => {
-        if (event.target.checked && !apiKey()) { event.target.checked = false; status('JEV 답변 검수를 켜려면 아래에 JEV 키를 입력해 주세요. 기억 수집·주입은 키 없이 사용할 수 있어요.'); return; }
+        if (event.target.checked && !jevConfigured()) { event.target.checked = false; status('JEV 답변 검수를 켜려면 연결 프로필을 선택하거나 JEV 키를 입력해 주세요. 기억 수집·주입은 키 없이 사용할 수 있어요.'); return; }
         settings().reviewEnabled = event.target.checked;
         if (!event.target.checked) stopReviewJob();
         scheduleStorageSave(); render();
