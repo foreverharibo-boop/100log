@@ -341,7 +341,7 @@ test('usage toggle works without a key and deleting a JEV key only disables revi
     const listeners = new Map(), config = {autoMemory:false, enabled:false, reviewEnabled:false, developerMemorySelection:true};
     const box = { scheduleStorageSave(){}, $id:id=>({ addEventListener:(event,fn)=>listeners.set(id,fn) }), settings:()=>config,
         context:()=>({saveSettingsDebounced(){}}), ctx:{saveSettingsDebounced(){}}, localStorage:{removeItem(){}},
-        KEY_STORAGE:'key', LEGACY_KEY_STORAGE:'old-key', memoryEpoch:0, memoryPending:false,
+        KEY_STORAGE:'key', LEGACY_KEY_STORAGE:'old-key', jevKeyStorage:()=> 'key', jevProvider:()=> 'typesafe', memoryEpoch:0, memoryPending:false,
         stopCollection(){}, stopReviewJob(){}, clearLegacyPrompt:async()=>{}, connectionError(){}, render(){}, status(){}, scheduleMemory(){}, apiKey:()=>'' };
     vm.createContext(box);
     vm.runInContext(source.slice(source.indexOf("    $id('auto-memory')?.addEventListener"),source.indexOf("    $id('auto-cleanup')?.addEventListener")),box);
@@ -985,108 +985,130 @@ test('native review uses only the selected independent store and keeps its repor
 });
 
 
-function installJevProfile(h, handler, { source = 'custom' } = {}) {
-    const config = { autoMemory: true, reviewEnabled: true, jevProfileId: 'nano-jev' };
-    const profile = { id: 'nano-jev', name: 'NanoGPT JEV', api: 'custom', model: 'typesafe/jev-latest',
-        'api-url': 'https://nano-gpt.com/api/v1', 'secret-id': 'saved-nano-key', preset: 'RP preset' };
-    const calls = [];
-    h.sandbox.settings = () => config;
-    h.sandbox.apiKey = () => '';
-    h.ctx.ConnectionManagerRequestService = {
-        getSupportedProfiles: () => [profile], validateProfile: () => ({ selected: 'openai', source }),
-        sendRequest: async (...args) => { calls.push(args); return handler(...args); },
-    };
-    // Match the production exclusion list, including fields retained for chat compatibility.
-    h.sandbox.ST_STRIP = vm.runInNewContext(sourceCodeStrip());
-    return { config, profile, calls };
-}
-function sourceCodeStrip() {
-    return source.match(/const ST_STRIP = (\[[^;]+\]);/)[1];
+const providerKeyCode = source.slice(source.indexOf('function jevProvider('), source.indexOf('function embeddingProvider('));
+function installServiceKeys(h, provider = 'nanogpt') {
+    const config = { autoMemory: true, reviewEnabled: true, jevProvider: provider };
+    const keys = new Map([['typesafe-key', 'typesafe-secret'], ['nano-key', 'nano-secret'], ['legacy-key', 'legacy-secret']]);
+    Object.assign(h.sandbox, { fileStorage: { ...h.sandbox.fileStorage, value: config }, settings: () => config,
+        KEY_STORAGE: 'typesafe-key', NANOGPT_KEY_STORAGE: 'nano-key', LEGACY_KEY_STORAGE: 'legacy-key',
+        localStorage: { getItem: key => keys.get(key) ?? null, setItem: (key, value) => keys.set(key, value), removeItem: key => keys.delete(key) } });
+    vm.runInContext(providerKeyCode, h.sandbox);
+    return { config, keys };
 }
 
-test('NanoGPT JEV profile sends typed questions without a direct key or RP preset', async () => {
-    const h = harness(() => { throw Error('direct transport must not run'); });
-    const controller = new AbortController();
-    const before = JSON.stringify(h.ctx);
-    const p = installJevProfile(h, async () => ({ choices: [{ message: { content: JSON.stringify(answer()) } }] }));
-    const result = await h.sandbox.requestJev('story state', questions, { controller });
-    assert.equal(result.answers.q0.choice, 'no_conflict');
-    assert.equal(p.calls.length, 1); assert.equal(h.requests.length, 0);
-    const [id, messages, limit, options, overrides] = p.calls[0];
-    assert.equal(id, p.profile.id);
-    assert.deepEqual(JSON.parse(JSON.stringify(messages)), [{ role: 'user', content: 'story state' }]);
-    assert.equal(limit, undefined); assert.equal(options.stream, false); assert.equal(options.extractData, false);
-    assert.equal(options.includePreset, false); assert.equal(options.includeInstruct, false); assert.equal(options.signal, controller.signal);
-    assert.deepEqual(JSON.parse(overrides.custom_include_body), { response_format: { type: 'questions', questions } });
-    const excluded = JSON.parse(overrides.custom_exclude_body);
-    for (const key of ['temperature', 'max_tokens', 'tools', 'reasoning_effort']) assert.ok(excluded.includes(key));
-    for (const key of ['model', 'messages', 'stream', 'response_format']) assert.ok(!excluded.includes(key));
-    for (const key of ['model', 'custom_url', 'secret_id', 'custom_include_headers']) assert.ok(!Object.hasOwn(overrides, key));
-    assert.equal(JSON.stringify(h.ctx).replace(/,"ConnectionManagerRequestService":\{\}/, ''), before);
-    assert.equal(h.sandbox.lastJevTransport, '연결 프로필');
-});
-
-test('profile review runs through the native reply lifecycle without a direct JEV key', async () => {
-    const h = harness(() => { throw Error('no direct request'); });
-    const p = installJevProfile(h, async () => ({ choices: [{ message: { content: JSON.stringify(answer()) } }] }));
-    const message = await h.run();
-    assert.ok(p.calls.length > 0); assert.equal(h.requests.length, 0);
-    assert.equal(message.mes.length, 25003); assert.equal(h.generationCount(), 0); assert.equal(h.masks.size, 0);
-});
-
-test('profile connection test accepts typed noul and answer-map JSON', async () => {
-    const h = harness(() => { throw Error('no fallback'); });
-    installJevProfile(h, async () => ({ content: JSON.stringify({ test: { type: 'noul', noul: 0.99 } }) }));
-    const result = await h.sandbox.requestJev('blue sky', { test: { type: 'noul', instructions: 'Is the sky blue?' } });
-    assert.equal(result.answers.test.noul, 0.99);
-});
-
-test('missing or incompatible JEV profiles never fall back to a saved direct key', async () => {
-    for (const mode of ['missing', 'native-nanogpt', 'missing-model']) {
-        const h = harness(() => { throw Error('no fallback'); });
-        const p = installJevProfile(h, async () => { throw Error('must reject before sending'); }, { source: mode === 'native-nanogpt' ? 'nanogpt' : 'custom' });
-        h.sandbox.apiKey = () => 'existing-typesafe-key';
-        if (mode === 'missing') p.config.jevProfileId = 'deleted';
-        if (mode === 'missing-model') p.profile.model = '';
-        await assert.rejects(h.sandbox.requestJev('state', questions), /프로필/);
-        assert.equal(p.calls.length, 0); assert.equal(h.requests.length, 0);
-    }
-});
-
-test('profile response validation rejects prose, missing decisions and invalid noul values', async () => {
-    for (const body of ['Just trust me', JSON.stringify({ answers: {} }), JSON.stringify({ answers: { q0: { type: 'choice', choice: 'invented' } } })]) {
-        const h = harness(() => { throw Error('no fallback'); });
-        installJevProfile(h, async () => ({ choices: [{ message: { content: body } }] }));
-        await assert.rejects(h.sandbox.requestJev('state', questions), /판정/);
-        assert.equal(h.requests.length, 0);
-    }
-    const h = harness(() => { throw Error('no fallback'); });
-    installJevProfile(h, async () => ({ answers: { test: { type: 'noul', noul: 2 } } }));
-    await assert.rejects(h.sandbox.requestJev('state', { test: { type: 'noul' } }), /판정/);
-});
-
-test('wrapped profile rate limits retry; authentication errors are sanitized and not retried', async () => {
-    for (const code of [429, 401]) {
-        const h = harness(() => { throw Error('no fallback'); });
-        let attempts = 0;
-        const p = installJevProfile(h, async () => {
-            if (++attempts === 1) throw new Error('API request failed', { cause: new Error(`upstream ${code} private-story private-key`) });
-            return answer();
+test('service selection pairs the correct saved key, endpoint and model in the ST relay', async () => {
+    for (const provider of ['typesafe', 'nanogpt']) {
+        const h = harness((url, options) => {
+            assert.equal(url, '/relay');
+            const body = JSON.parse(options.body);
+            assert.equal(body.custom_url, provider === 'nanogpt' ? 'https://nano-gpt.com/api/v1/decisions?via=' : 'https://example.invalid/jev?via=');
+            assert.equal(body.model, provider === 'nanogpt' ? 'typesafe/jev-latest' : 'jev-latest');
+            assert.deepEqual(JSON.parse(body.custom_include_body), { state: { scene: 'hello' }, questions });
+            assert.equal(JSON.parse(body.custom_include_headers).Authorization, `Bearer ${provider === 'nanogpt' ? 'nano-secret' : 'typesafe-secret'}`);
+            assert.equal(body.type, 'quiet');
+            return reply();
         });
-        if (code === 429) {
-            assert.equal((await h.sandbox.requestJev('state', questions)).answers.q0.choice, 'no_conflict');
-            assert.equal(p.calls.length, 2);
-        } else {
-            await assert.rejects(h.sandbox.requestJev('state', questions), error => /키와 권한/.test(error.message) && !/private/.test(error.message));
-            assert.equal(p.calls.length, 1);
-        }
+        installServiceKeys(h, provider);
+        assert.equal((await h.sandbox.requestJev({ scene: 'hello' }, questions)).answers.q0.choice, 'no_conflict');
+        assert.equal(h.requests.length, 1);
     }
 });
 
-test('cancelled profile requests cannot apply late decisions', async () => {
-    const h = harness(() => { throw Error('no fallback'); });
-    const controller = new AbortController();
-    installJevProfile(h, async () => { controller.abort(); return answer(); });
-    await assert.rejects(h.sandbox.requestJev('state', questions, { controller }));
-    assert.equal(h.sandbox.lastJevTransport, '');
+test('NanoGPT direct and proxy fallback retain NanoGPT model, endpoint and key', async () => {
+    for (const useProxy of [false, true]) {
+        const h = harness((url, options, attempt) => {
+            if (attempt === 1) return reply(404);
+            if (attempt === 2 && useProxy) throw Error('CORS');
+            assert.equal(url, useProxy ? '/proxy/' + encodeURIComponent('https://nano-gpt.com/api/v1/decisions') : 'https://nano-gpt.com/api/v1/decisions');
+            assert.equal(options.headers.Authorization, 'Bearer nano-secret');
+            assert.deepEqual(JSON.parse(options.body), { model: 'typesafe/jev-latest', state: 'story', questions });
+            return reply();
+        });
+        installServiceKeys(h);
+        await h.sandbox.requestJev('story', questions);
+        assert.equal(h.requests.length, useProxy ? 3 : 2);
+    }
+});
+
+test('NanoGPT never borrows a TypeSafe key and retains ordinary memory injection without a key', async () => {
+    const h = harness(() => { throw Error('must not send'); });
+    const { keys } = installServiceKeys(h);
+    keys.delete('nano-key');
+    assert.equal(h.sandbox.apiKey(), '');
+    await assert.rejects(h.sandbox.requestJev('story', questions), /키/);
+    await h.prepare();
+    assert.ok(h.injections.some(args => args[1] === 'facts'));
+    await h.deliver('unchanged');
+    assert.equal(h.requests.length, 0);
+    assert.equal(h.sandbox.data().chatState.lastReview.status, 'review_unavailable');
+});
+
+test('TypeSafe keeps its legacy key fallback; a NanoGPT authentication failure never crosses services', async () => {
+    const h = harness(() => reply(401));
+    const { keys, config } = installServiceKeys(h, 'typesafe');
+    keys.delete('typesafe-key');
+    assert.equal(h.sandbox.apiKey(), 'legacy-secret');
+    config.jevProvider = 'nanogpt';
+    assert.equal(h.sandbox.apiKey(), 'nano-secret');
+    await assert.rejects(h.sandbox.requestJev('story', questions), /인증/);
+    assert.equal(h.requests.length, 1);
+});
+
+test('NanoGPT retry freezes its original provider and key for the whole logical request', async () => {
+    let state;
+    const h = harness((_url, options, attempt) => {
+        const body = JSON.parse(options.body);
+        assert.equal(body.model, 'typesafe/jev-latest');
+        assert.equal(JSON.parse(body.custom_include_headers).Authorization, 'Bearer nano-secret');
+        if (attempt === 1) { state.config.jevProvider = 'typesafe'; return reply(429); }
+        return reply();
+    });
+    state = installServiceKeys(h);
+    await h.sandbox.requestJev('story', questions);
+    assert.equal(h.requests.length, 2);
+});
+
+test('NanoGPT uses the existing reply review and correction lifecycle', async () => {
+    const h = harness((_url, options, attempt) => {
+        assert.equal(JSON.parse(options.body).model, 'typesafe/jev-latest');
+        return reply(200, answer(attempt === 1 ? 'contradiction' : 'no_conflict'));
+    });
+    installServiceKeys(h);
+    assert.equal((await h.run()).mes, 'CORRECTED');
+    assert.equal(h.generationCount(), 1); assert.equal(h.masks.size, 0);
+});
+
+test('removed JEV profile is migrated without altering extraction or translation profiles', () => {
+    const settingsCode = source.slice(source.indexOf('function positiveInteger('), source.indexOf('function cleanUuid('));
+    const config = { autoMemory: true, reviewEnabled: true, jevProfileId: 'old-profile', extractionProfileId: 'extract', translationProfileId: 'translate' };
+    const box = { fileStorage: { value: config }, MAX_FACTS: 40, apiKey: () => 'saved-typesafe-key', normalizeCollectionRanges, normalizeMemoryLimit: () => 30 };
+    vm.createContext(box); vm.runInContext(settingsCode, box);
+    box.settings();
+    assert.equal(config.jevProvider, 'typesafe'); assert.equal(config.reviewEnabled, false);
+    assert.equal(Object.hasOwn(config, 'jevProfileId'), false);
+    assert.equal(config.extractionProfileId, 'extract'); assert.equal(config.translationProfileId, 'translate');
+});
+
+test('provider UI switches, saves, tests and deletes only the selected service key', async () => {
+    const h = harness(() => reply());
+    const { keys, config } = installServiceKeys(h, 'typesafe');
+    const elements = new Map();
+    const element = id => { if (!elements.has(id)) elements.set(id, { value: '', addEventListener(event, fn) { this[event] = fn; } }); return elements.get(id); };
+    Object.assign(h.sandbox, { $id: element, connectionError() {} });
+    vm.runInContext(source.slice(source.indexOf("    $id('jev-provider')?.addEventListener"), source.indexOf("    $id('add')?.addEventListener")), h.sandbox);
+    keys.delete('nano-key');
+    element('jev-provider').change({ target: { value: 'nanogpt' } });
+    assert.equal(element('key').value, ''); assert.equal(config.reviewEnabled, false);
+    element('key').value = 'new-nano-key'; element('key').change();
+    assert.equal(keys.get('nano-key'), 'new-nano-key'); assert.equal(keys.get('typesafe-key'), 'typesafe-secret');
+    h.sandbox.requestJev = async () => {
+        assert.equal(h.sandbox.apiKey(), 'new-nano-key'); assert.equal(config.jevProvider, 'nanogpt');
+        return { answers: { test: { type: 'noul', noul: .99 } } };
+    };
+    await element('test').click(); assert.equal(element('server').textContent, 'Jev 연결됨');
+    element('clearkey').click();
+    assert.equal(keys.has('nano-key'), false); assert.equal(keys.get('typesafe-key'), 'typesafe-secret'); assert.equal(keys.get('legacy-key'), 'legacy-secret');
+    element('jev-provider').change({ target: { value: 'typesafe' } });
+    assert.equal(element('key').value, 'typesafe-secret');
+    element('clearkey').click(); assert.equal(keys.has('typesafe-key'), false); assert.equal(keys.has('legacy-key'), false);
 });

@@ -90,10 +90,10 @@
         <label class="hundredlog-toggle hundredlog-setting-toggle"><input id="hundredlog-review-enabled" type="checkbox"><span>JEV로 받은 답변 검수</span></label>
         <p class="hundredlog-help">기억과 충돌하는 답변을 검사하고 한 번 수정을 요청해요.</p>
         <p class="hundredlog-help">꺼도 기억 수집·주입은 사용할 수 있어요.</p>
-        <label for="hundredlog-jev-profile" class="hundredlog-label">JEV 검수 연결</label>
-        <select id="hundredlog-jev-profile" class="hundredlog-profile-select"></select>
-        <p class="hundredlog-help">NanoGPT의 JEV를 쓰려면 커스텀(OpenAI 호환)으로 저장한 JEV 프로필을 선택해 주세요. 프로필의 주소·키·모델을 사용해요.</p>
-        <div id="hundredlog-jev-direct-settings"><label for="hundredlog-key" class="hundredlog-label">Jev API 키</label><input id="hundredlog-key" type="password" autocomplete="off" spellcheck="false" placeholder="TypeSafe API 키"></div>
+        <label for="hundredlog-jev-provider" class="hundredlog-label">JEV 서비스</label>
+        <select id="hundredlog-jev-provider" class="hundredlog-profile-select"><option value="typesafe">TypeSafe</option><option value="nanogpt">NanoGPT</option></select>
+        <p class="hundredlog-help">선택한 서비스의 API 키를 입력해 주세요. NanoGPT를 선택하면 나노지피티의 JEV로 검수해요.</p>
+        <label id="hundredlog-key-label" for="hundredlog-key" class="hundredlog-label">TypeSafe API 키</label><input id="hundredlog-key" type="password" autocomplete="off" spellcheck="false" placeholder="TypeSafe API 키">
         <div class="hundredlog-row hundredlog-connection-actions"><button type="button" id="hundredlog-test" class="menu_button">연결 확인</button><button type="button" id="hundredlog-clearkey" class="menu_button">키 삭제</button><span id="hundredlog-server" class="hundredlog-state" aria-live="polite">API 키를 입력해 주세요</span></div>
         <p id="hundredlog-connection-error" class="hundredlog-help hundredlog-connection-error" role="alert" hidden></p>
       </section>
